@@ -281,6 +281,7 @@ void sendTelemetryData() {
   // สมมติค่า Sensor (สามารถเปลี่ยนเป็นการอ่านค่าจาก Sensor จริงๆ ได้)
   doc["sensor_value"] = random(20, 40); 
   doc["status"] = "Active";
+  doc["wifi_ssid"] = WiFi.SSID();
   
   String jsonOutput;
   serializeJson(doc, jsonOutput);

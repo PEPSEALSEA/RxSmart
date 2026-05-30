@@ -83,6 +83,51 @@ async function getGoogleAuthToken(clientEmail: string, privateKey: string): Prom
   return tokenData.access_token;
 }
 
+// Upsert device info into Devices sheet
+async function upsertDevice(env: Env, token: string, deviceId: string, wifiSsid: string, timestamp: string) {
+  const getUrl = `https://sheets.googleapis.com/v4/spreadsheets/${env.SPREADSHEET_ID}/values/Devices!A:A`;
+  const getRes = await fetch(getUrl, {
+    headers: { 'Authorization': `Bearer ${token}` }
+  });
+  const getData: any = await getRes.json();
+  
+  if (getData.error && getData.error.code === 400) {
+    // If the Devices sheet doesn't exist yet, we just ignore or we can try to create it, 
+    // but the user is expected to create a 'Devices' tab manually.
+    console.warn("Devices sheet not found");
+    return;
+  }
+
+  const rows = getData.values || [];
+  let rowIndex = -1;
+  for (let i = 0; i < rows.length; i++) {
+    if (rows[i] && rows[i][0] === deviceId) {
+      rowIndex = i + 1; // Sheets are 1-indexed
+      break;
+    }
+  }
+
+  const rowData = [deviceId, wifiSsid, timestamp];
+
+  if (rowIndex === -1) {
+    // Append new device
+    const appendUrl = `https://sheets.googleapis.com/v4/spreadsheets/${env.SPREADSHEET_ID}/values/Devices:append?valueInputOption=USER_ENTERED`;
+    await fetch(appendUrl, {
+      method: 'POST',
+      headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ values: [rowData] })
+    });
+  } else {
+    // Update existing device
+    const updateUrl = `https://sheets.googleapis.com/v4/spreadsheets/${env.SPREADSHEET_ID}/values/Devices!A${rowIndex}:C${rowIndex}?valueInputOption=USER_ENTERED`;
+    await fetch(updateUrl, {
+      method: 'PUT',
+      headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ values: [rowData] })
+    });
+  }
+}
+
 export default {
   async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
     const url = new URL(request.url);
@@ -119,10 +164,11 @@ export default {
         const deviceId = body.device_id || "Unknown";
         const sensorValue = body.sensor_value || 0;
         const status = body.status || "Unknown";
+        const wifiSsid = body.wifi_ssid || "Unknown";
 
         const token = await getGoogleAuthToken(env.GOOGLE_CLIENT_EMAIL, env.GOOGLE_PRIVATE_KEY);
         
-        // Append row to Google Sheets using Sheets API v4
+        // 1. Append row to Sheet1 (Telemetry)
         const appendUrl = `https://sheets.googleapis.com/v4/spreadsheets/${env.SPREADSHEET_ID}/values/Sheet1:append?valueInputOption=USER_ENTERED`;
         
         const sheetsRes = await fetch(appendUrl, {
@@ -132,11 +178,14 @@ export default {
             'Content-Type': 'application/json'
           },
           body: JSON.stringify({
-            values: [[timestamp, deviceId, sensorValue, status]]
+            values: [[timestamp, deviceId, sensorValue, status, wifiSsid]]
           })
         });
 
         const sheetsData = await sheetsRes.json();
+
+        // 2. Upsert into Devices sheet
+        await upsertDevice(env, token, deviceId, wifiSsid, timestamp);
 
         return new Response(JSON.stringify({ success: true, message: "Telemetry received & saved.", data: sheetsData }), { headers: corsHeaders });
       } catch (e: any) {
@@ -151,7 +200,7 @@ export default {
         
         const updateUrl = `https://sheets.googleapis.com/v4/spreadsheets/${env.SPREADSHEET_ID}/values/Sheet1!1:1?valueInputOption=USER_ENTERED`;
         
-        const headerTemplate = ['Timestamp', 'Device_ID', 'Sensor_Value', 'Status'];
+        const headerTemplate = ['Timestamp', 'Device_ID', 'Sensor_Value', 'Status', 'WiFi_SSID'];
 
         const sheetsRes = await fetch(updateUrl, {
           method: 'PUT', // Use PUT for updating a specific range
@@ -167,6 +216,35 @@ export default {
         const sheetsData = await sheetsRes.json();
 
         return new Response(JSON.stringify({ success: true, message: "Sheet header fixed successfully from Cloudflare Worker!" }), { headers: corsHeaders });
+      } catch (e: any) {
+        return new Response(JSON.stringify({ error: e.message }), { status: 500, headers: corsHeaders });
+      }
+    }
+
+    // Endpoint 4: Get All Devices
+    if (request.method === 'GET' && url.pathname === '/api/devices') {
+      try {
+        const token = await getGoogleAuthToken(env.GOOGLE_CLIENT_EMAIL, env.GOOGLE_PRIVATE_KEY);
+        
+        const getUrl = `https://sheets.googleapis.com/v4/spreadsheets/${env.SPREADSHEET_ID}/values/Devices!A:C`;
+        const getRes = await fetch(getUrl, {
+          headers: { 'Authorization': `Bearer ${token}` }
+        });
+        const data: any = await getRes.json();
+        
+        if (data.error) {
+          throw new Error('Error reading Devices sheet: ' + JSON.stringify(data.error));
+        }
+
+        const devices = (data.values || [])
+          .filter((row: any[]) => row[0] && row[0] !== 'Device_ID')
+          .map((row: any[]) => ({
+            device_id: row[0] || 'Unknown',
+            wifi_ssid: row[1] || 'Unknown',
+            last_online: row[2] || 'Unknown'
+          }));
+
+        return new Response(JSON.stringify({ success: true, devices }), { headers: corsHeaders });
       } catch (e: any) {
         return new Response(JSON.stringify({ error: e.message }), { status: 500, headers: corsHeaders });
       }

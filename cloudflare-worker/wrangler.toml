@@ -2,10 +2,5 @@ name = "rxsmart-worker"
 main = "src/index.ts"
 compatibility_date = "2024-05-30"
 
-# [vars]
-# You can put non-sensitive variables here.
-
-# Google Service Account keys and other sensitive data should be set as secrets using:
-# npx wrangler secret put GOOGLE_CLIENT_EMAIL
-# npx wrangler secret put GOOGLE_PRIVATE_KEY
-# npx wrangler secret put SPREADSHEET_ID
+[vars]
+SPREADSHEET_ID = "1XQVPM3HL3KqkfVjlvqbxmjcyJ7dODf-B-zFBoAZ95nM"
