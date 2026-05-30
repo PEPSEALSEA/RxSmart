@@ -1,0 +1,25 @@
+{
+  "name": "rxsmart",
+  "version": "1.0.0",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/PEPSEALSEA/RxSmart.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "bugs": {
+    "url": "https://github.com/PEPSEALSEA/RxSmart/issues"
+  },
+  "homepage": "https://github.com/PEPSEALSEA/RxSmart#readme",
+  "description": "",
+  "devDependencies": {
+    "@cloudflare/workers-types": "^4.20260530.1",
+    "typescript": "^6.0.3",
+    "wrangler": "^4.95.0"
+  }
+}
