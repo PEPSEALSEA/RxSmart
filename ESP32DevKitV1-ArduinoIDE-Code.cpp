@@ -107,6 +107,7 @@ const char index_html[] PROGMEM = R"rawliteral(
 void setupAPMode();
 void handleRoot();
 void handleSave();
+void sendCaptivePortal();
 bool checkInternetWatchdog();
 void checkFirmwareUpdate();
 void sendTelemetryData();
@@ -231,6 +232,8 @@ void loop() {
 // Functions สำหรับ Captive Portal
 // ---------------------------------------------------------
 void setupAPMode() {
+  WiFi.disconnect(true);
+  WiFi.setSleep(false);
   WiFi.mode(WIFI_AP);
   WiFi.softAPConfig(apIP, apIP, IPAddress(255, 255, 255, 0));
   WiFi.softAP("RxSmart-Setup"); // ชื่อ WiFi สำหรับตั้งค่า
@@ -243,48 +246,34 @@ void setupAPMode() {
   server.on("/save", HTTP_POST, handleSave);
 
   // --- Captive Portal Detection Endpoints ---
-  // iOS / macOS (ตรวจจาก captive.apple.com)
-  server.on("/hotspot-detect.html", HTTP_GET, []() {
-    server.sendHeader("Location", "http://192.168.4.1", true);
-    server.send(302, "text/plain", "");
-  });
-  server.on("/library/test/success.html", HTTP_GET, []() {
-    server.sendHeader("Location", "http://192.168.4.1", true);
-    server.send(302, "text/plain", "");
-  });
+  server.on("/hotspot-detect.html", HTTP_GET, sendCaptivePortal);      // iOS / macOS
+  server.on("/library/test/success.html", HTTP_GET, sendCaptivePortal);
+  server.on("/generate_204", HTTP_GET, sendCaptivePortal);             // Android
+  server.on("/gen_204", HTTP_GET, sendCaptivePortal);
+  server.on("/mobile/status.php", HTTP_GET, sendCaptivePortal);
+  server.on("/connecttest.txt", HTTP_GET, sendCaptivePortal);          // Windows
+  server.on("/redirect", HTTP_GET, sendCaptivePortal);
+  server.on("/ncsi.txt", HTTP_GET, sendCaptivePortal);
+  server.on("/fwlink", HTTP_GET, sendCaptivePortal);
+  server.on("/canonical.html", HTTP_GET, sendCaptivePortal);           // ChromeOS / Linux
+  server.on("/success.txt", HTTP_GET, sendCaptivePortal);
 
-  // Android (connectivitycheck.gstatic.com) – ต้องตอบ 204 No Content
-  // เพื่อให้ Android รู้ว่า "internet ไม่มี" แล้วเด้ง captive portal
-  server.on("/generate_204", HTTP_GET, []() {
-    server.sendHeader("Location", "http://192.168.4.1", true);
-    server.send(302, "text/plain", "");
-  });
-  server.on("/gen_204", HTTP_GET, []() {
-    server.sendHeader("Location", "http://192.168.4.1", true);
-    server.send(302, "text/plain", "");
-  });
-
-  // Windows (msftconnecttest.com)
-  server.on("/connecttest.txt", HTTP_GET, []() {
-    server.sendHeader("Location", "http://192.168.4.1", true);
-    server.send(302, "text/plain", "");
-  });
-  server.on("/redirect", HTTP_GET, []() {
-    server.sendHeader("Location", "http://192.168.4.1", true);
-    server.send(302, "text/plain", "");
-  });
-
-  // Fallback: ทุก URL ที่ไม่รู้จัก redirect กลับหน้าหลัก
-  server.onNotFound([]() {
-    server.sendHeader("Location", "http://192.168.4.1", true);
-    server.send(302, "text/plain", "");
-  });
+  // Fallback: serve the setup page for every unknown URL.
+  server.onNotFound(sendCaptivePortal);
 
   server.begin();
   Serial.println("AP Mode started. Connect to 'RxSmart-Setup' WiFi – popup will appear automatically.");
 }
 
 void handleRoot() {
+  sendCaptivePortal();
+}
+
+void sendCaptivePortal() {
+  server.sendHeader("Cache-Control", "no-store, no-cache, must-revalidate, max-age=0");
+  server.sendHeader("Pragma", "no-cache");
+  server.sendHeader("Expires", "0");
+  server.sendHeader("Location", "http://192.168.4.1", true);
   server.send(200, "text/html", index_html);
 }
 
