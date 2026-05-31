@@ -4,13 +4,27 @@ export interface Env {
   SPREADSHEET_ID: string;
 }
 
-// Helper to encode string to base64url
-function base64url(source: string | Uint8Array): string {
-  let encoded = typeof source === 'string' ? btoa(source) : btoa(String.fromCharCode(...new Uint8Array(source)));
-  return encoded.replace(/=/g, '').replace(/\+/g, '-').replace(/\//g, '_');
+type Sheet = { properties: { title: string; sheetId: number } };
+
+const jsonHeaders = {
+  "Access-Control-Allow-Origin": "*",
+  "Content-Type": "application/json",
+};
+
+function jsonResponse(payload: unknown, init: ResponseInit = {}) {
+  return new Response(JSON.stringify(payload), {
+    ...init,
+    headers: { ...jsonHeaders, ...(init.headers || {}) },
+  });
 }
 
-// Convert PEM string to ArrayBuffer for Web Crypto API
+function base64url(source: string | Uint8Array): string {
+  const encoded = typeof source === "string"
+    ? btoa(source)
+    : btoa(String.fromCharCode(...new Uint8Array(source)));
+  return encoded.replace(/=/g, "").replace(/\+/g, "-").replace(/\//g, "_");
+}
+
 function str2ab(str: string): ArrayBuffer {
   const buf = new ArrayBuffer(str.length);
   const bufView = new Uint8Array(buf);
@@ -21,12 +35,12 @@ function str2ab(str: string): ArrayBuffer {
 }
 
 async function getGoogleAuthToken(clientEmail: string, privateKey: string): Promise<string> {
-  const header = { alg: 'RS256', typ: 'JWT' };
+  const header = { alg: "RS256", typ: "JWT" };
   const now = Math.floor(Date.now() / 1000);
   const claim = {
     iss: clientEmail,
-    scope: 'https://www.googleapis.com/auth/spreadsheets',
-    aud: 'https://oauth2.googleapis.com/token',
+    scope: "https://www.googleapis.com/auth/spreadsheets",
+    aud: "https://oauth2.googleapis.com/token",
     exp: now + 3600,
     iat: now,
   };
@@ -35,129 +49,201 @@ async function getGoogleAuthToken(clientEmail: string, privateKey: string): Prom
   const encodedClaim = base64url(JSON.stringify(claim));
   const signatureInput = `${encodedHeader}.${encodedClaim}`;
 
-  // Parse private key PEM
   const pemHeader = "-----BEGIN PRIVATE KEY-----";
   const pemFooter = "-----END PRIVATE KEY-----";
-  // Handle literal "\n" or actual newlines
-  let pkStr = privateKey.replace(/\\n/g, '\n'); 
+  const pkStr = privateKey.replace(/\\n/g, "\n");
   if (!pkStr.includes(pemHeader)) {
     throw new Error("Invalid private key format");
   }
-  
+
   const pemContents = pkStr.substring(
     pkStr.indexOf(pemHeader) + pemHeader.length,
-    pkStr.indexOf(pemFooter)
-  ).replace(/\s/g, '');
+    pkStr.indexOf(pemFooter),
+  ).replace(/\s/g, "");
 
   const binaryDer = atob(pemContents);
   const derBuffer = str2ab(binaryDer);
 
   const key = await crypto.subtle.importKey(
-    'pkcs8',
+    "pkcs8",
     derBuffer,
-    { name: 'RSASSA-PKCS1-v1_5', hash: { name: 'SHA-256' } },
+    { name: "RSASSA-PKCS1-v1_5", hash: { name: "SHA-256" } },
     false,
-    ['sign']
+    ["sign"],
   );
 
   const signature = await crypto.subtle.sign(
-    'RSASSA-PKCS1-v1_5',
+    "RSASSA-PKCS1-v1_5",
     key,
-    new TextEncoder().encode(signatureInput)
+    new TextEncoder().encode(signatureInput),
   );
 
-  const encodedSignature = base64url(new Uint8Array(signature));
-  const jwt = `${signatureInput}.${encodedSignature}`;
+  const jwt = `${signatureInput}.${base64url(new Uint8Array(signature))}`;
 
-  // Exchange JWT for Access Token
-  const tokenRes = await fetch('https://oauth2.googleapis.com/token', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-    body: `grant_type=urn%3Aietf%3Aparams%3Aoauth%3Agrant-type%3Ajwt-bearer&assertion=${jwt}`
+  const tokenRes = await fetch("https://oauth2.googleapis.com/token", {
+    method: "POST",
+    headers: { "Content-Type": "application/x-www-form-urlencoded" },
+    body: `grant_type=urn%3Aietf%3Aparams%3Aoauth%3Agrant-type%3Ajwt-bearer&assertion=${jwt}`,
   });
 
   const tokenData: any = await tokenRes.json();
   if (!tokenData.access_token) {
-    throw new Error('Failed to get Google Access Token: ' + JSON.stringify(tokenData));
+    throw new Error(`Failed to get Google Access Token: ${JSON.stringify(tokenData)}`);
   }
   return tokenData.access_token;
 }
 
-// Upsert device info into Devices sheet
-async function upsertDevice(env: Env, token: string, deviceId: string, wifiSsid: string, timestamp: string) {
-  const getUrl = `https://sheets.googleapis.com/v4/spreadsheets/${env.SPREADSHEET_ID}/values/Devices!A:A`;
-  const getRes = await fetch(getUrl, {
-    headers: { 'Authorization': `Bearer ${token}` }
+async function getSpreadsheetSheets(env: Env, token: string): Promise<Sheet[]> {
+  const metaUrl = `https://sheets.googleapis.com/v4/spreadsheets/${env.SPREADSHEET_ID}?fields=sheets.properties.title,sheets.properties.sheetId`;
+  const metaRes = await fetch(metaUrl, { headers: { Authorization: `Bearer ${token}` } });
+  const metaData: any = await metaRes.json();
+  return metaData.sheets || [];
+}
+
+async function ensureSheet(env: Env, token: string, title: string): Promise<number | null> {
+  const sheets = await getSpreadsheetSheets(env, token);
+  const existing = sheets.find((sheet) => sheet.properties.title === title);
+  if (existing) return existing.properties.sheetId;
+
+  const batchUrl = `https://sheets.googleapis.com/v4/spreadsheets/${env.SPREADSHEET_ID}:batchUpdate`;
+  const createRes = await fetch(batchUrl, {
+    method: "POST",
+    headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+    body: JSON.stringify({
+      requests: [{ addSheet: { properties: { title } } }],
+    }),
   });
+  const createData: any = await createRes.json();
+  return createData.replies?.[0]?.addSheet?.properties?.sheetId || null;
+}
+
+async function upsertDevice(env: Env, token: string, deviceId: string, wifiSsid: string, timestamp: string) {
+  await ensureSheet(env, token, "Devices");
+  const getUrl = `https://sheets.googleapis.com/v4/spreadsheets/${env.SPREADSHEET_ID}/values/Devices!A:A`;
+  const getRes = await fetch(getUrl, { headers: { Authorization: `Bearer ${token}` } });
   const getData: any = await getRes.json();
-  
-  if (getData.error && getData.error.code === 400) {
-    // If the Devices sheet doesn't exist yet, we just ignore or we can try to create it, 
-    // but the user is expected to create a 'Devices' tab manually.
-    console.warn("Devices sheet not found");
-    return;
-  }
-
   const rows = getData.values || [];
-  let rowIndex = -1;
-  for (let i = 0; i < rows.length; i++) {
-    if (rows[i] && rows[i][0] === deviceId) {
-      rowIndex = i + 1; // Sheets are 1-indexed
-      break;
-    }
-  }
-
+  const rowIndex = rows.findIndex((row: string[]) => row?.[0] === deviceId);
   const rowData = [deviceId, wifiSsid, timestamp];
 
   if (rowIndex === -1) {
-    // Append new device
     const appendUrl = `https://sheets.googleapis.com/v4/spreadsheets/${env.SPREADSHEET_ID}/values/Devices:append?valueInputOption=USER_ENTERED`;
     await fetch(appendUrl, {
-      method: 'POST',
-      headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
-      body: JSON.stringify({ values: [rowData] })
+      method: "POST",
+      headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+      body: JSON.stringify({ values: [rowData] }),
     });
-  } else {
-    // Update existing device
-    const updateUrl = `https://sheets.googleapis.com/v4/spreadsheets/${env.SPREADSHEET_ID}/values/Devices!A${rowIndex}:C${rowIndex}?valueInputOption=USER_ENTERED`;
-    await fetch(updateUrl, {
-      method: 'PUT',
-      headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
-      body: JSON.stringify({ values: [rowData] })
-    });
+    return;
   }
+
+  const updateUrl = `https://sheets.googleapis.com/v4/spreadsheets/${env.SPREADSHEET_ID}/values/Devices!A${rowIndex + 1}:C${rowIndex + 1}?valueInputOption=USER_ENTERED`;
+  await fetch(updateUrl, {
+    method: "PUT",
+    headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+    body: JSON.stringify({ values: [rowData] }),
+  });
+}
+
+async function deleteDevice(env: Env, token: string, deviceId: string) {
+  const sheetId = await ensureSheet(env, token, "Devices");
+  if (sheetId === null) throw new Error("Devices sheet not found");
+
+  const getUrl = `https://sheets.googleapis.com/v4/spreadsheets/${env.SPREADSHEET_ID}/values/Devices!A:A`;
+  const getRes = await fetch(getUrl, { headers: { Authorization: `Bearer ${token}` } });
+  const getData: any = await getRes.json();
+  const rows = getData.values || [];
+  const rowIndex = rows.findIndex((row: string[]) => row?.[0] === deviceId);
+
+  if (rowIndex === -1) return false;
+
+  const batchUrl = `https://sheets.googleapis.com/v4/spreadsheets/${env.SPREADSHEET_ID}:batchUpdate`;
+  await fetch(batchUrl, {
+    method: "POST",
+    headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+    body: JSON.stringify({
+      requests: [{
+        deleteDimension: {
+          range: {
+            sheetId,
+            dimension: "ROWS",
+            startIndex: rowIndex,
+            endIndex: rowIndex + 1,
+          },
+        },
+      }],
+    }),
+  });
+
+  return true;
+}
+
+async function queueDeviceCommand(
+  env: Env,
+  token: string,
+  deviceId: string,
+  command: string,
+  wifiSsid = "",
+  wifiPassword = "",
+) {
+  await ensureSheet(env, token, "Commands");
+  const appendUrl = `https://sheets.googleapis.com/v4/spreadsheets/${env.SPREADSHEET_ID}/values/Commands:append?valueInputOption=USER_ENTERED`;
+  await fetch(appendUrl, {
+    method: "POST",
+    headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+    body: JSON.stringify({
+      values: [[deviceId, command, wifiSsid, wifiPassword, new Date().toISOString(), ""]],
+    }),
+  });
+}
+
+async function getPendingCommand(env: Env, token: string, deviceId: string) {
+  await ensureSheet(env, token, "Commands");
+  const getUrl = `https://sheets.googleapis.com/v4/spreadsheets/${env.SPREADSHEET_ID}/values/Commands!A:F`;
+  const getRes = await fetch(getUrl, { headers: { Authorization: `Bearer ${token}` } });
+  const getData: any = await getRes.json();
+  const rows: string[][] = getData.values || [];
+  const rowIndex = rows.findIndex((row) => row?.[0] === deviceId && row?.[1] && row?.[5] !== "consumed");
+
+  if (rowIndex === -1) return null;
+
+  const row = rows[rowIndex];
+  const updateUrl = `https://sheets.googleapis.com/v4/spreadsheets/${env.SPREADSHEET_ID}/values/Commands!F${rowIndex + 1}?valueInputOption=USER_ENTERED`;
+  await fetch(updateUrl, {
+    method: "PUT",
+    headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+    body: JSON.stringify({ values: [["consumed"]] }),
+  });
+
+  return {
+    command: row[1],
+    wifi_ssid: row[2] || "",
+    wifi_password: row[3] || "",
+    created_at: row[4] || "",
+  };
 }
 
 export default {
-  async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
+  async fetch(request: Request, env: Env): Promise<Response> {
     const url = new URL(request.url);
 
-    // Handle CORS preflight
-    if (request.method === 'OPTIONS') {
+    if (request.method === "OPTIONS") {
       return new Response(null, {
         headers: {
-          'Access-Control-Allow-Origin': '*',
-          'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
-          'Access-Control-Allow-Headers': 'Content-Type',
-        }
+          "Access-Control-Allow-Origin": "*",
+          "Access-Control-Allow-Methods": "GET, POST, DELETE, OPTIONS",
+          "Access-Control-Allow-Headers": "Content-Type",
+        },
       });
     }
 
-    const corsHeaders = {
-      'Access-Control-Allow-Origin': '*',
-      'Content-Type': 'application/json'
-    };
-
-    // Endpoint 1: Firmware Version Check
-    if (request.method === 'GET' && url.pathname === '/api/firmware-version') {
-      return new Response(JSON.stringify({
+    if (request.method === "GET" && url.pathname === "/api/firmware-version") {
+      return jsonResponse({
         latest_version: "1.0.1",
-        bin_url: "https://example.com/firmware/v1.0.1.bin" 
-      }), { headers: corsHeaders });
+        bin_url: "https://example.com/firmware/v1.0.1.bin",
+      });
     }
 
-    // Endpoint 2: Telemetry Data
-    if (request.method === 'POST' && url.pathname === '/api/telemetry') {
+    if (request.method === "POST" && url.pathname === "/api/telemetry") {
       try {
         const body: any = await request.json();
         const timestamp = new Date().toISOString();
@@ -167,89 +253,118 @@ export default {
         const wifiSsid = body.wifi_ssid || "Unknown";
 
         const token = await getGoogleAuthToken(env.GOOGLE_CLIENT_EMAIL, env.GOOGLE_PRIVATE_KEY);
-        
-        // 1. Append row to Sheet1 (Telemetry)
         const appendUrl = `https://sheets.googleapis.com/v4/spreadsheets/${env.SPREADSHEET_ID}/values/Sheet1:append?valueInputOption=USER_ENTERED`;
-        
         const sheetsRes = await fetch(appendUrl, {
-          method: 'POST',
-          headers: {
-            'Authorization': `Bearer ${token}`,
-            'Content-Type': 'application/json'
-          },
+          method: "POST",
+          headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
           body: JSON.stringify({
-            values: [[timestamp, deviceId, sensorValue, status, wifiSsid]]
-          })
+            values: [[timestamp, deviceId, sensorValue, status, wifiSsid]],
+          }),
         });
-
         const sheetsData = await sheetsRes.json();
 
-        // 2. Upsert into Devices sheet
         await upsertDevice(env, token, deviceId, wifiSsid, timestamp);
 
-        return new Response(JSON.stringify({ success: true, message: "Telemetry received & saved.", data: sheetsData }), { headers: corsHeaders });
+        return jsonResponse({ success: true, message: "Telemetry received and saved.", data: sheetsData });
       } catch (e: any) {
-        return new Response(JSON.stringify({ error: e.message }), { status: 500, headers: corsHeaders });
+        return jsonResponse({ error: e.message }, { status: 500 });
       }
     }
 
-    // Endpoint 3: Fix Sheet Header
-    if (request.method === 'POST' && url.pathname === '/api/fix-sheet') {
+    if (request.method === "POST" && url.pathname === "/api/fix-sheet") {
       try {
         const token = await getGoogleAuthToken(env.GOOGLE_CLIENT_EMAIL, env.GOOGLE_PRIVATE_KEY);
-        
         const updateUrl = `https://sheets.googleapis.com/v4/spreadsheets/${env.SPREADSHEET_ID}/values/Sheet1!1:1?valueInputOption=USER_ENTERED`;
-        
-        const headerTemplate = ['Timestamp', 'Device_ID', 'Sensor_Value', 'Status', 'WiFi_SSID'];
-
-        const sheetsRes = await fetch(updateUrl, {
-          method: 'PUT', // Use PUT for updating a specific range
-          headers: {
-            'Authorization': `Bearer ${token}`,
-            'Content-Type': 'application/json'
-          },
-          body: JSON.stringify({
-            values: [headerTemplate]
-          })
+        await fetch(updateUrl, {
+          method: "PUT",
+          headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+          body: JSON.stringify({ values: [["Timestamp", "Device_ID", "Sensor_Value", "Status", "WiFi_SSID"]] }),
         });
 
-        const sheetsData = await sheetsRes.json();
+        await ensureSheet(env, token, "Devices");
+        await ensureSheet(env, token, "Commands");
 
-        return new Response(JSON.stringify({ success: true, message: "Sheet header fixed successfully from Cloudflare Worker!" }), { headers: corsHeaders });
+        return jsonResponse({ success: true, message: "Sheet headers fixed and device/command tabs validated." });
       } catch (e: any) {
-        return new Response(JSON.stringify({ error: e.message }), { status: 500, headers: corsHeaders });
+        return jsonResponse({ error: e.message }, { status: 500 });
       }
     }
 
-    // Endpoint 4: Get All Devices
-    if (request.method === 'GET' && url.pathname === '/api/devices') {
+    if (request.method === "GET" && url.pathname === "/api/devices") {
       try {
         const token = await getGoogleAuthToken(env.GOOGLE_CLIENT_EMAIL, env.GOOGLE_PRIVATE_KEY);
-        
+        await ensureSheet(env, token, "Devices");
+
         const getUrl = `https://sheets.googleapis.com/v4/spreadsheets/${env.SPREADSHEET_ID}/values/Devices!A:C`;
-        const getRes = await fetch(getUrl, {
-          headers: { 'Authorization': `Bearer ${token}` }
-        });
+        const getRes = await fetch(getUrl, { headers: { Authorization: `Bearer ${token}` } });
         const data: any = await getRes.json();
-        
+
         if (data.error) {
-          throw new Error('Error reading Devices sheet: ' + JSON.stringify(data.error));
+          throw new Error(`Error reading Devices sheet: ${JSON.stringify(data.error)}`);
         }
 
         const devices = (data.values || [])
-          .filter((row: any[]) => row[0] && row[0] !== 'Device_ID')
-          .map((row: any[]) => ({
-            device_id: row[0] || 'Unknown',
-            wifi_ssid: row[1] || 'Unknown',
-            last_online: row[2] || 'Unknown'
+          .filter((row: string[]) => row[0] && row[0] !== "Device_ID")
+          .map((row: string[]) => ({
+            device_id: row[0] || "Unknown",
+            wifi_ssid: row[1] || "Unknown",
+            last_online: row[2] || "Unknown",
           }));
 
-        return new Response(JSON.stringify({ success: true, devices }), { headers: corsHeaders });
+        return jsonResponse({ success: true, devices });
       } catch (e: any) {
-        return new Response(JSON.stringify({ error: e.message }), { status: 500, headers: corsHeaders });
+        return jsonResponse({ error: e.message }, { status: 500 });
       }
     }
 
-    return new Response("Not Found", { status: 404, headers: corsHeaders });
+    const commandRoute = url.pathname.match(/^\/api\/devices\/(.+)\/command$/);
+    if (commandRoute && request.method === "POST") {
+      try {
+        const token = await getGoogleAuthToken(env.GOOGLE_CLIENT_EMAIL, env.GOOGLE_PRIVATE_KEY);
+        const deviceId = decodeURIComponent(commandRoute[1]);
+        const body: any = await request.json();
+        const command = body.command;
+
+        if (command !== "SET_WIFI" && command !== "CLEAR_WIFI") {
+          return jsonResponse({ error: "Invalid command" }, { status: 400 });
+        }
+
+        if (command === "SET_WIFI" && !body.wifi_ssid) {
+          return jsonResponse({ error: "WiFi SSID is required" }, { status: 400 });
+        }
+
+        await queueDeviceCommand(env, token, deviceId, command, body.wifi_ssid || "", body.wifi_password || "");
+        return jsonResponse({ success: true, message: "Command queued. The board will apply it on its next command check." });
+      } catch (e: any) {
+        return jsonResponse({ error: e.message }, { status: 500 });
+      }
+    }
+
+    const deviceRoute = url.pathname.match(/^\/api\/devices\/(.+)$/);
+    if (deviceRoute && request.method === "DELETE") {
+      try {
+        const token = await getGoogleAuthToken(env.GOOGLE_CLIENT_EMAIL, env.GOOGLE_PRIVATE_KEY);
+        const deviceId = decodeURIComponent(deviceRoute[1]);
+        const deleted = await deleteDevice(env, token, deviceId);
+        return jsonResponse({ success: true, deleted });
+      } catch (e: any) {
+        return jsonResponse({ error: e.message }, { status: 500 });
+      }
+    }
+
+    if (request.method === "GET" && url.pathname === "/api/commands") {
+      try {
+        const deviceId = url.searchParams.get("device_id");
+        if (!deviceId) return jsonResponse({ error: "device_id is required" }, { status: 400 });
+
+        const token = await getGoogleAuthToken(env.GOOGLE_CLIENT_EMAIL, env.GOOGLE_PRIVATE_KEY);
+        const command = await getPendingCommand(env, token, deviceId);
+        return jsonResponse({ success: true, command });
+      } catch (e: any) {
+        return jsonResponse({ error: e.message }, { status: 500 });
+      }
+    }
+
+    return new Response("Not Found", { status: 404, headers: jsonHeaders });
   },
 };
