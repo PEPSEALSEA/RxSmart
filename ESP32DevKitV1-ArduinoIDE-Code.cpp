@@ -236,7 +236,7 @@ void setupAPMode() {
   WiFi.setSleep(false);
   WiFi.mode(WIFI_AP);
   WiFi.softAPConfig(apIP, apIP, IPAddress(255, 255, 255, 0));
-  WiFi.softAP("RxSmart-Setup"); // ชื่อ WiFi สำหรับตั้งค่า
+  WiFi.softAP("RxSmart-Setup-open-setup.local"); // setup WiFi name includes fallback URL
 
   // ตั้งค่า DNS ให้ wildcard ทุก domain ชี้มาที่ IP ของบอร์ด
   dnsServer.start(DNS_PORT, "*", apIP);
@@ -244,6 +244,8 @@ void setupAPMode() {
   // Web Server Routes
   server.on("/", HTTP_GET, handleRoot);
   server.on("/save", HTTP_POST, handleSave);
+  server.on("/setup", HTTP_GET, sendCaptivePortal);
+  server.on("/wifi", HTTP_GET, sendCaptivePortal);
 
   // --- Captive Portal Detection Endpoints ---
   server.on("/hotspot-detect.html", HTTP_GET, sendCaptivePortal);      // iOS / macOS
@@ -262,7 +264,7 @@ void setupAPMode() {
   server.onNotFound(sendCaptivePortal);
 
   server.begin();
-  Serial.println("AP Mode started. Connect to 'RxSmart-Setup' WiFi – popup will appear automatically.");
+  Serial.println("AP Mode started. Connect to 'RxSmart-Setup-open-setup.local'. If no popup appears, open http://setup.local or http://192.168.4.1");
 }
 
 void handleRoot() {
@@ -517,3 +519,4 @@ void checkDeviceCommand() {
     ESP.restart();
   }
 }
+
