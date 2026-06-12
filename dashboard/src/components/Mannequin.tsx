@@ -4,7 +4,7 @@ import { useFrame } from "@react-three/fiber";
 import { type RefObject, useRef } from "react";
 import { Group } from "three";
 import { SEGMENT_LENGTHS } from "@/lib/biomechanics";
-import { POSE_KEYS, PoseKey } from "@/lib/pose";
+import { PoseKey, UPPER_KEYS, shortestPlaneDelta } from "@/lib/pose";
 import { SensorFrame } from "@/lib/pose-physics";
 
 const DEG = Math.PI / 180;
@@ -15,8 +15,8 @@ const HEAD = "#bae6fd";
 const TORSO = "#0ea5e9";
 const ACTIVE = "#22d3ee";
 
-const VISUAL_SPRING = 18;
-const VISUAL_DAMP = 9;
+const VISUAL_SPRING = 16;
+const VISUAL_DAMP = 8;
 
 function Limb({ length, radius, color = BODY }: { length: number; radius: number; color?: string }) {
   return (
@@ -41,6 +41,9 @@ interface MannequinProps {
   activeJoints?: PoseKey[];
 }
 
+type VisualUpper = { elevation: number; plane: number };
+type VisualLower = { bend: number };
+
 export function Mannequin({ frame, activeJoints = [] }: MannequinProps) {
   const rootRef = useRef<Group>(null);
   const lShoulderRef = useRef<Group>(null);
@@ -52,40 +55,72 @@ export function Mannequin({ frame, activeJoints = [] }: MannequinProps) {
   const rHipRef = useRef<Group>(null);
   const rKneeRef = useRef<Group>(null);
 
-  const angles = useRef<Record<PoseKey, number>>(
-    Object.fromEntries(POSE_KEYS.map((k) => [k, frame[k].angle])) as Record<PoseKey, number>,
-  );
-  const velocities = useRef<Record<PoseKey, number>>(
-    Object.fromEntries(POSE_KEYS.map((k) => [k, 0])) as Record<PoseKey, number>,
-  );
+  const visualUpper = useRef<Record<string, VisualUpper>>({
+    l_arm_upper: { elevation: 8, plane: 0 },
+    r_arm_upper: { elevation: 8, plane: 0 },
+    l_leg_upper: { elevation: 0, plane: 0 },
+    r_leg_upper: { elevation: 0, plane: 0 },
+  });
+  const visualLower = useRef<Record<string, VisualLower>>({
+    l_arm_lower: { bend: 5 },
+    r_arm_lower: { bend: 5 },
+    l_leg_lower: { bend: 0 },
+    r_leg_lower: { bend: 0 },
+  });
+  const velUpper = useRef<Record<string, { e: number; p: number }>>({});
+  const velLower = useRef<Record<string, number>>({});
 
-  const jointRefs: Record<PoseKey, RefObject<Group | null>> = {
+  const shoulderRefs: Record<string, RefObject<Group | null>> = {
     l_arm_upper: lShoulderRef,
-    l_arm_lower: lElbowRef,
     r_arm_upper: rShoulderRef,
-    r_arm_lower: rElbowRef,
     l_leg_upper: lHipRef,
-    l_leg_lower: lKneeRef,
     r_leg_upper: rHipRef,
+  };
+  const elbowRefs: Record<string, RefObject<Group | null>> = {
+    l_arm_lower: lElbowRef,
+    r_arm_lower: rElbowRef,
+    l_leg_lower: lKneeRef,
     r_leg_lower: rKneeRef,
   };
 
   useFrame((_, dt) => {
-    const cappedDt = Math.min(dt, 0.05);
+    const capped = Math.min(dt, 0.05);
 
-    for (const key of POSE_KEYS) {
-      const target = frame[key].angle;
-      const current = angles.current[key];
-      const vel = velocities.current[key];
-      const accel = (target - current) * VISUAL_SPRING - vel * VISUAL_DAMP;
-      const newVel = vel + accel * cappedDt;
-      velocities.current[key] = newVel;
-      angles.current[key] = current + newVel * cappedDt;
+    for (const key of UPPER_KEYS) {
+      const target = frame[key];
+      const vis = visualUpper.current[key];
+      const vel = velUpper.current[key] ?? { e: 0, p: 0 };
 
-      const ref = jointRefs[key].current;
+      const accelE = (target.elevation - vis.elevation) * VISUAL_SPRING - vel.e * VISUAL_DAMP;
+      const planeDiff = shortestPlaneDelta(vis.plane, target.plane);
+      const accelP = planeDiff * VISUAL_SPRING - vel.p * VISUAL_DAMP;
+      vel.e += accelE * capped;
+      vel.p += accelP * capped;
+      vis.elevation += vel.e * capped;
+      vis.plane += vel.p * capped;
+      velUpper.current[key] = vel;
+
+      const ref = shoulderRefs[key].current;
       if (ref) {
-        ref.rotation.x = -angles.current[key] * DEG;
+        const isRight = key.startsWith("r_");
+        const isLeg = key.includes("leg");
+        ref.rotation.order = "YXZ";
+        ref.rotation.y = (isRight ? -1 : 1) * vis.plane * DEG;
+        ref.rotation.x = -(isLeg ? vis.elevation * 0.95 : vis.elevation) * DEG;
+        ref.rotation.z = 0;
       }
+    }
+
+    for (const [key, ref] of Object.entries(elbowRefs)) {
+      const target = frame[key as keyof SensorFrame];
+      if (!("bend" in target)) continue;
+      const vis = visualLower.current[key];
+      const vel = velLower.current[key] ?? 0;
+      const accel = (target.bend - vis.bend) * VISUAL_SPRING - vel * VISUAL_DAMP;
+      const newVel = vel + accel * capped;
+      vis.bend += newVel * capped;
+      velLower.current[key] = newVel;
+      if (ref.current) ref.current.rotation.x = -vis.bend * DEG;
     }
 
     if (rootRef.current) {
@@ -105,18 +140,16 @@ export function Mannequin({ frame, activeJoints = [] }: MannequinProps) {
         <boxGeometry args={[0.36, SEGMENT_LENGTHS.torsoHeight, 0.18]} />
         <meshStandardMaterial color={TORSO} roughness={0.38} metalness={0.08} />
       </mesh>
-
       <mesh position={[0, 1.58, 0]} castShadow>
         <sphereGeometry args={[0.13, 28, 28]} />
         <meshStandardMaterial color={HEAD} roughness={0.32} metalness={0.05} />
       </mesh>
-
       <mesh position={[0, 1.02, 0]} castShadow>
         <boxGeometry args={[0.3, 0.12, 0.14]} />
         <meshStandardMaterial color={TORSO} roughness={0.38} metalness={0.08} />
       </mesh>
 
-      <group position={[-SEGMENT_LENGTHS.shoulderWidth, 1.48, 0]} rotation={[0, 0, 8 * DEG]}>
+      <group position={[-SEGMENT_LENGTHS.shoulderWidth, 1.48, 0]}>
         <JointSphere radius={0.052} color={isActive("l_arm_upper") ? ACTIVE : JOINT} />
         <group ref={lShoulderRef}>
           <Limb length={upperArm} radius={0.044} color={isActive("l_arm_upper") ? "#67e8f9" : BODY} />
@@ -130,7 +163,7 @@ export function Mannequin({ frame, activeJoints = [] }: MannequinProps) {
         </group>
       </group>
 
-      <group position={[SEGMENT_LENGTHS.shoulderWidth, 1.48, 0]} rotation={[0, 0, -8 * DEG]}>
+      <group position={[SEGMENT_LENGTHS.shoulderWidth, 1.48, 0]}>
         <JointSphere radius={0.052} color={isActive("r_arm_upper") ? ACTIVE : JOINT} />
         <group ref={rShoulderRef}>
           <Limb length={upperArm} radius={0.044} color={isActive("r_arm_upper") ? "#67e8f9" : BODY} />
@@ -166,7 +199,7 @@ export function Mannequin({ frame, activeJoints = [] }: MannequinProps) {
             <JointSphere radius={0.046} color={isActive("r_leg_lower") ? ACTIVE : JOINT} />
             <Limb length={shank} radius={0.048} color={isActive("r_leg_lower") ? "#67e8f9" : BODY} />
             <group position={[0, -shank, 0]}>
-              <JointSphere radius={0.04} color={HEAD} />
+              <JointSphere radius={0.034} color={HEAD} />
             </group>
           </group>
         </group>

@@ -149,7 +149,7 @@ export default function UserHome() {
             <span className="text-sky-500"> แบบ Physics</span>
           </h1>
           <p className="mx-auto mt-3 max-w-2xl text-sm leading-relaxed text-slate-500 sm:text-base">
-            จำลอง MPU6050 × 8 ผ่าน TCA9548A — มุม (°) ความเร็ว (°/s) ข้อจำกัดข้อต่อ และโปรแกรม rehab จริง
+            ข้อต่อบนมี 2 แกน (ยก + หมุนรอบตัว) รองรับท่าว่ายน้ำ — ข้อต่อล่างงอ-เหยียด
           </p>
         </header>
 
