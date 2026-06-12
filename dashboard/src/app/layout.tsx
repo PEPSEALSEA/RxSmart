@@ -13,8 +13,8 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "RxSmart",
-  description: "ระบบดูแลอุปกรณ์ IoT ของคุณ",
+  title: "RxSmart — กายภาพบำบัด",
+  description: "ดูท่าทางกายภาพบำบัดแบบเรียลไทม์จาก sensor 8 จุด",
 };
 
 export default function RootLayout({
