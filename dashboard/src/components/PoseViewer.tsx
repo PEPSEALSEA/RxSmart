@@ -2,14 +2,16 @@
 
 import { Canvas } from "@react-three/fiber";
 import { ContactShadows, Grid, OrbitControls } from "@react-three/drei";
-import { PoseAngles } from "@/lib/pose";
+import { PoseKey } from "@/lib/pose";
+import { SensorFrame } from "@/lib/pose-physics";
 import { Mannequin } from "@/components/Mannequin";
 
 interface PoseViewerProps {
-  pose: PoseAngles;
+  frame: SensorFrame;
+  activeJoints?: PoseKey[];
 }
 
-export default function PoseViewer({ pose }: PoseViewerProps) {
+export default function PoseViewer({ frame, activeJoints = [] }: PoseViewerProps) {
   return (
     <div className="h-full min-h-[340px] w-full overflow-hidden rounded-2xl border border-sky-100 bg-gradient-to-b from-sky-100/80 to-white">
       <Canvas
@@ -27,7 +29,7 @@ export default function PoseViewer({ pose }: PoseViewerProps) {
           shadow-mapSize={[1024, 1024]}
         />
         <directionalLight position={[-4, 2, -2]} intensity={0.35} color="#bae6fd" />
-        <Mannequin pose={pose} />
+        <Mannequin frame={frame} activeJoints={activeJoints} />
         <Grid
           position={[0, 0, 0]}
           args={[6, 6]}
