@@ -1,39 +1,104 @@
 "use client";
 
 import { useFrame } from "@react-three/fiber";
-import { type RefObject, useRef } from "react";
-import { Group } from "three";
+import { RoundedBox } from "@react-three/drei";
+import { type RefObject, useMemo, useRef } from "react";
+import { Group, MeshPhysicalMaterial, Vector3 } from "three";
 import { SEGMENT_LENGTHS } from "@/lib/biomechanics";
-import { PoseKey, UPPER_KEYS, shortestPlaneDelta } from "@/lib/pose";
+import { NEUTRAL_POSE, PoseKey, UPPER_KEYS, shortestPlaneDelta, upperLimbDirection } from "@/lib/pose";
 import { SensorFrame } from "@/lib/pose-physics";
 
 const DEG = Math.PI / 180;
+const BIND_AXIS = new Vector3(0, -1, 0);
+const FLIP_AXIS = new Vector3(1, 0, 0);
+const _targetDir = new Vector3();
 
-const BODY = "#7dd3fc";
-const JOINT = "#38bdf8";
-const HEAD = "#bae6fd";
-const TORSO = "#0ea5e9";
+const SKIN = "#e8f4fc";
+const SKIN_SHADOW = "#c5e4f7";
+const ACCENT = "#38bdf8";
 const ACTIVE = "#22d3ee";
 
 const VISUAL_SPRING = 16;
 const VISUAL_DAMP = 8;
 
-function Limb({ length, radius, color = BODY }: { length: number; radius: number; color?: string }) {
+function useBodyMaterial(color: string, active: boolean) {
+  return useMemo(
+    () =>
+      new MeshPhysicalMaterial({
+        color: active ? "#a5f3fc" : color,
+        roughness: 0.48,
+        metalness: 0.02,
+        clearcoat: 0.35,
+        clearcoatRoughness: 0.22,
+        emissive: active ? ACTIVE : "#000000",
+        emissiveIntensity: active ? 0.22 : 0,
+      }),
+    [color, active],
+  );
+}
+
+function TaperedLimb({
+  length,
+  radiusTop,
+  radiusBottom,
+  color,
+  active,
+}: {
+  length: number;
+  radiusTop: number;
+  radiusBottom: number;
+  color: string;
+  active: boolean;
+}) {
+  const material = useBodyMaterial(color, active);
   return (
-    <mesh position={[0, -length / 2, 0]} castShadow>
-      <capsuleGeometry args={[radius, Math.max(length - radius * 2, 0.05), 8, 16]} />
-      <meshStandardMaterial color={color} roughness={0.42} metalness={0.06} />
+    <mesh position={[0, -length / 2, 0]} castShadow receiveShadow material={material}>
+      <cylinderGeometry args={[radiusTop, radiusBottom, length, 20, 1]} />
     </mesh>
   );
 }
 
-function JointSphere({ radius = 0.04, color = JOINT }: { radius?: number; color?: string }) {
+function Joint({ radius, active }: { radius: number; active: boolean }) {
+  const material = useBodyMaterial(SKIN_SHADOW, active);
   return (
-    <mesh castShadow>
-      <sphereGeometry args={[radius, 20, 20]} />
-      <meshStandardMaterial color={color} roughness={0.32} metalness={0.12} />
+    <mesh castShadow material={material}>
+      <sphereGeometry args={[radius, 16, 16]} />
     </mesh>
   );
+}
+
+function Hand({ active }: { active?: boolean }) {
+  const material = useBodyMaterial(SKIN, !!active);
+  return (
+    <mesh position={[0, -0.028, 0.01]} rotation={[0.15, 0, 0]} castShadow material={material}>
+      <boxGeometry args={[0.052, 0.06, 0.028]} />
+    </mesh>
+  );
+}
+
+function Foot({ active }: { active?: boolean }) {
+  const material = useBodyMaterial(SKIN_SHADOW, !!active);
+  return (
+    <mesh position={[0, -0.02, 0.04]} castShadow material={material}>
+      <boxGeometry args={[0.07, 0.04, 0.14]} />
+    </mesh>
+  );
+}
+
+function applyUpperOrientation(group: Group, isRight: boolean, elevation: number, plane: number) {
+  const [x, y, z] = upperLimbDirection(isRight, elevation, plane);
+  _targetDir.set(x, y, z);
+  const dot = BIND_AXIS.dot(_targetDir);
+
+  if (dot > 0.9999) {
+    group.quaternion.identity();
+    return;
+  }
+  if (dot < -0.9999) {
+    group.quaternion.setFromAxisAngle(FLIP_AXIS, Math.PI);
+    return;
+  }
+  group.quaternion.setFromUnitVectors(BIND_AXIS, _targetDir);
 }
 
 interface MannequinProps {
@@ -55,17 +120,21 @@ export function Mannequin({ frame, activeJoints = [] }: MannequinProps) {
   const rHipRef = useRef<Group>(null);
   const rKneeRef = useRef<Group>(null);
 
+  const torsoMaterial = useBodyMaterial(ACCENT, false);
+  const headMaterial = useBodyMaterial(SKIN, false);
+  const pelvisMaterial = useBodyMaterial(SKIN_SHADOW, false);
+
   const visualUpper = useRef<Record<string, VisualUpper>>({
-    l_arm_upper: { elevation: 8, plane: 0 },
-    r_arm_upper: { elevation: 8, plane: 0 },
-    l_leg_upper: { elevation: 0, plane: 0 },
-    r_leg_upper: { elevation: 0, plane: 0 },
+    l_arm_upper: { ...NEUTRAL_POSE.l_arm_upper },
+    r_arm_upper: { ...NEUTRAL_POSE.r_arm_upper },
+    l_leg_upper: { ...NEUTRAL_POSE.l_leg_upper },
+    r_leg_upper: { ...NEUTRAL_POSE.r_leg_upper },
   });
   const visualLower = useRef<Record<string, VisualLower>>({
-    l_arm_lower: { bend: 5 },
-    r_arm_lower: { bend: 5 },
-    l_leg_lower: { bend: 0 },
-    r_leg_lower: { bend: 0 },
+    l_arm_lower: { ...NEUTRAL_POSE.l_arm_lower },
+    r_arm_lower: { ...NEUTRAL_POSE.r_arm_lower },
+    l_leg_lower: { ...NEUTRAL_POSE.l_leg_lower },
+    r_leg_lower: { ...NEUTRAL_POSE.r_leg_lower },
   });
   const velUpper = useRef<Record<string, { e: number; p: number }>>({});
   const velLower = useRef<Record<string, number>>({});
@@ -102,12 +171,7 @@ export function Mannequin({ frame, activeJoints = [] }: MannequinProps) {
 
       const ref = shoulderRefs[key].current;
       if (ref) {
-        const isRight = key.startsWith("r_");
-        const isLeg = key.includes("leg");
-        ref.rotation.order = "YXZ";
-        ref.rotation.y = (isRight ? -1 : 1) * vis.plane * DEG;
-        ref.rotation.x = -(isLeg ? vis.elevation * 0.95 : vis.elevation) * DEG;
-        ref.rotation.z = 0;
+        applyUpperOrientation(ref, key.startsWith("r_"), vis.elevation, vis.plane);
       }
     }
 
@@ -124,7 +188,7 @@ export function Mannequin({ frame, activeJoints = [] }: MannequinProps) {
     }
 
     if (rootRef.current) {
-      rootRef.current.position.y = 0.02 + Math.sin(performance.now() * 0.0012) * 0.004;
+      rootRef.current.position.y = 0.02 + Math.sin(performance.now() * 0.0012) * 0.003;
     }
   });
 
@@ -136,70 +200,131 @@ export function Mannequin({ frame, activeJoints = [] }: MannequinProps) {
 
   return (
     <group ref={rootRef} position={[0, 0.02, 0]}>
-      <mesh position={[0, 1.22, 0]} castShadow>
-        <boxGeometry args={[0.36, SEGMENT_LENGTHS.torsoHeight, 0.18]} />
-        <meshStandardMaterial color={TORSO} roughness={0.38} metalness={0.08} />
+      <RoundedBox
+        args={[0.34, SEGMENT_LENGTHS.torsoHeight, 0.17]}
+        radius={0.055}
+        smoothness={6}
+        position={[0, 1.22, 0]}
+        castShadow
+        receiveShadow
+        material={torsoMaterial}
+      />
+      <RoundedBox
+        args={[0.28, 0.11, 0.15]}
+        radius={0.04}
+        smoothness={5}
+        position={[0, 1.02, 0]}
+        castShadow
+        receiveShadow
+        material={pelvisMaterial}
+      />
+
+      <mesh position={[0, 1.44, 0]} castShadow material={headMaterial}>
+        <cylinderGeometry args={[0.048, 0.052, 0.1, 16]} />
       </mesh>
-      <mesh position={[0, 1.58, 0]} castShadow>
-        <sphereGeometry args={[0.13, 28, 28]} />
-        <meshStandardMaterial color={HEAD} roughness={0.32} metalness={0.05} />
-      </mesh>
-      <mesh position={[0, 1.02, 0]} castShadow>
-        <boxGeometry args={[0.3, 0.12, 0.14]} />
-        <meshStandardMaterial color={TORSO} roughness={0.38} metalness={0.08} />
+      <mesh position={[0, 1.6, 0.01]} scale={[0.92, 1, 0.88]} castShadow receiveShadow material={headMaterial}>
+        <sphereGeometry args={[0.115, 32, 32]} />
       </mesh>
 
-      <group position={[-SEGMENT_LENGTHS.shoulderWidth, 1.48, 0]}>
-        <JointSphere radius={0.052} color={isActive("l_arm_upper") ? ACTIVE : JOINT} />
+      <group position={[-SEGMENT_LENGTHS.shoulderWidth, 1.48, 0.04]}>
+        <Joint radius={0.038} active={isActive("l_arm_upper")} />
         <group ref={lShoulderRef}>
-          <Limb length={upperArm} radius={0.044} color={isActive("l_arm_upper") ? "#67e8f9" : BODY} />
+          <TaperedLimb
+            length={upperArm}
+            radiusTop={0.048}
+            radiusBottom={0.04}
+            color={SKIN}
+            active={isActive("l_arm_upper")}
+          />
           <group ref={lElbowRef} position={[0, -upperArm, 0]}>
-            <JointSphere radius={0.042} color={isActive("l_arm_lower") ? ACTIVE : JOINT} />
-            <Limb length={forearm} radius={0.037} color={isActive("l_arm_lower") ? "#67e8f9" : BODY} />
+            <Joint radius={0.034} active={isActive("l_arm_lower")} />
+            <TaperedLimb
+              length={forearm}
+              radiusTop={0.04}
+              radiusBottom={0.032}
+              color={SKIN}
+              active={isActive("l_arm_lower")}
+            />
             <group position={[0, -forearm, 0]}>
-              <JointSphere radius={0.034} color={HEAD} />
+              <Hand active={isActive("l_arm_lower")} />
             </group>
           </group>
         </group>
       </group>
 
-      <group position={[SEGMENT_LENGTHS.shoulderWidth, 1.48, 0]}>
-        <JointSphere radius={0.052} color={isActive("r_arm_upper") ? ACTIVE : JOINT} />
+      <group position={[SEGMENT_LENGTHS.shoulderWidth, 1.48, 0.04]}>
+        <Joint radius={0.038} active={isActive("r_arm_upper")} />
         <group ref={rShoulderRef}>
-          <Limb length={upperArm} radius={0.044} color={isActive("r_arm_upper") ? "#67e8f9" : BODY} />
+          <TaperedLimb
+            length={upperArm}
+            radiusTop={0.048}
+            radiusBottom={0.04}
+            color={SKIN}
+            active={isActive("r_arm_upper")}
+          />
           <group ref={rElbowRef} position={[0, -upperArm, 0]}>
-            <JointSphere radius={0.042} color={isActive("r_arm_lower") ? ACTIVE : JOINT} />
-            <Limb length={forearm} radius={0.037} color={isActive("r_arm_lower") ? "#67e8f9" : BODY} />
+            <Joint radius={0.034} active={isActive("r_arm_lower")} />
+            <TaperedLimb
+              length={forearm}
+              radiusTop={0.04}
+              radiusBottom={0.032}
+              color={SKIN}
+              active={isActive("r_arm_lower")}
+            />
             <group position={[0, -forearm, 0]}>
-              <JointSphere radius={0.034} color={HEAD} />
+              <Hand active={isActive("r_arm_lower")} />
             </group>
           </group>
         </group>
       </group>
 
       <group position={[-SEGMENT_LENGTHS.hipWidth, 0.98, 0]}>
-        <JointSphere radius={0.052} color={isActive("l_leg_upper") ? ACTIVE : JOINT} />
+        <Joint radius={0.042} active={isActive("l_leg_upper")} />
         <group ref={lHipRef}>
-          <Limb length={thigh} radius={0.054} color={isActive("l_leg_upper") ? "#67e8f9" : BODY} />
+          <TaperedLimb
+            length={thigh}
+            radiusTop={0.058}
+            radiusBottom={0.05}
+            color={SKIN}
+            active={isActive("l_leg_upper")}
+          />
           <group ref={lKneeRef} position={[0, -thigh, 0]}>
-            <JointSphere radius={0.046} color={isActive("l_leg_lower") ? ACTIVE : JOINT} />
-            <Limb length={shank} radius={0.048} color={isActive("l_leg_lower") ? "#67e8f9" : BODY} />
+            <Joint radius={0.038} active={isActive("l_leg_lower")} />
+            <TaperedLimb
+              length={shank}
+              radiusTop={0.05}
+              radiusBottom={0.038}
+              color={SKIN_SHADOW}
+              active={isActive("l_leg_lower")}
+            />
             <group position={[0, -shank, 0]}>
-              <JointSphere radius={0.04} color={HEAD} />
+              <Foot active={isActive("l_leg_lower")} />
             </group>
           </group>
         </group>
       </group>
 
       <group position={[SEGMENT_LENGTHS.hipWidth, 0.98, 0]}>
-        <JointSphere radius={0.052} color={isActive("r_leg_upper") ? ACTIVE : JOINT} />
+        <Joint radius={0.042} active={isActive("r_leg_upper")} />
         <group ref={rHipRef}>
-          <Limb length={thigh} radius={0.054} color={isActive("r_leg_upper") ? "#67e8f9" : BODY} />
+          <TaperedLimb
+            length={thigh}
+            radiusTop={0.058}
+            radiusBottom={0.05}
+            color={SKIN}
+            active={isActive("r_leg_upper")}
+          />
           <group ref={rKneeRef} position={[0, -thigh, 0]}>
-            <JointSphere radius={0.046} color={isActive("r_leg_lower") ? ACTIVE : JOINT} />
-            <Limb length={shank} radius={0.048} color={isActive("r_leg_lower") ? "#67e8f9" : BODY} />
+            <Joint radius={0.038} active={isActive("r_leg_lower")} />
+            <TaperedLimb
+              length={shank}
+              radiusTop={0.05}
+              radiusBottom={0.038}
+              color={SKIN_SHADOW}
+              active={isActive("r_leg_lower")}
+            />
             <group position={[0, -shank, 0]}>
-              <JointSphere radius={0.034} color={HEAD} />
+              <Foot active={isActive("r_leg_lower")} />
             </group>
           </group>
         </group>

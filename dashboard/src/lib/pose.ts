@@ -72,16 +72,32 @@ export function isLowerKey(key: PoseKey): key is LowerPoseKey {
   return (LOWER_KEYS as string[]).includes(key);
 }
 
+/** แขนห้อยตามธรรมชาติ — เอียงเล็กน้อยไปข้างหน้า ไม่ชิดข้างลำตัว */
+export const ARM_REST: UpperJointAngles = { elevation: 12, plane: 88 };
+
 export const NEUTRAL_POSE: ResolvedPose = {
-  l_arm_upper: { elevation: 8, plane: 0 },
-  l_arm_lower: { bend: 5 },
-  r_arm_upper: { elevation: 8, plane: 0 },
-  r_arm_lower: { bend: 5 },
+  l_arm_upper: { ...ARM_REST },
+  l_arm_lower: { bend: 8 },
+  r_arm_upper: { ...ARM_REST },
+  r_arm_lower: { bend: 8 },
   l_leg_upper: { elevation: 0, plane: 0 },
   l_leg_lower: { bend: 0 },
   r_leg_upper: { elevation: 0, plane: 0 },
   r_leg_lower: { bend: 0 },
 };
+
+/**
+ * แปลง (elevation, plane) เป็นทิศทางของ segment ในโลก (Y-up)
+ * elevation 0°=ลง, 90°=ขนานพื้น, 180°=ชี้ขึ้น
+ * plane 0°=ข้างตัว, 90°=หน้า, 180°=ข้ามตัว, 270°=หลัง
+ */
+export function upperLimbDirection(isRight: boolean, elevation: number, plane: number): [number, number, number] {
+  const side = isRight ? 1 : -1;
+  const e = (elevation * Math.PI) / 180;
+  const p = (plane * Math.PI) / 180;
+  const sinE = Math.sin(e);
+  return [side * sinE * Math.cos(p), -Math.cos(e), sinE * Math.sin(p)];
+}
 
 export function shortestPlaneDelta(from: number, to: number): number {
   let diff = ((to - from) % 360 + 360) % 360;

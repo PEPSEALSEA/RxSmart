@@ -1,4 +1,5 @@
 import {
+  ARM_REST,
   NEUTRAL_POSE,
   PoseKey,
   PoseTargets,
@@ -57,7 +58,7 @@ export const REHAB_EXERCISES: RehabExercise[] = [
       {
         id: "lower",
         label: "ลดลง",
-        targets: { l_arm_upper: { elevation: 8, plane: 0 } },
+        targets: { l_arm_upper: { ...ARM_REST } },
         holdSeconds: 0,
         moveSpeed: 25,
         activeJoints: ["l_arm_upper"],
@@ -92,7 +93,7 @@ export const REHAB_EXERCISES: RehabExercise[] = [
       {
         id: "lower",
         label: "ลดลง",
-        targets: { l_arm_upper: { elevation: 8, plane: 0 } },
+        targets: { l_arm_upper: { ...ARM_REST } },
         holdSeconds: 0,
         moveSpeed: 22,
         activeJoints: ["l_arm_upper"],
@@ -143,7 +144,7 @@ export const REHAB_EXERCISES: RehabExercise[] = [
       {
         id: "return",
         label: "กลับท่าเริ่ม",
-        targets: { l_arm_upper: { elevation: 8, plane: 0 }, l_arm_lower: { bend: 5 } },
+        targets: { l_arm_upper: { ...ARM_REST }, l_arm_lower: { bend: 8 } },
         holdSeconds: 0,
         moveSpeed: 30,
         activeJoints: ["l_arm_upper", "l_arm_lower"],
@@ -194,7 +195,7 @@ export const REHAB_EXERCISES: RehabExercise[] = [
       {
         id: "return",
         label: "กลับท่าเริ่ม",
-        targets: { r_arm_upper: { elevation: 8, plane: 0 }, r_arm_lower: { bend: 5 } },
+        targets: { r_arm_upper: { ...ARM_REST }, r_arm_lower: { bend: 8 } },
         holdSeconds: 0,
         moveSpeed: 30,
         activeJoints: ["r_arm_upper", "r_arm_lower"],
@@ -229,7 +230,7 @@ export const REHAB_EXERCISES: RehabExercise[] = [
       {
         id: "extend",
         label: "เหยียด",
-        targets: { l_arm_lower: { bend: 5 } },
+        targets: { l_arm_lower: { bend: 8 } },
         holdSeconds: 0,
         moveSpeed: 28,
         activeJoints: ["l_arm_lower"],
@@ -387,7 +388,7 @@ export const REHAB_EXERCISES: RehabExercise[] = [
       {
         id: "lower",
         label: "ลดลง",
-        targets: { l_arm_upper: { elevation: 8, plane: 0 }, r_arm_upper: { elevation: 8, plane: 0 } },
+        targets: { l_arm_upper: { ...ARM_REST }, r_arm_upper: { ...ARM_REST } },
         holdSeconds: 0,
         moveSpeed: 22,
         activeJoints: ["l_arm_upper", "r_arm_upper"],

@@ -8,6 +8,7 @@ import {
 import { ExercisePhase, RehabExercise } from "@/lib/rehab-exercises";
 import {
   LOWER_KEYS,
+  NEUTRAL_POSE,
   POSE_KEYS,
   PoseKey,
   ResolvedPose,
@@ -65,15 +66,17 @@ const SPRING_STIFFNESS = 52;
 const SPRING_DAMPING = 15;
 
 export function createNeutralFrame(): SensorFrame {
+  const { l_arm_upper, r_arm_upper, l_arm_lower, r_arm_lower, l_leg_upper, r_leg_upper, l_leg_lower, r_leg_lower } =
+    NEUTRAL_POSE;
   return {
-    l_arm_upper: { elevation: 8, plane: 0, vElevation: 0, vPlane: 0 },
-    r_arm_upper: { elevation: 8, plane: 0, vElevation: 0, vPlane: 0 },
-    l_leg_upper: { elevation: 0, plane: 0, vElevation: 0, vPlane: 0 },
-    r_leg_upper: { elevation: 0, plane: 0, vElevation: 0, vPlane: 0 },
-    l_arm_lower: { bend: 5, vBend: 0 },
-    r_arm_lower: { bend: 5, vBend: 0 },
-    l_leg_lower: { bend: 0, vBend: 0 },
-    r_leg_lower: { bend: 0, vBend: 0 },
+    l_arm_upper: { ...l_arm_upper, vElevation: 0, vPlane: 0 },
+    r_arm_upper: { ...r_arm_upper, vElevation: 0, vPlane: 0 },
+    l_leg_upper: { ...l_leg_upper, vElevation: 0, vPlane: 0 },
+    r_leg_upper: { ...r_leg_upper, vElevation: 0, vPlane: 0 },
+    l_arm_lower: { ...l_arm_lower, vBend: 0 },
+    r_arm_lower: { ...r_arm_lower, vBend: 0 },
+    l_leg_lower: { ...l_leg_lower, vBend: 0 },
+    r_leg_lower: { ...r_leg_lower, vBend: 0 },
   };
 }
 
