@@ -8,6 +8,11 @@ export interface Env {
 
 type Sheet = { properties: { title: string; sheetId: number } };
 
+let sheetsWriteBackoffMs = 0;
+let sheetsWriteBlockedUntilMs = 0;
+const MIN_SHEETS_WRITE_BACKOFF_MS = 15_000;
+const MAX_SHEETS_WRITE_BACKOFF_MS = 15 * 60_000;
+
 const sheetHeaders: Record<string, string[]> = {
   Sheet1: ["Timestamp", "Device_ID", "Schema_Version", "Session_ID", "Session_State", "Exercise_ID", "Payload_JSON", "Status", "WiFi_SSID"],
   Devices: ["Device_ID", "WiFi_SSID", "Last_Online"],
@@ -29,6 +34,39 @@ function jsonResponse(payload: unknown, init: ResponseInit = {}) {
     ...init,
     headers: { ...jsonHeaders, ...(init.headers || {}) },
   });
+}
+
+function isGoogleSheetsQuotaError(raw: unknown): boolean {
+  const message = String(
+    raw && typeof raw === "object" && "message" in raw
+      ? (raw as { message?: string }).message || ""
+      : raw || "",
+  ).toLowerCase();
+
+  return message.includes("quota")
+    || message.includes("resource_exhausted")
+    || message.includes("rate limit")
+    || message.includes("too many requests")
+    || message.includes("user_rate_limit_exceeded");
+}
+
+function handleSheetsQuotaExceeded() {
+  const current = sheetsWriteBackoffMs > 0
+    ? Math.min(sheetsWriteBackoffMs * 2, MAX_SHEETS_WRITE_BACKOFF_MS)
+    : MIN_SHEETS_WRITE_BACKOFF_MS;
+  sheetsWriteBackoffMs = current;
+  sheetsWriteBlockedUntilMs = Date.now() + current;
+}
+
+function handleSheetsWriteSuccess() {
+  sheetsWriteBlockedUntilMs = 0;
+  sheetsWriteBackoffMs = sheetsWriteBackoffMs > MIN_SHEETS_WRITE_BACKOFF_MS
+    ? Math.floor(sheetsWriteBackoffMs / 2)
+    : 0;
+}
+
+function shouldThrottleSheetsWrites() {
+  return Date.now() < sheetsWriteBlockedUntilMs;
 }
 
 type DebugTelemetryRow = {
@@ -505,6 +543,14 @@ export default {
         if (!telemetry || !telemetry.device_id) {
           return jsonResponse({ error: "Invalid telemetry v2 payload" }, { status: 400 });
         }
+        if (shouldThrottleSheetsWrites()) {
+          return jsonResponse({
+            success: true,
+            message: "Telemetry received. Google Sheets quota is temporarily full; DB updates are being slowed automatically.",
+            throttled: true,
+            retry_after_ms: Math.max(0, sheetsWriteBlockedUntilMs - Date.now()),
+          });
+        }
         const timestamp = new Date().toISOString();
         const deviceId = telemetry.device_id;
         const status = telemetry.status || "Unknown";
@@ -529,15 +575,30 @@ export default {
             ]],
           }),
         });
-        const sheetsData = await sheetsRes.json();
+        const sheetsData: any = await sheetsRes.json();
+
+        if (sheetsData?.error) {
+          throw new Error(`Error writing telemetry: ${JSON.stringify(sheetsData.error)}`);
+        }
 
         await appendSessionSample(env, token, telemetry, timestamp);
         await upsertSession(env, token, telemetry, timestamp);
         await appendEvents(env, token, telemetry, timestamp);
         await upsertDevice(env, token, deviceId, wifiSsid, timestamp);
 
+        handleSheetsWriteSuccess();
+
         return jsonResponse({ success: true, message: "Telemetry received and saved.", data: sheetsData });
       } catch (e: any) {
+        if (isGoogleSheetsQuotaError(e)) {
+          handleSheetsQuotaExceeded();
+          return jsonResponse({
+            success: true,
+            message: "Telemetry received. Google Sheets quota is temporarily full; DB updates are being slowed automatically.",
+            throttled: true,
+            retry_after_ms: Math.max(0, sheetsWriteBlockedUntilMs - Date.now()),
+          });
+        }
         return jsonResponse({ error: e.message }, { status: 500 });
       }
     }
