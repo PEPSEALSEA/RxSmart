@@ -493,8 +493,8 @@ export default {
 
     if (request.method === "GET" && url.pathname === "/api/firmware-version") {
       return jsonResponse({
-        latest_version: "1.0.1",
-        bin_url: "https://example.com/firmware/v1.0.1.bin",
+        latest_version: "1.0.0",
+        bin_url: "",
       });
     }
 

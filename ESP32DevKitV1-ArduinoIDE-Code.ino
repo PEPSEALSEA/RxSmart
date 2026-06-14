@@ -52,7 +52,10 @@ const uint16_t ALERT_CODE_JOINT_ANGLE = 1 << 0;
 const uint16_t ALERT_CODE_SPEED = 1 << 1;
 
 const bool USE_MPU6050_TEST = true;
+const bool ENABLE_REALTIME_SERIAL_DEBUG = true;
+const unsigned long SERIAL_DEBUG_INTERVAL_MS = 500;
 const uint8_t I2C_SDA_PIN = 23;
+const uint8_t I2C_SDA_FALLBACK_PIN = 21;
 const uint8_t I2C_SCL_PIN = 22;
 const uint8_t MPU6050_ADDR_1 = 0x68; // AD0 -> GND
 const uint8_t MPU6050_ADDR_2 = 0x69; // AD0 -> 3V3
@@ -115,6 +118,13 @@ unsigned long sessionStartedMs = 0;
 unsigned long sessionCompletedMs = 0;
 unsigned long repTarget = 10;
 bool sessionSummaryPending = false;
+unsigned long lastSerialDebugMs = 0;
+uint8_t activeI2CSdaPin = I2C_SDA_PIN;
+uint8_t activeI2CSclPin = I2C_SCL_PIN;
+bool mpu1Present = false;
+bool mpu2Present = false;
+bool mpu1ReadOk = false;
+bool mpu2ReadOk = false;
 
 // ---------------------------------------------------------
 // HTML สำหรับหน้า Captive Portal
@@ -220,6 +230,9 @@ float clampAngle(float value);
 bool initMPU6050(uint8_t address);
 bool readMPU6050Accel(uint8_t address, int16_t& ax, int16_t& ay, int16_t& az);
 float accelToPseudoRaw(int16_t ax, int16_t ay, int16_t az);
+void printRealtimeDebug(unsigned long nowMs);
+bool probeI2CAddress(uint8_t address);
+bool configureI2CForMPU(uint8_t sdaPin, uint8_t sclPin);
 
 // ---------------------------------------------------------
 // Setup Function
@@ -347,6 +360,11 @@ void loop() {
         sendTelemetryData();
         checkDeviceCommand();
       }
+    }
+
+    if (ENABLE_REALTIME_SERIAL_DEBUG && currentMillis - lastSerialDebugMs >= SERIAL_DEBUG_INTERVAL_MS) {
+      lastSerialDebugMs = currentMillis;
+      printRealtimeDebug(currentMillis);
     }
   }
 }
@@ -745,11 +763,22 @@ void checkDeviceCommand() {
 
 void initializeSensors() {
   if (USE_MPU6050_TEST) {
-    Wire.begin(I2C_SDA_PIN, I2C_SCL_PIN);
-    Wire.setClock(400000);
-    bool mpu1Ok = initMPU6050(MPU6050_ADDR_1);
-    bool mpu2Ok = initMPU6050(MPU6050_ADDR_2);
-    Serial.printf("MPU6050 init status -> 0x68: %s, 0x69: %s\n", mpu1Ok ? "OK" : "FAIL", mpu2Ok ? "OK" : "FAIL");
+    bool configured = configureI2CForMPU(I2C_SDA_PIN, I2C_SCL_PIN);
+    if (!configured && I2C_SDA_FALLBACK_PIN != I2C_SDA_PIN) {
+      configured = configureI2CForMPU(I2C_SDA_FALLBACK_PIN, I2C_SCL_PIN);
+    }
+
+    if (!configured) {
+      Serial.println("MPU6050 not detected on SDA23/SDA21 + SCL22. Check wiring.");
+    } else {
+      Serial.printf(
+        "MPU6050 ready on SDA=%u SCL=%u -> 0x68:%s 0x69:%s\n",
+        activeI2CSdaPin,
+        activeI2CSclPin,
+        mpu1Present ? "OK" : "MISS",
+        mpu2Present ? "OK" : "MISS"
+      );
+    }
     return;
   }
 
@@ -799,11 +828,15 @@ void sampleSensors(unsigned long nowMs, bool applyCalibration) {
   if (USE_MPU6050_TEST) {
     int16_t ax1 = 0, ay1 = 0, az1 = 0;
     int16_t ax2 = 0, ay2 = 0, az2 = 0;
-    bool ok1 = readMPU6050Accel(MPU6050_ADDR_1, ax1, ay1, az1);
-    bool ok2 = readMPU6050Accel(MPU6050_ADDR_2, ax2, ay2, az2);
+    bool ok1 = mpu1Present ? readMPU6050Accel(MPU6050_ADDR_1, ax1, ay1, az1) : false;
+    bool ok2 = mpu2Present ? readMPU6050Accel(MPU6050_ADDR_2, ax2, ay2, az2) : false;
+    mpu1ReadOk = ok1;
+    mpu2ReadOk = ok2;
 
     float raw1 = ok1 ? accelToPseudoRaw(ax1, ay1, az1) : 0.0f;
     float raw2 = ok2 ? accelToPseudoRaw(ax2, ay2, az2) : 0.0f;
+    if (!ok2 && ok1) raw2 = raw1;
+    if (!ok1 && ok2) raw1 = raw2;
 
     // map 2 sensors for quick test: arm pair from MPU #1, leg pair from MPU #2
     sensors[0].raw = raw1;
@@ -1010,5 +1043,53 @@ float accelToPseudoRaw(int16_t ax, int16_t ay, int16_t az) {
   float pitchDeg = atan2f(fx, sqrtf(fy * fy + fz * fz)) * 180.0f / PI;
   float angle0to180 = constrain(pitchDeg + 90.0f, 0.0f, 180.0f);
   return angle0to180 * (4095.0f / 360.0f); // keep compatible with sensorToDegrees()
+}
+
+bool probeI2CAddress(uint8_t address) {
+  Wire.beginTransmission(address);
+  return Wire.endTransmission() == 0;
+}
+
+bool configureI2CForMPU(uint8_t sdaPin, uint8_t sclPin) {
+  Wire.begin(sdaPin, sclPin);
+  Wire.setClock(400000);
+  delay(10);
+
+  bool found68 = probeI2CAddress(MPU6050_ADDR_1);
+  bool found69 = probeI2CAddress(MPU6050_ADDR_2);
+  if (!found68 && !found69) return false;
+
+  activeI2CSdaPin = sdaPin;
+  activeI2CSclPin = sclPin;
+  mpu1Present = found68 && initMPU6050(MPU6050_ADDR_1);
+  mpu2Present = found69 && initMPU6050(MPU6050_ADDR_2);
+  return mpu1Present || mpu2Present;
+}
+
+void printRealtimeDebug(unsigned long nowMs) {
+  Serial.printf(
+    "[DBG] t=%lu state=%s cal=%d rep=%lu/%lu posture=%s speed=%.2f alert=%s code=%u "
+    "i2c=%u/%u mpu68=%s mpu69=%s "
+    "rawA=%.1f rawB=%.1f elbowL=%.1f elbowR=%.1f kneeL=%.1f kneeR=%.1f\n",
+    nowMs,
+    sessionStateToString(sessionState),
+    calibrationDone ? 1 : 0,
+    motion.repCount,
+    repTarget,
+    motion.postureCorrect ? "ok" : "bad",
+    motion.speedDegPerSec,
+    motion.injuryAlertLevel,
+    motion.injuryAlertCode,
+    activeI2CSdaPin,
+    activeI2CSclPin,
+    mpu1ReadOk ? "ok" : (mpu1Present ? "err" : "na"),
+    mpu2ReadOk ? "ok" : (mpu2Present ? "err" : "na"),
+    sensors[0].raw,
+    sensors[4].raw,
+    motion.elbowLeft,
+    motion.elbowRight,
+    motion.kneeLeft,
+    motion.kneeRight
+  );
 }
 
