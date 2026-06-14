@@ -8,7 +8,18 @@ import { POSE_KEYS, POSE_LABELS, PoseKey } from "@/lib/pose";
 type DebugTelemetry = {
   timestamp: string;
   device_id: string;
-  sensor_value: unknown;
+  schema_version: number;
+  session_id: string;
+  session_state: string;
+  exercise_id: string;
+  payload_json: {
+    rep_count?: number;
+    speed_dps?: number;
+    posture?: {
+      state?: string;
+    };
+    [key: string]: unknown;
+  } | null;
   status: string;
   wifi_ssid: string;
 };
@@ -176,7 +187,10 @@ export default function AdminPage() {
     }
   };
 
-  const queueCommand = async (command: "SET_WIFI" | "CLEAR_WIFI", body: Record<string, string> = {}) => {
+  const queueCommand = async (
+    command: "SET_WIFI" | "CLEAR_WIFI" | "START_SESSION" | "END_SESSION" | "RECALIBRATE",
+    body: Record<string, string | number> = {},
+  ) => {
     if (!selectedDevice) return;
 
     setActionLoading(command);
@@ -251,7 +265,7 @@ export default function AdminPage() {
           pose_name: poseName.trim() || "debug-sample",
           test_target: testTarget,
           sensor_map: sensorMap,
-          packet: latestTelemetry.sensor_value,
+          packet: latestTelemetry.payload_json,
           notes: notes.trim(),
         }),
       });
@@ -289,7 +303,7 @@ export default function AdminPage() {
           pose_name: normalizedPoseName,
           test_target: testTarget,
           sensor_map: sensorMap,
-          reference: latestTelemetry.sensor_value,
+          reference: latestTelemetry.payload_json,
         }),
       });
       const data = await res.json();
@@ -533,8 +547,12 @@ export default function AdminPage() {
                 <div className="space-y-2 text-xs">
                   <p className="text-slate-400">Time: <span className="text-slate-200">{new Date(latestTelemetry.timestamp).toLocaleString()}</span></p>
                   <p className="text-slate-400">Status: <span className="text-slate-200">{latestTelemetry.status || "-"}</span></p>
+                  <p className="text-slate-400">Session: <span className="text-slate-200">{latestTelemetry.session_state || "idle"}</span></p>
+                  <p className="text-slate-400">Rep: <span className="text-slate-200">{latestTelemetry.payload_json?.rep_count ?? 0}</span></p>
+                  <p className="text-slate-400">Posture: <span className="text-slate-200">{latestTelemetry.payload_json?.posture?.state ?? "-"}</span></p>
+                  <p className="text-slate-400">Speed: <span className="text-slate-200">{latestTelemetry.payload_json?.speed_dps ?? 0}</span></p>
                   <pre className="max-h-64 overflow-auto rounded-xl border border-white/10 bg-slate-950 p-3 text-[11px] text-slate-300">
-                    {JSON.stringify(latestTelemetry.sensor_value, null, 2)}
+                    {JSON.stringify(latestTelemetry.payload_json, null, 2)}
                   </pre>
                 </div>
               )}
@@ -639,6 +657,27 @@ export default function AdminPage() {
             <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 mt-4">
               <button onClick={checkSelectedStatus} className="rounded-xl bg-slate-800 px-4 py-3 text-sm hover:bg-slate-700">
                 Check Status
+              </button>
+              <button
+                onClick={() => queueCommand("START_SESSION", { exercise_id: "general", rep_target: 10 })}
+                disabled={actionLoading === "START_SESSION"}
+                className="rounded-xl bg-emerald-600 px-4 py-3 text-sm font-semibold hover:bg-emerald-500 disabled:opacity-60"
+              >
+                {actionLoading === "START_SESSION" ? "Queueing..." : "Start Session"}
+              </button>
+              <button
+                onClick={() => queueCommand("END_SESSION")}
+                disabled={actionLoading === "END_SESSION"}
+                className="rounded-xl bg-indigo-600 px-4 py-3 text-sm font-semibold hover:bg-indigo-500 disabled:opacity-60"
+              >
+                {actionLoading === "END_SESSION" ? "Queueing..." : "End Session"}
+              </button>
+              <button
+                onClick={() => queueCommand("RECALIBRATE")}
+                disabled={actionLoading === "RECALIBRATE"}
+                className="rounded-xl bg-cyan-700 px-4 py-3 text-sm font-semibold hover:bg-cyan-600 disabled:opacity-60"
+              >
+                {actionLoading === "RECALIBRATE" ? "Queueing..." : "Recalibrate"}
               </button>
               <button
                 onClick={() => queueCommand("CLEAR_WIFI")}

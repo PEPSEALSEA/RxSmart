@@ -4,11 +4,11 @@
 [x] P0: คำนวณมุมหลักที่ต้องใช้ในกายภาพบำบัด
 [x] P0: คำนวณความเร็วการเคลื่อนไหวจากข้อมูลเวลา
 [x] P0: นับจำนวนรอบ (rep count) ต่อท่าออกกำลังกาย
-[ ] P1: ตรวจจับท่าทาง (posture detection) และแยกถูก/ผิดท่า
-[ ] P1: ทำเกณฑ์เตือนความเสี่ยงบาดเจ็บ/มุมเกินช่วงปลอดภัย
-[ ] P1: ปรับ telemetry ให้ส่งข้อมูลแยก 8 เซนเซอร์ + angle/speed/posture/rep
-[ ] P1: ออกแบบ API payload/DB schema สำหรับเก็บ session กายภาพบำบัด
-[ ] P1: เพิ่ม state machine การฝึก (idle -> calibrate -> exercise -> complete)
+[x] P1: ตรวจจับท่าทาง (posture detection) และแยกถูก/ผิดท่า
+[x] P1: ทำเกณฑ์เตือนความเสี่ยงบาดเจ็บ/มุมเกินช่วงปลอดภัย
+[x] P1: ปรับ telemetry ให้ส่งข้อมูลแยก 8 เซนเซอร์ + angle/speed/posture/rep
+[x] P1: ออกแบบ API payload/DB schema สำหรับเก็บ session กายภาพบำบัด
+[x] P1: เพิ่ม state machine การฝึก (idle -> calibrate -> exercise -> complete)
 [ ] P2: กรองสัญญาณลด noise (moving average / complementary filter)
 [ ] P2: รองรับหลายโปรแกรมฝึกตามโรค/อาการ
 [ ] P2: เพิ่มแดชบอร์ดสรุปผลราย session และแนวโน้ม

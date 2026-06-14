@@ -1,3 +1,5 @@
+import { parseTelemetryV2, TelemetryPayloadV2 } from "./schemas/telemetry-v2";
+
 export interface Env {
   GOOGLE_CLIENT_EMAIL: string;
   GOOGLE_PRIVATE_KEY: string;
@@ -7,11 +9,14 @@ export interface Env {
 type Sheet = { properties: { title: string; sheetId: number } };
 
 const sheetHeaders: Record<string, string[]> = {
-  Sheet1: ["Timestamp", "Device_ID", "Sensor_Value", "Status", "WiFi_SSID"],
+  Sheet1: ["Timestamp", "Device_ID", "Schema_Version", "Session_ID", "Session_State", "Exercise_ID", "Payload_JSON", "Status", "WiFi_SSID"],
   Devices: ["Device_ID", "WiFi_SSID", "Last_Online"],
-  Commands: ["Device_ID", "Command", "WiFi_SSID", "WiFi_Password", "Created_At", "Status"],
+  Commands: ["Device_ID", "Command", "WiFi_SSID", "WiFi_Password", "Session_ID", "Exercise_ID", "Rep_Target", "Created_At", "Status"],
   DebugSamples: ["Timestamp", "Device_ID", "Pose_Name", "Test_Target", "Sensor_Map", "Packet_JSON", "Notes"],
   PoseLibrary: ["Created_At", "Pose_Name", "Test_Target", "Sensor_Map", "Reference_JSON", "Device_ID"],
+  Sessions: ["Session_ID", "Device_ID", "Exercise_ID", "State", "Started_At", "Ended_At", "Rep_Target", "Rep_Final", "Posture_State", "Posture_Fault_Mask", "Updated_At"],
+  SessionSamples: ["Timestamp", "Device_ID", "Session_ID", "Session_State", "Exercise_ID", "Payload_JSON"],
+  Events: ["Timestamp", "Device_ID", "Session_ID", "Alert_Level", "Alert_Code", "Detail_JSON"],
 };
 
 const jsonHeaders = {
@@ -29,9 +34,21 @@ function jsonResponse(payload: unknown, init: ResponseInit = {}) {
 type DebugTelemetryRow = {
   timestamp: string;
   device_id: string;
-  sensor_value: unknown;
+  schema_version: number;
+  session_id: string;
+  session_state: string;
+  exercise_id: string;
+  payload_json: unknown;
   status: string;
   wifi_ssid: string;
+};
+
+type QueueCommandPayload = {
+  wifi_ssid?: string;
+  wifi_password?: string;
+  session_id?: string;
+  exercise_id?: string;
+  rep_target?: number;
 };
 
 type DebugSample = {
@@ -294,8 +311,7 @@ async function queueDeviceCommand(
   token: string,
   deviceId: string,
   command: string,
-  wifiSsid = "",
-  wifiPassword = "",
+  payload: QueueCommandPayload = {},
 ) {
   await ensureSheet(env, token, "Commands");
   const appendUrl = `https://sheets.googleapis.com/v4/spreadsheets/${env.SPREADSHEET_ID}/values/Commands:append?valueInputOption=USER_ENTERED`;
@@ -303,23 +319,33 @@ async function queueDeviceCommand(
     method: "POST",
     headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
     body: JSON.stringify({
-      values: [[deviceId, command, wifiSsid, wifiPassword, new Date().toISOString(), ""]],
+      values: [[
+        deviceId,
+        command,
+        payload.wifi_ssid || "",
+        payload.wifi_password || "",
+        payload.session_id || "",
+        payload.exercise_id || "",
+        payload.rep_target ?? "",
+        new Date().toISOString(),
+        "",
+      ]],
     }),
   });
 }
 
 async function getPendingCommand(env: Env, token: string, deviceId: string) {
   await ensureSheet(env, token, "Commands");
-  const getUrl = `https://sheets.googleapis.com/v4/spreadsheets/${env.SPREADSHEET_ID}/values/Commands!A:F`;
+  const getUrl = `https://sheets.googleapis.com/v4/spreadsheets/${env.SPREADSHEET_ID}/values/Commands!A:I`;
   const getRes = await fetch(getUrl, { headers: { Authorization: `Bearer ${token}` } });
   const getData: any = await getRes.json();
   const rows: string[][] = getData.values || [];
-  const rowIndex = rows.findIndex((row) => row?.[0] === deviceId && row?.[1] && row?.[5] !== "consumed");
+  const rowIndex = rows.findIndex((row) => row?.[0] === deviceId && row?.[1] && row?.[8] !== "consumed");
 
   if (rowIndex === -1) return null;
 
   const row = rows[rowIndex];
-  const updateUrl = `https://sheets.googleapis.com/v4/spreadsheets/${env.SPREADSHEET_ID}/values/Commands!F${rowIndex + 1}?valueInputOption=USER_ENTERED`;
+  const updateUrl = `https://sheets.googleapis.com/v4/spreadsheets/${env.SPREADSHEET_ID}/values/Commands!I${rowIndex + 1}?valueInputOption=USER_ENTERED`;
   await fetch(updateUrl, {
     method: "PUT",
     headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
@@ -330,22 +356,29 @@ async function getPendingCommand(env: Env, token: string, deviceId: string) {
     command: row[1],
     wifi_ssid: row[2] || "",
     wifi_password: row[3] || "",
-    created_at: row[4] || "",
+    session_id: row[4] || "",
+    exercise_id: row[5] || "",
+    rep_target: Number.parseInt(row[6] || "0", 10) || 0,
+    created_at: row[7] || "",
   };
 }
 
 async function listRecentTelemetry(env: Env, token: string, deviceId: string | null, limit: number): Promise<DebugTelemetryRow[]> {
   await ensureSheet(env, token, "Sheet1");
-  const rows = await readSheetValues(env, token, "Sheet1!A:E");
+  const rows = await readSheetValues(env, token, "Sheet1!A:I");
 
   const telemetryRows = rows
     .filter((row) => row[0] && row[0] !== "Timestamp")
     .map((row) => ({
       timestamp: row[0] || "",
       device_id: row[1] || "",
-      sensor_value: parseMaybeJson(row[2] || ""),
-      status: row[3] || "",
-      wifi_ssid: row[4] || "",
+      schema_version: Number.parseInt(row[2] || "2", 10) || 2,
+      session_id: row[3] || "",
+      session_state: row[4] || "idle",
+      exercise_id: row[5] || "",
+      payload_json: parseMaybeJson(row[6] || ""),
+      status: row[7] || "",
+      wifi_ssid: row[8] || "",
     }))
     .filter((row) => (deviceId ? row.device_id === deviceId : true));
 
@@ -386,6 +419,67 @@ async function listPoseLibrary(env: Env, token: string, limit: number): Promise<
   return poses.slice(Math.max(0, poses.length - limit)).reverse();
 }
 
+async function upsertSession(env: Env, token: string, telemetry: TelemetryPayloadV2, timestamp: string) {
+  if (!telemetry.session_id) return;
+  await ensureSheet(env, token, "Sessions");
+  const rows = await readSheetValues(env, token, "Sessions!A:K");
+  const rowIndex = rows.findIndex((row) => row?.[0] === telemetry.session_id);
+  const rowData = [
+    telemetry.session_id,
+    telemetry.device_id,
+    telemetry.exercise_id || "general",
+    telemetry.session_state,
+    telemetry.session_started_ms ? new Date(telemetry.session_started_ms).toISOString() : "",
+    telemetry.session_completed_ms ? new Date(telemetry.session_completed_ms).toISOString() : "",
+    String(telemetry.rep_target || 0),
+    String(telemetry.rep_count || 0),
+    telemetry.posture.state,
+    String(telemetry.posture.fault_mask || 0),
+    timestamp,
+  ];
+
+  if (rowIndex === -1) {
+    await appendSheetRow(env, token, "Sessions", rowData);
+    return;
+  }
+
+  const updateUrl = `https://sheets.googleapis.com/v4/spreadsheets/${env.SPREADSHEET_ID}/values/Sessions!A${rowIndex + 1}:K${rowIndex + 1}?valueInputOption=USER_ENTERED`;
+  await fetch(updateUrl, {
+    method: "PUT",
+    headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+    body: JSON.stringify({ values: [rowData] }),
+  });
+}
+
+async function appendSessionSample(env: Env, token: string, telemetry: TelemetryPayloadV2, timestamp: string) {
+  await appendSheetRow(env, token, "SessionSamples", [
+    timestamp,
+    telemetry.device_id,
+    telemetry.session_id,
+    telemetry.session_state,
+    telemetry.exercise_id || "general",
+    JSON.stringify(telemetry),
+  ]);
+}
+
+async function appendEvents(env: Env, token: string, telemetry: TelemetryPayloadV2, timestamp: string) {
+  if (!telemetry.alerts.length) return;
+  for (const alert of telemetry.alerts) {
+    await appendSheetRow(env, token, "Events", [
+      timestamp,
+      telemetry.device_id,
+      telemetry.session_id,
+      alert.level,
+      String(alert.code),
+      JSON.stringify({
+        speed_dps: telemetry.speed_dps,
+        posture_fault_mask: telemetry.posture.fault_mask,
+        rep_count: telemetry.rep_count,
+      }),
+    ]);
+  }
+}
+
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
     const url = new URL(request.url);
@@ -410,11 +504,14 @@ export default {
     if (request.method === "POST" && url.pathname === "/api/telemetry") {
       try {
         const body: any = await request.json();
+        const telemetry = parseTelemetryV2(body);
+        if (!telemetry || !telemetry.device_id) {
+          return jsonResponse({ error: "Invalid telemetry v2 payload" }, { status: 400 });
+        }
         const timestamp = new Date().toISOString();
-        const deviceId = body.device_id || "Unknown";
-        const sensorValue = body.sensor_value || 0;
-        const status = body.status || "Unknown";
-        const wifiSsid = body.wifi_ssid || "Unknown";
+        const deviceId = telemetry.device_id;
+        const status = telemetry.status || "Unknown";
+        const wifiSsid = telemetry.wifi_ssid || "Unknown";
 
         const token = await getGoogleAuthToken(env.GOOGLE_CLIENT_EMAIL, env.GOOGLE_PRIVATE_KEY);
         const appendUrl = `https://sheets.googleapis.com/v4/spreadsheets/${env.SPREADSHEET_ID}/values/Sheet1:append?valueInputOption=USER_ENTERED`;
@@ -422,11 +519,24 @@ export default {
           method: "POST",
           headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
           body: JSON.stringify({
-            values: [[timestamp, deviceId, sensorValue, status, wifiSsid]],
+            values: [[
+              timestamp,
+              deviceId,
+              telemetry.schema_version,
+              telemetry.session_id,
+              telemetry.session_state,
+              telemetry.exercise_id,
+              JSON.stringify(telemetry),
+              status,
+              wifiSsid,
+            ]],
           }),
         });
         const sheetsData = await sheetsRes.json();
 
+        await appendSessionSample(env, token, telemetry, timestamp);
+        await upsertSession(env, token, telemetry, timestamp);
+        await appendEvents(env, token, telemetry, timestamp);
         await upsertDevice(env, token, deviceId, wifiSsid, timestamp);
 
         return jsonResponse({ success: true, message: "Telemetry received and saved.", data: sheetsData });
@@ -462,6 +572,9 @@ export default {
         await ensureSheet(env, token, "Commands");
         await ensureSheet(env, token, "DebugSamples");
         await ensureSheet(env, token, "PoseLibrary");
+        await ensureSheet(env, token, "Sessions");
+        await ensureSheet(env, token, "SessionSamples");
+        await ensureSheet(env, token, "Events");
 
         return jsonResponse({
           success: true,
@@ -507,7 +620,8 @@ export default {
         const body: any = await request.json();
         const command = body.command;
 
-        if (command !== "SET_WIFI" && command !== "CLEAR_WIFI") {
+        const allowedCommands = ["SET_WIFI", "CLEAR_WIFI", "START_SESSION", "END_SESSION", "RECALIBRATE"];
+        if (!allowedCommands.includes(command)) {
           return jsonResponse({ error: "Invalid command" }, { status: 400 });
         }
 
@@ -515,8 +629,93 @@ export default {
           return jsonResponse({ error: "WiFi SSID is required" }, { status: 400 });
         }
 
-        await queueDeviceCommand(env, token, deviceId, command, body.wifi_ssid || "", body.wifi_password || "");
+        await queueDeviceCommand(env, token, deviceId, command, {
+          wifi_ssid: body.wifi_ssid || "",
+          wifi_password: body.wifi_password || "",
+          session_id: body.session_id || "",
+          exercise_id: body.exercise_id || "",
+          rep_target: Number(body.rep_target || 0),
+        });
         return jsonResponse({ success: true, message: "Command queued. The board will apply it on its next command check." });
+      } catch (e: any) {
+        return jsonResponse({ error: e.message }, { status: 500 });
+      }
+    }
+
+    if (request.method === "POST" && url.pathname === "/api/sessions/start") {
+      try {
+        const body: any = await request.json();
+        const deviceId = String(body.device_id || "");
+        if (!deviceId) return jsonResponse({ error: "device_id is required" }, { status: 400 });
+        const token = await getGoogleAuthToken(env.GOOGLE_CLIENT_EMAIL, env.GOOGLE_PRIVATE_KEY);
+        const sessionId = String(body.session_id || `${deviceId}_${Date.now()}`);
+        const exerciseId = String(body.exercise_id || "general");
+        const repTarget = Number(body.rep_target || 10);
+        const now = new Date().toISOString();
+
+        await appendSheetRow(env, token, "Sessions", [
+          sessionId,
+          deviceId,
+          exerciseId,
+          "calibrate",
+          now,
+          "",
+          String(repTarget),
+          "0",
+          "incorrect",
+          "0",
+          now,
+        ]);
+        await queueDeviceCommand(env, token, deviceId, "START_SESSION", {
+          session_id: sessionId,
+          exercise_id: exerciseId,
+          rep_target: repTarget,
+        });
+        return jsonResponse({ success: true, session_id: sessionId });
+      } catch (e: any) {
+        return jsonResponse({ error: e.message }, { status: 500 });
+      }
+    }
+
+    if (request.method === "POST" && url.pathname === "/api/sessions/complete") {
+      try {
+        const body: any = await request.json();
+        const deviceId = String(body.device_id || "");
+        const sessionId = String(body.session_id || "");
+        if (!deviceId || !sessionId) {
+          return jsonResponse({ error: "device_id and session_id are required" }, { status: 400 });
+        }
+        const token = await getGoogleAuthToken(env.GOOGLE_CLIENT_EMAIL, env.GOOGLE_PRIVATE_KEY);
+        await queueDeviceCommand(env, token, deviceId, "END_SESSION", { session_id: sessionId });
+        return jsonResponse({ success: true, session_id: sessionId });
+      } catch (e: any) {
+        return jsonResponse({ error: e.message }, { status: 500 });
+      }
+    }
+
+    if (request.method === "GET" && url.pathname === "/api/sessions/latest") {
+      try {
+        const deviceId = url.searchParams.get("device_id");
+        if (!deviceId) return jsonResponse({ error: "device_id is required" }, { status: 400 });
+        const token = await getGoogleAuthToken(env.GOOGLE_CLIENT_EMAIL, env.GOOGLE_PRIVATE_KEY);
+        const rows = await readSheetValues(env, token, "Sessions!A:K");
+        const matches = rows
+          .filter((row) => row[0] && row[0] !== "Session_ID" && row[1] === deviceId)
+          .map((row) => ({
+            session_id: row[0] || "",
+            device_id: row[1] || "",
+            exercise_id: row[2] || "",
+            state: row[3] || "idle",
+            started_at: row[4] || "",
+            ended_at: row[5] || "",
+            rep_target: Number.parseInt(row[6] || "0", 10) || 0,
+            rep_final: Number.parseInt(row[7] || "0", 10) || 0,
+            posture_state: row[8] || "incorrect",
+            posture_fault_mask: Number.parseInt(row[9] || "0", 10) || 0,
+            updated_at: row[10] || "",
+          }));
+        const latest = matches[matches.length - 1] || null;
+        return jsonResponse({ success: true, session: latest });
       } catch (e: any) {
         return jsonResponse({ error: e.message }, { status: 500 });
       }

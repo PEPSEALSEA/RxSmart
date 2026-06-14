@@ -1,0 +1,20 @@
+MPU6050 (GY-521) จำนวน 2 ตัว -> ESP32 DevKit V1 (ชุดทดสอบ)
+
+บัส I2C (ใช้ร่วมกัน):
+- ESP32 3V3 -> MPU1 VCC, MPU2 VCC
+- ESP32 GND -> MPU1 GND, MPU2 GND
+- ESP32 GPIO22 (SCL) -> MPU1 SCL, MPU2 SCL
+- ESP32 GPIO21 (SDA) -> MPU1 SDA, MPU2 SDA
+
+ขา Address (ต้องต่างกันคนละตัว):
+- MPU1 AD0 -> GND (I2C address = 0x68)
+- MPU2 AD0 -> 3V3 (I2C address = 0x69)
+
+ขา Interrupt (ไม่บังคับสำหรับการทดสอบรอบนี้):
+- MPU1 INT -> ไม่ต้องต่อ
+- MPU2 INT -> ไม่ต้องต่อ
+
+หมายเหตุ:
+- บอร์ด GY-521 ส่วนใหญ่มีตัวต้านทาน pull-up ที่ SDA/SCL มาแล้ว
+- ถ้าตรวจเจอเซ็นเซอร์แค่ตัวเดียว ให้ตรวจสาย AD0 ก่อนเป็นอันดับแรก
+- ต้องต่อกราวด์ (GND) ร่วมกันทุกอุปกรณ์

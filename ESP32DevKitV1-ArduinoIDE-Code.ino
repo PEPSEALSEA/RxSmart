@@ -1,3 +1,4 @@
+#include <Arduino.h>
 #include <WiFi.h>
 #include <WebServer.h>
 #include <DNSServer.h>
@@ -6,6 +7,7 @@
 #include <HTTPUpdate.h>
 #include <ArduinoJson.h>
 #include <WiFiClientSecure.h>
+#include <Wire.h>
 #include <math.h>
 
 // ---------------------------------------------------------
@@ -36,6 +38,33 @@ const unsigned long CALIBRATION_WINDOW_MS = 3000;
 const float RAW_TO_DEGREE = 360.0f / 4095.0f;
 const float REP_UP_THRESHOLD = 65.0f;
 const float REP_DOWN_THRESHOLD = 25.0f;
+const float SAFE_MAX_JOINT_ANGLE = 165.0f;
+const float SAFE_MAX_SPEED_DPS = 220.0f;
+const int POSTURE_STABILITY_MAX = 5;
+const int POSTURE_STABILITY_MIN = -5;
+
+const uint16_t POSTURE_FAULT_ELBOW_SYMMETRY = 1 << 0;
+const uint16_t POSTURE_FAULT_KNEE_SYMMETRY = 1 << 1;
+const uint16_t POSTURE_FAULT_ELBOW_RANGE = 1 << 2;
+const uint16_t POSTURE_FAULT_KNEE_RANGE = 1 << 3;
+
+const uint16_t ALERT_CODE_JOINT_ANGLE = 1 << 0;
+const uint16_t ALERT_CODE_SPEED = 1 << 1;
+
+const bool USE_MPU6050_TEST = true;
+const uint8_t I2C_SDA_PIN = 21;
+const uint8_t I2C_SCL_PIN = 22;
+const uint8_t MPU6050_ADDR_1 = 0x68; // AD0 -> GND
+const uint8_t MPU6050_ADDR_2 = 0x69; // AD0 -> 3V3
+const uint8_t MPU6050_REG_PWR_MGMT_1 = 0x6B;
+const uint8_t MPU6050_REG_ACCEL_XOUT_H = 0x3B;
+
+enum SessionState {
+  SESSION_IDLE,
+  SESSION_CALIBRATE,
+  SESSION_EXERCISE,
+  SESSION_COMPLETE
+};
 
 struct SensorDataPoint {
   const char* key;
@@ -55,6 +84,11 @@ struct MotionMetrics {
   float speedDegPerSec;
   bool postureCorrect;
   unsigned long repCount;
+  uint16_t postureFaultMask;
+  int postureStabilityScore;
+  bool injuryAlertActive;
+  const char* injuryAlertLevel;
+  uint16_t injuryAlertCode;
 };
 
 SensorDataPoint sensors[SENSOR_COUNT] = {
@@ -68,12 +102,19 @@ SensorDataPoint sensors[SENSOR_COUNT] = {
   {"right_shin", 14, 0, 0, 0, 0}
 };
 
-MotionMetrics motion = {0, 0, 0, 0, 0, 0, true, 0};
+MotionMetrics motion = {0, 0, 0, 0, 0, 0, true, 0, 0, 0, false, "none", 0};
 bool calibrationDone = false;
 bool repPeakReached = false;
 unsigned long lastMotionSampleMs = 0;
 unsigned long lastMotionUpdateMs = 0;
 float prevPrimaryAngle = 0.0f;
+SessionState sessionState = SESSION_IDLE;
+String sessionId = "";
+String exerciseId = "general";
+unsigned long sessionStartedMs = 0;
+unsigned long sessionCompletedMs = 0;
+unsigned long repTarget = 10;
+bool sessionSummaryPending = false;
 
 // ---------------------------------------------------------
 // HTML สำหรับหน้า Captive Portal
@@ -168,7 +209,17 @@ void sampleSensors(unsigned long nowMs, bool applyCalibration);
 void updateMotionModel();
 float sensorToDegrees(float sensorValue);
 void updateRepCounter(float angleValue);
-bool evaluatePosture(float elbowLeft, float elbowRight, float kneeLeft, float kneeRight);
+uint16_t evaluatePostureFaults(float elbowLeft, float elbowRight, float kneeLeft, float kneeRight);
+void updatePostureStability(bool postureCorrect);
+void updateInjuryAlert();
+void startSession(const String& nextExerciseId, unsigned long nextRepTarget);
+void completeSession(const char* reason);
+const char* sessionStateToString(SessionState state);
+String buildSessionId();
+float clampAngle(float value);
+bool initMPU6050(uint8_t address);
+bool readMPU6050Accel(uint8_t address, int16_t& ax, int16_t& ay, int16_t& az);
+float accelToPseudoRaw(int16_t ax, int16_t ay, int16_t az);
 
 // ---------------------------------------------------------
 // Setup Function
@@ -225,8 +276,7 @@ void setup() {
       // เมื่อต่อ WiFi ได้ ให้เช็ค Internet ทันที
       if (checkInternetWatchdog()) {
         initializeSensors();
-        runCalibration();
-        updateMotionModel();
+        sampleSensors(millis(), false);
         registerDevice();
         sendTelemetryData();
         // เช็คอัปเดต Firmware จาก Cloudflare Worker
@@ -254,8 +304,11 @@ void loop() {
 
     // กด BOOT ค้าง 3 วินาทีขณะใช้งานปกติ (เมื่ออยู่ใน AP mode อยู่แล้วไม่ต้องทำอะไร)
   } else {
-    if (millis() - lastMotionSampleMs >= MOTION_SAMPLE_INTERVAL_MS) {
+    if (sessionState == SESSION_EXERCISE && millis() - lastMotionSampleMs >= MOTION_SAMPLE_INTERVAL_MS) {
       updateMotionModel();
+      lastMotionSampleMs = millis();
+    } else if (sessionState != SESSION_EXERCISE && millis() - lastMotionSampleMs >= MOTION_SAMPLE_INTERVAL_MS) {
+      sampleSensors(millis(), calibrationDone);
       lastMotionSampleMs = millis();
     }
 
@@ -285,6 +338,11 @@ void loop() {
         // preferences.putString("ssid", ""); 
         ESP.restart(); 
       } else {
+        if (sessionState == SESSION_COMPLETE && sessionSummaryPending) {
+          sendTelemetryData();
+          sessionSummaryPending = false;
+          sessionState = SESSION_IDLE;
+        }
         // ถ้าเน็ตปกติ ให้ส่งข้อมูล (Telemetry)
         sendTelemetryData();
         checkDeviceCommand();
@@ -496,11 +554,23 @@ void sendTelemetryData() {
   http.begin(url);
   http.addHeader("Content-Type", "application/json");
   
-  StaticJsonDocument<2048> doc;
+  sampleSensors(millis(), calibrationDone);
+
+  StaticJsonDocument<3072> doc;
+  doc["schema_version"] = 2;
+  doc["firmware_version"] = CURRENT_VERSION;
+  doc["device_ts_ms"] = millis();
   doc["device_id"] = getDeviceId();
-  doc["status"] = "Active";
+  doc["status"] = sessionState == SESSION_EXERCISE ? "Active" : "Idle";
   doc["wifi_ssid"] = WiFi.SSID();
   doc["calibrated"] = calibrationDone;
+  doc["session_id"] = sessionId;
+  doc["session_state"] = sessionStateToString(sessionState);
+  doc["exercise_id"] = exerciseId;
+  doc["session_started_ms"] = sessionStartedMs;
+  doc["session_completed_ms"] = sessionCompletedMs;
+  doc["rep_target"] = repTarget;
+  doc["summary_pending"] = sessionSummaryPending;
 
   JsonArray sensorArray = doc.createNestedArray("sensors");
   for (size_t i = 0; i < SENSOR_COUNT; i++) {
@@ -522,7 +592,17 @@ void sendTelemetryData() {
 
   doc["speed_dps"] = motion.speedDegPerSec;
   doc["rep_count"] = motion.repCount;
-  doc["posture"] = motion.postureCorrect ? "correct" : "incorrect";
+  JsonObject posture = doc.createNestedObject("posture");
+  posture["state"] = motion.postureCorrect ? "correct" : "incorrect";
+  posture["fault_mask"] = motion.postureFaultMask;
+  posture["stability_score"] = motion.postureStabilityScore;
+
+  JsonArray alerts = doc.createNestedArray("alerts");
+  if (motion.injuryAlertActive) {
+    JsonObject alert = alerts.createNestedObject();
+    alert["level"] = motion.injuryAlertLevel;
+    alert["code"] = motion.injuryAlertCode;
+  }
   
   String jsonOutput;
   serializeJson(doc, jsonOutput);
@@ -644,13 +724,35 @@ void checkDeviceCommand() {
     ESP.restart();
   }
 
+  if (command == "START_SESSION") {
+    String nextExerciseId = commandNode["exercise_id"] | "general";
+    unsigned long nextRepTarget = commandNode["rep_target"] | 10;
+    startSession(nextExerciseId, nextRepTarget);
+  }
+
+  if (command == "END_SESSION") {
+    completeSession("remote_command");
+  }
+
   if (command == "RECALIBRATE") {
     Serial.println("Command received: recalibrate sensors.");
+    SessionState prevState = sessionState;
+    sessionState = SESSION_CALIBRATE;
     runCalibration();
+    sessionState = (prevState == SESSION_EXERCISE) ? SESSION_EXERCISE : SESSION_IDLE;
   }
 }
 
 void initializeSensors() {
+  if (USE_MPU6050_TEST) {
+    Wire.begin(I2C_SDA_PIN, I2C_SCL_PIN);
+    Wire.setClock(400000);
+    bool mpu1Ok = initMPU6050(MPU6050_ADDR_1);
+    bool mpu2Ok = initMPU6050(MPU6050_ADDR_2);
+    Serial.printf("MPU6050 init status -> 0x68: %s, 0x69: %s\n", mpu1Ok ? "OK" : "FAIL", mpu2Ok ? "OK" : "FAIL");
+    return;
+  }
+
   analogReadResolution(12);
   analogSetAttenuation(ADC_11db);
   for (size_t i = 0; i < SENSOR_COUNT; i++) {
@@ -665,11 +767,9 @@ void runCalibration() {
   float sums[SENSOR_COUNT] = {0};
 
   while (millis() - startMs < CALIBRATION_WINDOW_MS) {
+    sampleSensors(millis(), false);
     for (size_t i = 0; i < SENSOR_COUNT; i++) {
-      float value = analogRead(sensors[i].pin);
-      sums[i] += value;
-      sensors[i].raw = value;
-      sensors[i].timestampMs = millis();
+      sums[i] += sensors[i].raw;
     }
     sampleCount++;
     delay(20);
@@ -685,12 +785,43 @@ void runCalibration() {
   calibrationDone = true;
   repPeakReached = false;
   motion.repCount = 0;
+  motion.postureFaultMask = 0;
+  motion.postureStabilityScore = 0;
+  motion.injuryAlertActive = false;
+  motion.injuryAlertLevel = "none";
+  motion.injuryAlertCode = 0;
   lastMotionUpdateMs = millis();
   prevPrimaryAngle = 0.0f;
   Serial.println("Calibration complete.");
 }
 
 void sampleSensors(unsigned long nowMs, bool applyCalibration) {
+  if (USE_MPU6050_TEST) {
+    int16_t ax1 = 0, ay1 = 0, az1 = 0;
+    int16_t ax2 = 0, ay2 = 0, az2 = 0;
+    bool ok1 = readMPU6050Accel(MPU6050_ADDR_1, ax1, ay1, az1);
+    bool ok2 = readMPU6050Accel(MPU6050_ADDR_2, ax2, ay2, az2);
+
+    float raw1 = ok1 ? accelToPseudoRaw(ax1, ay1, az1) : 0.0f;
+    float raw2 = ok2 ? accelToPseudoRaw(ax2, ay2, az2) : 0.0f;
+
+    // map 2 sensors for quick test: arm pair from MPU #1, leg pair from MPU #2
+    sensors[0].raw = raw1;
+    sensors[1].raw = raw1;
+    sensors[2].raw = raw1;
+    sensors[3].raw = raw1;
+    sensors[4].raw = raw2;
+    sensors[5].raw = raw2;
+    sensors[6].raw = raw2;
+    sensors[7].raw = raw2;
+
+    for (size_t i = 0; i < SENSOR_COUNT; i++) {
+      sensors[i].calibrated = applyCalibration ? (sensors[i].raw - sensors[i].zeroOffset) : sensors[i].raw;
+      sensors[i].timestampMs = nowMs;
+    }
+    return;
+  }
+
   for (size_t i = 0; i < SENSOR_COUNT; i++) {
     sensors[i].raw = analogRead(sensors[i].pin);
     sensors[i].calibrated = applyCalibration ? (sensors[i].raw - sensors[i].zeroOffset) : sensors[i].raw;
@@ -702,12 +833,42 @@ float sensorToDegrees(float sensorValue) {
   return sensorValue * RAW_TO_DEGREE;
 }
 
-bool evaluatePosture(float elbowLeft, float elbowRight, float kneeLeft, float kneeRight) {
-  bool elbowSymmetryOk = fabs(elbowLeft - elbowRight) <= 20.0f;
-  bool kneeSymmetryOk = fabs(kneeLeft - kneeRight) <= 20.0f;
-  bool elbowRangeOk = elbowLeft >= 0 && elbowLeft <= 170 && elbowRight >= 0 && elbowRight <= 170;
-  bool kneeRangeOk = kneeLeft >= 0 && kneeLeft <= 170 && kneeRight >= 0 && kneeRight <= 170;
-  return elbowSymmetryOk && kneeSymmetryOk && elbowRangeOk && kneeRangeOk;
+uint16_t evaluatePostureFaults(float elbowLeft, float elbowRight, float kneeLeft, float kneeRight) {
+  uint16_t faultMask = 0;
+  if (fabs(elbowLeft - elbowRight) > 20.0f) faultMask |= POSTURE_FAULT_ELBOW_SYMMETRY;
+  if (fabs(kneeLeft - kneeRight) > 20.0f) faultMask |= POSTURE_FAULT_KNEE_SYMMETRY;
+  if (!(elbowLeft >= 0 && elbowLeft <= 170 && elbowRight >= 0 && elbowRight <= 170)) faultMask |= POSTURE_FAULT_ELBOW_RANGE;
+  if (!(kneeLeft >= 0 && kneeLeft <= 170 && kneeRight >= 0 && kneeRight <= 170)) faultMask |= POSTURE_FAULT_KNEE_RANGE;
+  return faultMask;
+}
+
+void updatePostureStability(bool postureCorrect) {
+  if (postureCorrect) {
+    motion.postureStabilityScore = min(POSTURE_STABILITY_MAX, motion.postureStabilityScore + 1);
+  } else {
+    motion.postureStabilityScore = max(POSTURE_STABILITY_MIN, motion.postureStabilityScore - 1);
+  }
+}
+
+void updateInjuryAlert() {
+  uint16_t alertCode = 0;
+  if (motion.elbowLeft > SAFE_MAX_JOINT_ANGLE || motion.elbowRight > SAFE_MAX_JOINT_ANGLE ||
+      motion.kneeLeft > SAFE_MAX_JOINT_ANGLE || motion.kneeRight > SAFE_MAX_JOINT_ANGLE) {
+    alertCode |= ALERT_CODE_JOINT_ANGLE;
+  }
+  if (motion.speedDegPerSec > SAFE_MAX_SPEED_DPS) {
+    alertCode |= ALERT_CODE_SPEED;
+  }
+
+  motion.injuryAlertCode = alertCode;
+  motion.injuryAlertActive = alertCode != 0;
+  if (alertCode & ALERT_CODE_SPEED) {
+    motion.injuryAlertLevel = "critical";
+  } else if (alertCode != 0) {
+    motion.injuryAlertLevel = "warn";
+  } else {
+    motion.injuryAlertLevel = "none";
+  }
 }
 
 void updateRepCounter(float angleValue) {
@@ -721,7 +882,7 @@ void updateRepCounter(float angleValue) {
 }
 
 void updateMotionModel() {
-  if (!calibrationDone) return;
+  if (!calibrationDone || sessionState != SESSION_EXERCISE) return;
 
   const unsigned long nowMs = millis();
   sampleSensors(nowMs, true);
@@ -735,10 +896,10 @@ void updateMotionModel() {
   float leftShinDeg = sensorToDegrees(sensors[6].calibrated);
   float rightShinDeg = sensorToDegrees(sensors[7].calibrated);
 
-  motion.elbowLeft = fabs(leftForearmDeg - leftUpperArmDeg);
-  motion.elbowRight = fabs(rightForearmDeg - rightUpperArmDeg);
-  motion.kneeLeft = fabs(leftShinDeg - leftThighDeg);
-  motion.kneeRight = fabs(rightShinDeg - rightThighDeg);
+  motion.elbowLeft = clampAngle(fabs(leftForearmDeg - leftUpperArmDeg));
+  motion.elbowRight = clampAngle(fabs(rightForearmDeg - rightUpperArmDeg));
+  motion.kneeLeft = clampAngle(fabs(leftShinDeg - leftThighDeg));
+  motion.kneeRight = clampAngle(fabs(rightShinDeg - rightThighDeg));
   motion.primaryAngle = (motion.elbowLeft + motion.elbowRight + motion.kneeLeft + motion.kneeRight) / 4.0f;
 
   float dtSec = (nowMs - lastMotionUpdateMs) / 1000.0f;
@@ -748,9 +909,106 @@ void updateMotionModel() {
     motion.speedDegPerSec = 0.0f;
   }
 
-  motion.postureCorrect = evaluatePosture(motion.elbowLeft, motion.elbowRight, motion.kneeLeft, motion.kneeRight);
+  motion.postureFaultMask = evaluatePostureFaults(motion.elbowLeft, motion.elbowRight, motion.kneeLeft, motion.kneeRight);
+  motion.postureCorrect = motion.postureFaultMask == 0;
+  updatePostureStability(motion.postureCorrect);
+  updateInjuryAlert();
   updateRepCounter(motion.primaryAngle);
+  if (repTarget > 0 && motion.repCount >= repTarget) {
+    completeSession("rep_target_reached");
+  }
   prevPrimaryAngle = motion.primaryAngle;
   lastMotionUpdateMs = nowMs;
+}
+
+void startSession(const String& nextExerciseId, unsigned long nextRepTarget) {
+  if (sessionState == SESSION_EXERCISE) {
+    completeSession("replaced_by_new_session");
+  }
+
+  exerciseId = nextExerciseId.length() > 0 ? nextExerciseId : "general";
+  repTarget = nextRepTarget > 0 ? nextRepTarget : 10;
+  sessionId = buildSessionId();
+  sessionStartedMs = millis();
+  sessionCompletedMs = 0;
+  sessionSummaryPending = false;
+  sessionState = SESSION_CALIBRATE;
+  runCalibration();
+  sessionState = SESSION_EXERCISE;
+}
+
+void completeSession(const char* reason) {
+  if (sessionState != SESSION_EXERCISE) return;
+  sessionState = SESSION_COMPLETE;
+  sessionCompletedMs = millis();
+  sessionSummaryPending = true;
+  Serial.print("Session complete: ");
+  Serial.println(reason);
+}
+
+const char* sessionStateToString(SessionState state) {
+  switch (state) {
+    case SESSION_IDLE:
+      return "idle";
+    case SESSION_CALIBRATE:
+      return "calibrate";
+    case SESSION_EXERCISE:
+      return "exercise";
+    case SESSION_COMPLETE:
+      return "complete";
+  }
+  return "idle";
+}
+
+String buildSessionId() {
+  String base = getDeviceId();
+  base.replace(":", "");
+  return base + "_" + String(millis());
+}
+
+float clampAngle(float value) {
+  if (value < 0.0f) return 0.0f;
+  if (value > 180.0f) return 180.0f;
+  return value;
+}
+
+bool initMPU6050(uint8_t address) {
+  Wire.beginTransmission(address);
+  Wire.write(MPU6050_REG_PWR_MGMT_1);
+  Wire.write(0x00); // wake up MPU6050
+  if (Wire.endTransmission() != 0) {
+    return false;
+  }
+  delay(10);
+  return true;
+}
+
+bool readMPU6050Accel(uint8_t address, int16_t& ax, int16_t& ay, int16_t& az) {
+  Wire.beginTransmission(address);
+  Wire.write(MPU6050_REG_ACCEL_XOUT_H);
+  if (Wire.endTransmission(false) != 0) {
+    return false;
+  }
+
+  int readBytes = Wire.requestFrom((int)address, 6);
+  if (readBytes != 6) {
+    return false;
+  }
+
+  ax = (Wire.read() << 8) | Wire.read();
+  ay = (Wire.read() << 8) | Wire.read();
+  az = (Wire.read() << 8) | Wire.read();
+  return true;
+}
+
+float accelToPseudoRaw(int16_t ax, int16_t ay, int16_t az) {
+  float fx = (float)ax;
+  float fy = (float)ay;
+  float fz = (float)az;
+
+  // use pitch angle from accelerometer as a quick test signal
+  float pitchDeg = atan2f(fx, sqrtf(fy * fy + fz * fz)) * 180.0f / PI;
+  float angle0to180 = constrain(pitchDeg + 90.0f, 0.0f, 180.0f);
+  return angle0to180 * (4095.0f / 360.0f); // keep compatible with sensorToDegrees()
 }
 

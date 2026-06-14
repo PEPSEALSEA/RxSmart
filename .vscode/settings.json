@@ -1,0 +1,9 @@
+{
+  "files.associations": {
+    "*.ino": "arduino"
+  },
+  "C_Cpp.default.configurationProvider": "ms-vscode.vscode-arduino",
+  "C_Cpp.intelliSenseEngine": "default",
+  "C_Cpp.default.cppStandard": "c++17",
+  "C_Cpp.default.cStandard": "c11"
+}

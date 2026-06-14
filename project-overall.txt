@@ -30,8 +30,8 @@ Goal:
 [x] คำนวณมุมที่จำเป็นต่อแต่ละท่าฝึก
 [x] คำนวณความเร็วการเคลื่อนไหว
 [x] ทำระบบนับจำนวนรอบ (rep counter)
-[ ] วิเคราะห์ posture ว่าถูก/ผิดท่า
-[ ] ทำกติกาเตือนท่าเสี่ยงบาดเจ็บ
+[x] วิเคราะห์ posture ว่าถูก/ผิดท่า
+[x] ทำกติกาเตือนท่าเสี่ยงบาดเจ็บ
 
 ==================================================
 4) Embedded Firmware (ESP32)
@@ -40,26 +40,26 @@ Goal:
 [x] บันทึกค่า Wi-Fi และ recovery flow
 [x] Internet watchdog
 [x] Device registration + command polling + telemetry พื้นฐาน
-[ ] telemetry v2: ส่งข้อมูลแยก 8 เซนเซอร์ + angle/speed/posture/rep
-[ ] state machine session: idle -> calibrate -> exercise -> complete
+[x] telemetry v2: ส่งข้อมูลแยก 8 เซนเซอร์ + angle/speed/posture/rep
+[x] state machine session: idle -> calibrate -> exercise -> complete
 [ ] fault handling (sensor missing, packet loss, reconnect)
 
 ==================================================
 5) Cloud/API/Data
 ==================================================
-[ ] ออกแบบ API contract สำหรับ session กายภาพบำบัด
-[ ] ออกแบบฐานข้อมูล (user/session/exercise/metrics/events)
-[ ] จัดเก็บข้อมูล time-series สำหรับการวิเคราะห์ย้อนหลัง
+[x] ออกแบบ API contract สำหรับ session กายภาพบำบัด
+[x] ออกแบบฐานข้อมูล (user/session/exercise/metrics/events)
+[x] จัดเก็บข้อมูล time-series สำหรับการวิเคราะห์ย้อนหลัง
 [ ] ทำ auth และสิทธิ์เข้าถึงข้อมูลผู้ป่วย/ผู้ดูแล
 [ ] เพิ่ม logging/monitoring สำหรับอุปกรณ์และ API
 
 ==================================================
 6) App / Dashboard
 ==================================================
-[ ] หน้าติดตามแบบ real-time (angle/speed/posture/rep)
+[x] หน้าติดตามแบบ real-time (angle/speed/posture/rep)
 [ ] สรุปผลราย session พร้อมคะแนนคุณภาพท่า
 [ ] ประวัติแนวโน้มอาการรายสัปดาห์/รายเดือน
-[ ] ระบบแจ้งเตือนเมื่อทำท่าผิดหรือเกินช่วงปลอดภัย
+[x] ระบบแจ้งเตือนเมื่อทำท่าผิดหรือเกินช่วงปลอดภัย
 [ ] หน้าจัดการโปรแกรมฝึกตามโรค/อาการ
 
 ==================================================
@@ -92,6 +92,6 @@ Goal:
 ==================================================
 [ ] M1: อุปกรณ์อ่านเซนเซอร์จริง 8 จุด + calibration ได้
 [ ] M2: คำนวณ angle/speed/rep ได้เสถียร
-[ ] M3: posture detection + alert ใช้งานได้จริง
+[x] M3: posture detection + alert ใช้งานได้จริง
 [ ] M4: dashboard + history + รายงานผลครบ
 [ ] M5: pilot test และปิดช่องโหว่ก่อนใช้งานจริง

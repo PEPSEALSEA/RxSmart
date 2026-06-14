@@ -1,0 +1,5 @@
+{
+  "sketch": "ESP32DevKitV1-ArduinoIDE-Code.ino",
+  "board": "esp32:esp32:esp32",
+  "output": "build"
+}

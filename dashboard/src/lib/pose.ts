@@ -64,6 +64,17 @@ export const LOWER_SENSOR_CHANNEL: Record<LowerPoseKey, number> = {
   r_leg_lower: 7,
 };
 
+export const FIRMWARE_SENSOR_TO_POSE: Record<string, PoseKey> = {
+  left_upper_arm: "l_arm_upper",
+  right_upper_arm: "r_arm_upper",
+  left_forearm: "l_arm_lower",
+  right_forearm: "r_arm_lower",
+  left_thigh: "l_leg_upper",
+  right_thigh: "r_leg_upper",
+  left_shin: "l_leg_lower",
+  right_shin: "r_leg_lower",
+};
+
 export function isUpperKey(key: PoseKey): key is UpperPoseKey {
   return (UPPER_KEYS as string[]).includes(key);
 }
