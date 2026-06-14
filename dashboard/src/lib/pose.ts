@@ -72,14 +72,14 @@ export function isLowerKey(key: PoseKey): key is LowerPoseKey {
   return (LOWER_KEYS as string[]).includes(key);
 }
 
-/** แขนห้อยตามธรรมชาติ — เอียงเล็กน้อยไปข้างหน้า ไม่ชิดข้างลำตัว */
-export const ARM_REST: UpperJointAngles = { elevation: 12, plane: 88 };
+/** แขนห้อยข้างลำตัว มืออยู่ต้นขาด้านข้าง (anatomical rest) */
+export const ARM_REST: UpperJointAngles = { elevation: 8, plane: 18 };
 
 export const NEUTRAL_POSE: ResolvedPose = {
   l_arm_upper: { ...ARM_REST },
-  l_arm_lower: { bend: 8 },
+  l_arm_lower: { bend: 6 },
   r_arm_upper: { ...ARM_REST },
-  r_arm_lower: { bend: 8 },
+  r_arm_lower: { bend: 6 },
   l_leg_upper: { elevation: 0, plane: 0 },
   l_leg_lower: { bend: 0 },
   r_leg_upper: { elevation: 0, plane: 0 },
@@ -87,7 +87,7 @@ export const NEUTRAL_POSE: ResolvedPose = {
 };
 
 /**
- * แปลง (elevation, plane) เป็นทิศทางของ segment ในโลก (Y-up)
+ * แปลง (elevation, plane) เป็นทิศทาง unit ของ segment (Y-up)
  * elevation 0°=ลง, 90°=ขนานพื้น, 180°=ชี้ขึ้น
  * plane 0°=ข้างตัว, 90°=หน้า, 180°=ข้ามตัว, 270°=หลัง
  */
@@ -96,91 +96,12 @@ export function upperLimbDirection(isRight: boolean, elevation: number, plane: n
   const e = (elevation * Math.PI) / 180;
   const p = (plane * Math.PI) / 180;
   const sinE = Math.sin(e);
-  return [side * sinE * Math.cos(p), -Math.cos(e), sinE * Math.sin(p)];
-}
-
-const TORSO_CENTER = { x: 0, y: 1.22, z: 0 };
-const TORSO_HALF = { x: 0.19, y: 0.28, z: 0.11 };
-const SHOULDER = { x: 0.24, y: 1.48, z: 0.04 };
-const UPPER_ARM_LEN = 0.28;
-const FOREARM_LEN = 0.26;
-
-function insideTorso(x: number, y: number, z: number): boolean {
-  return (
-    Math.abs(x - TORSO_CENTER.x) < TORSO_HALF.x &&
-    Math.abs(y - TORSO_CENTER.y) < TORSO_HALF.y &&
-    Math.abs(z - TORSO_CENTER.z) < TORSO_HALF.z
-  );
-}
-
-function normalizeDir(x: number, y: number, z: number): [number, number, number] {
+  const x = side * sinE * Math.cos(p);
+  const y = -Math.cos(e);
+  const z = sinE * Math.sin(p);
   const len = Math.hypot(x, y, z);
   if (len < 1e-6) return [0, -1, 0];
   return [x / len, y / len, z / len];
-}
-
-/** ทิศทางแขนสำหรับ 3D viewer — เลี่ยงให้แขนไม่ทะลุลำตัว (ไม่กระทบค่า sensor) */
-export function visualArmDirection(
-  isRight: boolean,
-  elevation: number,
-  plane: number,
-  elbowBend = 0,
-): [number, number, number] {
-  const sx = isRight ? SHOULDER.x : -SHOULDER.x;
-  const sy = SHOULDER.y;
-  const sz = SHOULDER.z;
-
-  let [x, y, z] = upperLimbDirection(isRight, elevation, plane);
-
-  const elbowTip = () => [sx + x * UPPER_ARM_LEN, sy + y * UPPER_ARM_LEN, sz + z * UPPER_ARM_LEN] as const;
-
-  const handTip = () => {
-    const [ex, ey, ez] = elbowTip();
-    const bend = (elbowBend * Math.PI) / 180;
-    const foldX = (isRight ? 0.22 : -0.22) * Math.sin(bend);
-    const foldY = 0.75 * Math.sin(bend);
-    const foldZ = 0.4 * Math.sin(bend);
-    let [fx, fy, fz] = normalizeDir(
-      x * Math.cos(bend) + foldX,
-      y * Math.cos(bend) + foldY,
-      z * Math.cos(bend) + foldZ,
-    );
-    return [ex + fx * FOREARM_LEN, ey + fy * FOREARM_LEN, ez + fz * FOREARM_LEN] as const;
-  };
-
-  const clipsTorso = () => {
-    const [ex, ey, ez] = elbowTip();
-    if (insideTorso(ex, ey, ez)) return true;
-    const [hx, hy, hz] = handTip();
-    return insideTorso(hx, hy, hz);
-  };
-
-  if (clipsTorso()) {
-    z = Math.max(z, 0.42);
-    [x, y, z] = normalizeDir(x, y, z);
-  }
-
-  if (clipsTorso()) {
-    y = Math.max(y, 0.45);
-    x = isRight ? Math.max(x, 0.42) : Math.min(x, -0.42);
-    [x, y, z] = normalizeDir(x, y, z);
-  }
-
-  if (clipsTorso()) {
-    y = Math.max(y, 0.65);
-    z = Math.max(z, 0.5);
-    [x, y, z] = normalizeDir(x, y, z);
-  }
-
-  const [, , tipZ] = handTip();
-  const [tipX] = handTip();
-  if (tipZ < -TORSO_HALF.z && Math.abs(tipX) < TORSO_HALF.x * 0.9) {
-    x = isRight ? Math.max(x, 0.5) : Math.min(x, -0.5);
-    z = Math.min(z, -0.52);
-    [x, y, z] = normalizeDir(x, y, z);
-  }
-
-  return [x, y, z];
 }
 
 export function shortestPlaneDelta(from: number, to: number): number {
