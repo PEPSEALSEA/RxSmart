@@ -18,8 +18,8 @@ const _leftFoot = new Vector3();
 const _rightFoot = new Vector3();
 
 const WORLD_FORWARD = new Vector3(0, 0, 1);
-const LEG_HINT_LEFT = new Vector3(-1, 0, 0.25);
-const LEG_HINT_RIGHT = new Vector3(1, 0, 0.25);
+const LEG_HINT_LEFT = new Vector3(-0.15, 0, -1);
+const LEG_HINT_RIGHT = new Vector3(0.15, 0, -1);
 
 const _yAxis = new Vector3();
 const _xAxis = new Vector3();
