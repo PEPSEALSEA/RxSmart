@@ -5,7 +5,7 @@ import { RoundedBox } from "@react-three/drei";
 import { type RefObject, useMemo, useRef } from "react";
 import { Group, MeshPhysicalMaterial, Vector3 } from "three";
 import { SEGMENT_LENGTHS } from "@/lib/biomechanics";
-import { NEUTRAL_POSE, PoseKey, UPPER_KEYS, shortestPlaneDelta, upperLimbDirection } from "@/lib/pose";
+import { NEUTRAL_POSE, PoseKey, UPPER_KEYS, UpperPoseKey, LowerPoseKey, shortestPlaneDelta, visualArmDirection, upperLimbDirection } from "@/lib/pose";
 import { SensorFrame } from "@/lib/pose-physics";
 
 const DEG = Math.PI / 180;
@@ -85,8 +85,17 @@ function Foot({ active }: { active?: boolean }) {
   );
 }
 
-function applyUpperOrientation(group: Group, isRight: boolean, elevation: number, plane: number) {
-  const [x, y, z] = upperLimbDirection(isRight, elevation, plane);
+function applyUpperOrientation(
+  group: Group,
+  isRight: boolean,
+  isArm: boolean,
+  elevation: number,
+  plane: number,
+  elbowBend = 0,
+) {
+  const [x, y, z] = isArm
+    ? visualArmDirection(isRight, elevation, plane, elbowBend)
+    : upperLimbDirection(isRight, elevation, plane);
   _targetDir.set(x, y, z);
   const dot = BIND_AXIS.dot(_targetDir);
 
@@ -151,6 +160,10 @@ export function Mannequin({ frame, activeJoints = [] }: MannequinProps) {
     l_leg_lower: lKneeRef,
     r_leg_lower: rKneeRef,
   };
+  const upperToLower: Partial<Record<UpperPoseKey, LowerPoseKey>> = {
+    l_arm_upper: "l_arm_lower",
+    r_arm_upper: "r_arm_lower",
+  };
 
   useFrame((_, dt) => {
     const capped = Math.min(dt, 0.05);
@@ -171,7 +184,10 @@ export function Mannequin({ frame, activeJoints = [] }: MannequinProps) {
 
       const ref = shoulderRefs[key].current;
       if (ref) {
-        applyUpperOrientation(ref, key.startsWith("r_"), vis.elevation, vis.plane);
+        const isArm = key.includes("arm");
+        const lowerKey = upperToLower[key as UpperPoseKey];
+        const elbowBend = isArm && lowerKey ? visualLower.current[lowerKey].bend : 0;
+        applyUpperOrientation(ref, key.startsWith("r_"), isArm, vis.elevation, vis.plane, elbowBend);
       }
     }
 

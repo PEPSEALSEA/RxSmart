@@ -128,7 +128,7 @@ export const REHAB_EXERCISES: RehabExercise[] = [
       {
         id: "recover",
         label: "ฟื้นข้ามตัว",
-        targets: { l_arm_upper: { elevation: 90, plane: 200 }, l_arm_lower: { bend: 15 } },
+        targets: { l_arm_upper: { elevation: 130, plane: 115 }, l_arm_lower: { bend: 35 } },
         holdSeconds: 0.3,
         moveSpeed: 42,
         activeJoints: ["l_arm_upper", "l_arm_lower"],
@@ -136,7 +136,7 @@ export const REHAB_EXERCISES: RehabExercise[] = [
       {
         id: "sweep",
         label: "เหวี่ยงกลับข้างหลัง",
-        targets: { l_arm_upper: { elevation: 45, plane: 280 }, l_arm_lower: { bend: 10 } },
+        targets: { l_arm_upper: { elevation: 38, plane: 270 }, l_arm_lower: { bend: 12 } },
         holdSeconds: 0.3,
         moveSpeed: 38,
         activeJoints: ["l_arm_upper", "l_arm_lower"],
@@ -179,7 +179,7 @@ export const REHAB_EXERCISES: RehabExercise[] = [
       {
         id: "recover",
         label: "ฟื้นข้ามตัว",
-        targets: { r_arm_upper: { elevation: 90, plane: 200 }, r_arm_lower: { bend: 15 } },
+        targets: { r_arm_upper: { elevation: 130, plane: 115 }, r_arm_lower: { bend: 35 } },
         holdSeconds: 0.3,
         moveSpeed: 42,
         activeJoints: ["r_arm_upper", "r_arm_lower"],
@@ -187,7 +187,7 @@ export const REHAB_EXERCISES: RehabExercise[] = [
       {
         id: "sweep",
         label: "เหวี่ยงกลับข้างหลัง",
-        targets: { r_arm_upper: { elevation: 45, plane: 280 }, r_arm_lower: { bend: 10 } },
+        targets: { r_arm_upper: { elevation: 38, plane: 270 }, r_arm_lower: { bend: 12 } },
         holdSeconds: 0.3,
         moveSpeed: 38,
         activeJoints: ["r_arm_upper", "r_arm_lower"],
