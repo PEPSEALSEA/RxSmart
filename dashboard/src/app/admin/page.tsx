@@ -3,6 +3,34 @@
 import Link from "next/link";
 import { FormEvent, useCallback, useEffect, useMemo, useState } from "react";
 import { Device, getApiUrl, getErrorMessage, isDeviceOnline } from "@/lib/devices";
+import { POSE_KEYS, POSE_LABELS, PoseKey } from "@/lib/pose";
+
+type DebugTelemetry = {
+  timestamp: string;
+  device_id: string;
+  sensor_value: unknown;
+  status: string;
+  wifi_ssid: string;
+};
+
+type SavedDebugSample = {
+  timestamp: string;
+  device_id: string;
+  pose_name: string;
+  test_target: string;
+  sensor_map: string;
+  packet_json: string;
+  notes: string;
+};
+
+type PoseTemplate = {
+  created_at: string;
+  pose_name: string;
+  test_target: string;
+  sensor_map: string;
+  reference_json: string;
+  device_id: string;
+};
 
 export default function AdminPage() {
   const [loadingFix, setLoadingFix] = useState(false);
@@ -18,6 +46,18 @@ export default function AdminPage() {
   const [actionMessage, setActionMessage] = useState("");
   const [actionError, setActionError] = useState("");
   const [currentTime, setCurrentTime] = useState(0);
+  const [debugLoading, setDebugLoading] = useState(false);
+  const [debugError, setDebugError] = useState("");
+  const [debugMessage, setDebugMessage] = useState("");
+  const [latestTelemetry, setLatestTelemetry] = useState<DebugTelemetry | null>(null);
+  const [debugSamples, setDebugSamples] = useState<SavedDebugSample[]>([]);
+  const [poseTemplates, setPoseTemplates] = useState<PoseTemplate[]>([]);
+  const [debugDeviceId, setDebugDeviceId] = useState("");
+  const [poseName, setPoseName] = useState("");
+  const [notes, setNotes] = useState("");
+  const [testTarget, setTestTarget] = useState<PoseKey>("l_arm_upper");
+  const [sensorAKey, setSensorAKey] = useState<PoseKey>("l_arm_upper");
+  const [sensorBKey, setSensorBKey] = useState<PoseKey>("r_arm_upper");
 
   const apiUrl = getApiUrl();
   const selectedDevice = useMemo(
@@ -33,11 +73,52 @@ export default function AdminPage() {
       const res = await fetch(`${apiUrl}/api/devices`);
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || "Failed to fetch devices");
-      setDevices(data.devices || []);
+      const nextDevices = data.devices || [];
+      setDevices(nextDevices);
+      setDebugDeviceId((current) => {
+        if (current && nextDevices.some((device: Device) => device.device_id === current)) return current;
+        return nextDevices[0]?.device_id || "";
+      });
     } catch (err) {
       setDevicesError(getErrorMessage(err));
     } finally {
       setLoadingDevices(false);
+    }
+  }, [apiUrl]);
+
+  const fetchDebugTelemetry = useCallback(async (deviceId: string) => {
+    if (!deviceId) return;
+    try {
+      const res = await fetch(`${apiUrl}/api/debug/telemetry?device_id=${encodeURIComponent(deviceId)}&limit=1`);
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Failed to fetch telemetry");
+      const latest = (data.samples?.[0] || null) as DebugTelemetry | null;
+      setLatestTelemetry(latest);
+    } catch (err) {
+      setDebugError(getErrorMessage(err));
+    }
+  }, [apiUrl]);
+
+  const fetchDebugSamples = useCallback(async (deviceId: string) => {
+    if (!deviceId) return;
+    try {
+      const res = await fetch(`${apiUrl}/api/debug/samples?device_id=${encodeURIComponent(deviceId)}&limit=20`);
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Failed to fetch samples");
+      setDebugSamples(data.samples || []);
+    } catch (err) {
+      setDebugError(getErrorMessage(err));
+    }
+  }, [apiUrl]);
+
+  const fetchPoseTemplates = useCallback(async () => {
+    try {
+      const res = await fetch(`${apiUrl}/api/debug/poses?limit=20`);
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Failed to fetch pose templates");
+      setPoseTemplates(data.poses || []);
+    } catch (err) {
+      setDebugError(getErrorMessage(err));
     }
   }, [apiUrl]);
 
@@ -53,6 +134,22 @@ export default function AdminPage() {
       clearInterval(interval);
     };
   }, [fetchDevices]);
+
+  useEffect(() => {
+    if (!debugDeviceId) return;
+    const bootstrap = setTimeout(() => {
+      void fetchPoseTemplates();
+      void fetchDebugTelemetry(debugDeviceId);
+      void fetchDebugSamples(debugDeviceId);
+    }, 0);
+    const interval = setInterval(() => {
+      void fetchDebugTelemetry(debugDeviceId);
+    }, 3000);
+    return () => {
+      clearTimeout(bootstrap);
+      clearInterval(interval);
+    };
+  }, [debugDeviceId, fetchDebugTelemetry, fetchDebugSamples, fetchPoseTemplates]);
 
   const openDevice = (device: Device) => {
     setSelectedDeviceId(device.device_id);
@@ -134,6 +231,76 @@ export default function AdminPage() {
   const checkSelectedStatus = async () => {
     await fetchDevices();
     setActionMessage("Status refreshed from the dashboard data.");
+  };
+
+  const captureSample = async () => {
+    if (!debugDeviceId || !latestTelemetry) {
+      setDebugError("No telemetry available to capture yet.");
+      return;
+    }
+    setDebugLoading(true);
+    setDebugError("");
+    setDebugMessage("");
+    try {
+      const sensorMap = { sensorA: sensorAKey, sensorB: sensorBKey };
+      const res = await fetch(`${apiUrl}/api/debug/samples`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          device_id: debugDeviceId,
+          pose_name: poseName.trim() || "debug-sample",
+          test_target: testTarget,
+          sensor_map: sensorMap,
+          packet: latestTelemetry.sensor_value,
+          notes: notes.trim(),
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Failed to save sample");
+      setDebugMessage("Saved sample snapshot.");
+      await fetchDebugSamples(debugDeviceId);
+    } catch (err) {
+      setDebugError(getErrorMessage(err));
+    } finally {
+      setDebugLoading(false);
+    }
+  };
+
+  const saveAsPoseTemplate = async () => {
+    if (!debugDeviceId || !latestTelemetry) {
+      setDebugError("No telemetry available to create pose.");
+      return;
+    }
+    const normalizedPoseName = poseName.trim();
+    if (!normalizedPoseName) {
+      setDebugError("Pose name is required.");
+      return;
+    }
+    setDebugLoading(true);
+    setDebugError("");
+    setDebugMessage("");
+    try {
+      const sensorMap = { sensorA: sensorAKey, sensorB: sensorBKey };
+      const res = await fetch(`${apiUrl}/api/debug/poses`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          device_id: debugDeviceId,
+          pose_name: normalizedPoseName,
+          test_target: testTarget,
+          sensor_map: sensorMap,
+          reference: latestTelemetry.sensor_value,
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Failed to save pose template");
+      setDebugMessage("Added new pose template.");
+      await fetchPoseTemplates();
+    } catch (err) {
+      setDebugError(getErrorMessage(err));
+    } finally {
+      setDebugLoading(false);
+    }
   };
 
   const onlineCount = devices.filter((device) => isDeviceOnline(device.last_online, currentTime)).length;
@@ -244,6 +411,175 @@ export default function AdminPage() {
             </div>
           </section>
         </div>
+
+        <section className="bg-white/5 backdrop-blur-xl border border-white/10 p-6 rounded-3xl shadow-xl">
+          <div className="flex flex-wrap items-center justify-between gap-3 mb-6">
+            <div>
+              <h2 className="text-xl font-semibold">MPU6050 Debug Lab (2 Sensors)</h2>
+              <p className="text-xs text-slate-400">เลือกจุดทดสอบ บันทึก sample และเพิ่มท่าใหม่จากข้อมูลจริงของ ESP32</p>
+            </div>
+            <button
+              onClick={() => {
+                if (!debugDeviceId) return;
+                void fetchDebugTelemetry(debugDeviceId);
+                void fetchDebugSamples(debugDeviceId);
+                void fetchPoseTemplates();
+              }}
+              className="text-sm text-indigo-400 hover:text-indigo-300 transition-colors"
+            >
+              Refresh Debug Data
+            </button>
+          </div>
+
+          <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
+            <div className="rounded-2xl border border-white/10 bg-slate-900/50 p-4 space-y-3">
+              <label className="text-xs text-slate-400 uppercase tracking-wider">Device</label>
+              <select
+                value={debugDeviceId}
+                onChange={(event) => setDebugDeviceId(event.target.value)}
+                className="w-full rounded-xl border border-white/10 bg-slate-950 px-3 py-2 text-sm"
+              >
+                <option value="">Select board</option>
+                {devices.map((device) => (
+                  <option key={device.device_id} value={device.device_id}>
+                    {device.device_id}
+                  </option>
+                ))}
+              </select>
+
+              <label className="text-xs text-slate-400 uppercase tracking-wider">Test Target</label>
+              <select
+                value={testTarget}
+                onChange={(event) => setTestTarget(event.target.value as PoseKey)}
+                className="w-full rounded-xl border border-white/10 bg-slate-950 px-3 py-2 text-sm"
+              >
+                {POSE_KEYS.map((key) => (
+                  <option key={key} value={key}>
+                    {POSE_LABELS[key]}
+                  </option>
+                ))}
+              </select>
+
+              <div className="grid grid-cols-2 gap-2">
+                <div>
+                  <label className="text-xs text-slate-400 uppercase tracking-wider">Sensor A</label>
+                  <select
+                    value={sensorAKey}
+                    onChange={(event) => setSensorAKey(event.target.value as PoseKey)}
+                    className="mt-1 w-full rounded-xl border border-white/10 bg-slate-950 px-3 py-2 text-sm"
+                  >
+                    {POSE_KEYS.map((key) => (
+                      <option key={key} value={key}>
+                        {POSE_LABELS[key]}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+                <div>
+                  <label className="text-xs text-slate-400 uppercase tracking-wider">Sensor B</label>
+                  <select
+                    value={sensorBKey}
+                    onChange={(event) => setSensorBKey(event.target.value as PoseKey)}
+                    className="mt-1 w-full rounded-xl border border-white/10 bg-slate-950 px-3 py-2 text-sm"
+                  >
+                    {POSE_KEYS.map((key) => (
+                      <option key={key} value={key}>
+                        {POSE_LABELS[key]}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              </div>
+
+              <label className="text-xs text-slate-400 uppercase tracking-wider">Pose Name</label>
+              <input
+                value={poseName}
+                onChange={(event) => setPoseName(event.target.value)}
+                placeholder="e.g. shoulder-flexion-45"
+                className="w-full rounded-xl border border-white/10 bg-slate-950 px-3 py-2 text-sm"
+              />
+
+              <label className="text-xs text-slate-400 uppercase tracking-wider">Notes</label>
+              <textarea
+                value={notes}
+                onChange={(event) => setNotes(event.target.value)}
+                rows={3}
+                className="w-full rounded-xl border border-white/10 bg-slate-950 px-3 py-2 text-sm"
+              />
+
+              <div className="grid grid-cols-2 gap-2">
+                <button
+                  onClick={captureSample}
+                  disabled={debugLoading || !debugDeviceId}
+                  className="rounded-xl bg-cyan-600 px-4 py-2 text-sm font-semibold hover:bg-cyan-500 disabled:opacity-60"
+                >
+                  {debugLoading ? "Saving..." : "Save Sample"}
+                </button>
+                <button
+                  onClick={saveAsPoseTemplate}
+                  disabled={debugLoading || !debugDeviceId}
+                  className="rounded-xl bg-violet-600 px-4 py-2 text-sm font-semibold hover:bg-violet-500 disabled:opacity-60"
+                >
+                  {debugLoading ? "Saving..." : "Add New Pose"}
+                </button>
+              </div>
+            </div>
+
+            <div className="rounded-2xl border border-white/10 bg-slate-900/50 p-4">
+              <h3 className="text-sm font-semibold mb-3">Latest ESP32 Packet</h3>
+              {!latestTelemetry ? (
+                <p className="text-xs text-slate-500">No data yet. Send telemetry from ESP32 first.</p>
+              ) : (
+                <div className="space-y-2 text-xs">
+                  <p className="text-slate-400">Time: <span className="text-slate-200">{new Date(latestTelemetry.timestamp).toLocaleString()}</span></p>
+                  <p className="text-slate-400">Status: <span className="text-slate-200">{latestTelemetry.status || "-"}</span></p>
+                  <pre className="max-h-64 overflow-auto rounded-xl border border-white/10 bg-slate-950 p-3 text-[11px] text-slate-300">
+                    {JSON.stringify(latestTelemetry.sensor_value, null, 2)}
+                  </pre>
+                </div>
+              )}
+            </div>
+
+            <div className="space-y-4">
+              <div className="rounded-2xl border border-white/10 bg-slate-900/50 p-4">
+                <h3 className="text-sm font-semibold mb-3">Saved Samples</h3>
+                <div className="max-h-56 overflow-auto space-y-2">
+                  {debugSamples.length === 0 ? (
+                    <p className="text-xs text-slate-500">No samples yet.</p>
+                  ) : (
+                    debugSamples.map((sample, index) => (
+                      <div key={`${sample.timestamp}-${index}`} className="rounded-xl border border-white/10 bg-slate-950/60 p-2 text-xs">
+                        <p className="text-slate-300">{sample.pose_name || "debug-sample"}</p>
+                        <p className="text-slate-500">{new Date(sample.timestamp).toLocaleString()}</p>
+                        <p className="text-slate-500 truncate">{sample.test_target}</p>
+                      </div>
+                    ))
+                  )}
+                </div>
+              </div>
+
+              <div className="rounded-2xl border border-white/10 bg-slate-900/50 p-4">
+                <h3 className="text-sm font-semibold mb-3">Pose Library</h3>
+                <div className="max-h-56 overflow-auto space-y-2">
+                  {poseTemplates.length === 0 ? (
+                    <p className="text-xs text-slate-500">No poses yet.</p>
+                  ) : (
+                    poseTemplates.map((pose, index) => (
+                      <div key={`${pose.created_at}-${index}`} className="rounded-xl border border-white/10 bg-slate-950/60 p-2 text-xs">
+                        <p className="text-slate-300">{pose.pose_name}</p>
+                        <p className="text-slate-500">{pose.test_target || "-"}</p>
+                        <p className="text-slate-500">{new Date(pose.created_at).toLocaleString()}</p>
+                      </div>
+                    ))
+                  )}
+                </div>
+              </div>
+            </div>
+          </div>
+
+          {debugMessage && <div className="mt-4 p-3 bg-emerald-500/10 border border-emerald-500/20 text-emerald-400 rounded-lg text-xs">{debugMessage}</div>}
+          {debugError && <div className="mt-4 p-3 bg-rose-500/10 border border-rose-500/20 text-rose-400 rounded-lg text-xs">{debugError}</div>}
+        </section>
       </div>
 
       {selectedDevice && (

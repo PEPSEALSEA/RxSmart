@@ -10,6 +10,8 @@ const sheetHeaders: Record<string, string[]> = {
   Sheet1: ["Timestamp", "Device_ID", "Sensor_Value", "Status", "WiFi_SSID"],
   Devices: ["Device_ID", "WiFi_SSID", "Last_Online"],
   Commands: ["Device_ID", "Command", "WiFi_SSID", "WiFi_Password", "Created_At", "Status"],
+  DebugSamples: ["Timestamp", "Device_ID", "Pose_Name", "Test_Target", "Sensor_Map", "Packet_JSON", "Notes"],
+  PoseLibrary: ["Created_At", "Pose_Name", "Test_Target", "Sensor_Map", "Reference_JSON", "Device_ID"],
 };
 
 const jsonHeaders = {
@@ -22,6 +24,42 @@ function jsonResponse(payload: unknown, init: ResponseInit = {}) {
     ...init,
     headers: { ...jsonHeaders, ...(init.headers || {}) },
   });
+}
+
+type DebugTelemetryRow = {
+  timestamp: string;
+  device_id: string;
+  sensor_value: unknown;
+  status: string;
+  wifi_ssid: string;
+};
+
+type DebugSample = {
+  timestamp: string;
+  device_id: string;
+  pose_name: string;
+  test_target: string;
+  sensor_map: string;
+  packet_json: string;
+  notes: string;
+};
+
+type PoseTemplate = {
+  created_at: string;
+  pose_name: string;
+  test_target: string;
+  sensor_map: string;
+  reference_json: string;
+  device_id: string;
+};
+
+function parseMaybeJson(raw: string): unknown {
+  if (!raw) return "";
+  try {
+    return JSON.parse(raw);
+  } catch {
+    return raw;
+  }
 }
 
 function base64url(source: string | Uint8Array): string {
@@ -171,6 +209,26 @@ async function ensureSheetHeader(env: Env, token: string, title: string, sheetId
   });
 }
 
+async function readSheetValues(env: Env, token: string, range: string): Promise<string[][]> {
+  const getUrl = `https://sheets.googleapis.com/v4/spreadsheets/${env.SPREADSHEET_ID}/values/${range}`;
+  const getRes = await fetch(getUrl, { headers: { Authorization: `Bearer ${token}` } });
+  const data: any = await getRes.json();
+  if (data.error) {
+    throw new Error(`Error reading range ${range}: ${JSON.stringify(data.error)}`);
+  }
+  return data.values || [];
+}
+
+async function appendSheetRow(env: Env, token: string, sheet: string, values: string[]) {
+  await ensureSheet(env, token, sheet);
+  const appendUrl = `https://sheets.googleapis.com/v4/spreadsheets/${env.SPREADSHEET_ID}/values/${sheet}:append?valueInputOption=USER_ENTERED`;
+  await fetch(appendUrl, {
+    method: "POST",
+    headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+    body: JSON.stringify({ values: [values] }),
+  });
+}
+
 async function upsertDevice(env: Env, token: string, deviceId: string, wifiSsid: string, timestamp: string) {
   await ensureSheet(env, token, "Devices");
   const getUrl = `https://sheets.googleapis.com/v4/spreadsheets/${env.SPREADSHEET_ID}/values/Devices!A:A`;
@@ -276,6 +334,58 @@ async function getPendingCommand(env: Env, token: string, deviceId: string) {
   };
 }
 
+async function listRecentTelemetry(env: Env, token: string, deviceId: string | null, limit: number): Promise<DebugTelemetryRow[]> {
+  await ensureSheet(env, token, "Sheet1");
+  const rows = await readSheetValues(env, token, "Sheet1!A:E");
+
+  const telemetryRows = rows
+    .filter((row) => row[0] && row[0] !== "Timestamp")
+    .map((row) => ({
+      timestamp: row[0] || "",
+      device_id: row[1] || "",
+      sensor_value: parseMaybeJson(row[2] || ""),
+      status: row[3] || "",
+      wifi_ssid: row[4] || "",
+    }))
+    .filter((row) => (deviceId ? row.device_id === deviceId : true));
+
+  return telemetryRows.slice(Math.max(0, telemetryRows.length - limit)).reverse();
+}
+
+async function listDebugSamples(env: Env, token: string, deviceId: string | null, limit: number): Promise<DebugSample[]> {
+  await ensureSheet(env, token, "DebugSamples");
+  const rows = await readSheetValues(env, token, "DebugSamples!A:G");
+  const samples = rows
+    .filter((row) => row[0] && row[0] !== "Timestamp")
+    .map((row) => ({
+      timestamp: row[0] || "",
+      device_id: row[1] || "",
+      pose_name: row[2] || "",
+      test_target: row[3] || "",
+      sensor_map: row[4] || "",
+      packet_json: row[5] || "",
+      notes: row[6] || "",
+    }))
+    .filter((row) => (deviceId ? row.device_id === deviceId : true));
+  return samples.slice(Math.max(0, samples.length - limit)).reverse();
+}
+
+async function listPoseLibrary(env: Env, token: string, limit: number): Promise<PoseTemplate[]> {
+  await ensureSheet(env, token, "PoseLibrary");
+  const rows = await readSheetValues(env, token, "PoseLibrary!A:F");
+  const poses = rows
+    .filter((row) => row[0] && row[0] !== "Created_At")
+    .map((row) => ({
+      created_at: row[0] || "",
+      pose_name: row[1] || "",
+      test_target: row[2] || "",
+      sensor_map: row[3] || "",
+      reference_json: row[4] || "",
+      device_id: row[5] || "",
+    }));
+  return poses.slice(Math.max(0, poses.length - limit)).reverse();
+}
+
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
     const url = new URL(request.url);
@@ -350,8 +460,13 @@ export default {
         await ensureSheet(env, token, "Sheet1");
         await ensureSheet(env, token, "Devices");
         await ensureSheet(env, token, "Commands");
+        await ensureSheet(env, token, "DebugSamples");
+        await ensureSheet(env, token, "PoseLibrary");
 
-        return jsonResponse({ success: true, message: "Sheet headers fixed and device/command tabs validated without overwriting data." });
+        return jsonResponse({
+          success: true,
+          message: "Sheet headers fixed and all tabs validated without overwriting data.",
+        });
       } catch (e: any) {
         return jsonResponse({ error: e.message }, { status: 500 });
       }
@@ -427,6 +542,86 @@ export default {
         const token = await getGoogleAuthToken(env.GOOGLE_CLIENT_EMAIL, env.GOOGLE_PRIVATE_KEY);
         const command = await getPendingCommand(env, token, deviceId);
         return jsonResponse({ success: true, command });
+      } catch (e: any) {
+        return jsonResponse({ error: e.message }, { status: 500 });
+      }
+    }
+
+    if (request.method === "GET" && url.pathname === "/api/debug/telemetry") {
+      try {
+        const deviceId = url.searchParams.get("device_id");
+        const limitRaw = Number.parseInt(url.searchParams.get("limit") || "20", 10);
+        const limit = Number.isFinite(limitRaw) ? Math.min(Math.max(limitRaw, 1), 200) : 20;
+        const token = await getGoogleAuthToken(env.GOOGLE_CLIENT_EMAIL, env.GOOGLE_PRIVATE_KEY);
+        const samples = await listRecentTelemetry(env, token, deviceId, limit);
+        return jsonResponse({ success: true, samples });
+      } catch (e: any) {
+        return jsonResponse({ error: e.message }, { status: 500 });
+      }
+    }
+
+    if (request.method === "GET" && url.pathname === "/api/debug/samples") {
+      try {
+        const deviceId = url.searchParams.get("device_id");
+        const limitRaw = Number.parseInt(url.searchParams.get("limit") || "50", 10);
+        const limit = Number.isFinite(limitRaw) ? Math.min(Math.max(limitRaw, 1), 300) : 50;
+        const token = await getGoogleAuthToken(env.GOOGLE_CLIENT_EMAIL, env.GOOGLE_PRIVATE_KEY);
+        const samples = await listDebugSamples(env, token, deviceId, limit);
+        return jsonResponse({ success: true, samples });
+      } catch (e: any) {
+        return jsonResponse({ error: e.message }, { status: 500 });
+      }
+    }
+
+    if (request.method === "POST" && url.pathname === "/api/debug/samples") {
+      try {
+        const body: any = await request.json();
+        const timestamp = new Date().toISOString();
+        const token = await getGoogleAuthToken(env.GOOGLE_CLIENT_EMAIL, env.GOOGLE_PRIVATE_KEY);
+        await appendSheetRow(env, token, "DebugSamples", [
+          timestamp,
+          body.device_id || "Unknown",
+          body.pose_name || "Untitled",
+          body.test_target || "",
+          JSON.stringify(body.sensor_map || {}),
+          JSON.stringify(body.packet || {}),
+          body.notes || "",
+        ]);
+        return jsonResponse({ success: true, timestamp });
+      } catch (e: any) {
+        return jsonResponse({ error: e.message }, { status: 500 });
+      }
+    }
+
+    if (request.method === "GET" && url.pathname === "/api/debug/poses") {
+      try {
+        const limitRaw = Number.parseInt(url.searchParams.get("limit") || "100", 10);
+        const limit = Number.isFinite(limitRaw) ? Math.min(Math.max(limitRaw, 1), 500) : 100;
+        const token = await getGoogleAuthToken(env.GOOGLE_CLIENT_EMAIL, env.GOOGLE_PRIVATE_KEY);
+        const poses = await listPoseLibrary(env, token, limit);
+        return jsonResponse({ success: true, poses });
+      } catch (e: any) {
+        return jsonResponse({ error: e.message }, { status: 500 });
+      }
+    }
+
+    if (request.method === "POST" && url.pathname === "/api/debug/poses") {
+      try {
+        const body: any = await request.json();
+        const createdAt = new Date().toISOString();
+        const poseName = String(body.pose_name || "").trim();
+        if (!poseName) return jsonResponse({ error: "pose_name is required" }, { status: 400 });
+
+        const token = await getGoogleAuthToken(env.GOOGLE_CLIENT_EMAIL, env.GOOGLE_PRIVATE_KEY);
+        await appendSheetRow(env, token, "PoseLibrary", [
+          createdAt,
+          poseName,
+          body.test_target || "",
+          JSON.stringify(body.sensor_map || {}),
+          JSON.stringify(body.reference || {}),
+          body.device_id || "Unknown",
+        ]);
+        return jsonResponse({ success: true, created_at: createdAt });
       } catch (e: any) {
         return jsonResponse({ error: e.message }, { status: 500 });
       }
