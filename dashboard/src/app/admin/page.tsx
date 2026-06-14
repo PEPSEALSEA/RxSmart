@@ -1,9 +1,20 @@
 "use client";
 
+import dynamic from "next/dynamic";
 import Link from "next/link";
 import { FormEvent, useCallback, useEffect, useMemo, useState } from "react";
 import { Device, getApiUrl, getErrorMessage, isDeviceOnline } from "@/lib/devices";
-import { POSE_KEYS, POSE_LABELS, PoseKey } from "@/lib/pose";
+import { FIRMWARE_SENSOR_TO_POSE, isUpperKey, POSE_KEYS, POSE_LABELS, PoseKey } from "@/lib/pose";
+import { createNeutralFrame, SensorFrame } from "@/lib/pose-physics";
+
+const PoseViewer = dynamic(() => import("@/components/PoseViewer"), {
+  ssr: false,
+  loading: () => (
+    <div className="flex h-full min-h-[360px] items-center justify-center rounded-2xl border border-white/10 bg-slate-900/50">
+      <div className="h-9 w-9 animate-spin rounded-full border-2 border-slate-700 border-t-indigo-400" />
+    </div>
+  ),
+});
 
 type DebugTelemetry = {
   timestamp: string;
@@ -13,6 +24,13 @@ type DebugTelemetry = {
   session_state: string;
   exercise_id: string;
   payload_json: {
+    sensors?: Array<{ key?: string; calibrated?: number }>;
+    angles?: {
+      elbow_left?: number;
+      elbow_right?: number;
+      knee_left?: number;
+      knee_right?: number;
+    };
     rep_count?: number;
     speed_dps?: number;
     posture?: {
@@ -42,6 +60,38 @@ type PoseTemplate = {
   reference_json: string;
   device_id: string;
 };
+
+function toDisplayAngle(value: unknown): number {
+  if (typeof value !== "number" || Number.isNaN(value)) return 0;
+  return Math.max(0, Math.min(180, value));
+}
+
+function mapTelemetryToFrame(payload: DebugTelemetry["payload_json"]): SensorFrame {
+  const frame = createNeutralFrame();
+  if (!payload) return frame;
+
+  if (payload.angles) {
+    frame.l_arm_lower.bend = toDisplayAngle(payload.angles.elbow_left);
+    frame.r_arm_lower.bend = toDisplayAngle(payload.angles.elbow_right);
+    frame.l_leg_lower.bend = toDisplayAngle(payload.angles.knee_left);
+    frame.r_leg_lower.bend = toDisplayAngle(payload.angles.knee_right);
+  }
+
+  if (Array.isArray(payload.sensors)) {
+    for (const sensor of payload.sensors) {
+      const poseKey = sensor.key ? FIRMWARE_SENSOR_TO_POSE[sensor.key] : undefined;
+      if (!poseKey || typeof sensor.calibrated !== "number") continue;
+      const angle = Math.max(0, Math.min(180, Math.abs(sensor.calibrated) * (180 / 4095)));
+      if (isUpperKey(poseKey)) {
+        frame[poseKey].elevation = angle;
+      } else {
+        frame[poseKey].bend = angle;
+      }
+    }
+  }
+
+  return frame;
+}
 
 export default function AdminPage() {
   const [loadingFix, setLoadingFix] = useState(false);
@@ -75,6 +125,7 @@ export default function AdminPage() {
     () => devices.find((device) => device.device_id === selectedDeviceId) || null,
     [devices, selectedDeviceId],
   );
+  const liveFrame = useMemo(() => mapTelemetryToFrame(latestTelemetry?.payload_json ?? null), [latestTelemetry]);
 
   const fetchDevices = useCallback(async () => {
     setLoadingDevices(true);
@@ -155,7 +206,7 @@ export default function AdminPage() {
     }, 0);
     const interval = setInterval(() => {
       void fetchDebugTelemetry(debugDeviceId);
-    }, 3000);
+    }, 1000);
     return () => {
       clearTimeout(bootstrap);
       clearInterval(interval);
@@ -592,6 +643,38 @@ export default function AdminPage() {
                   )}
                 </div>
               </div>
+            </div>
+          </div>
+
+          <div className="mt-4 grid grid-cols-1 lg:grid-cols-2 gap-4">
+            <div className="rounded-2xl border border-white/10 bg-slate-900/50 p-4">
+              <div className="mb-3 flex items-center justify-between">
+                <h3 className="text-sm font-semibold">3D Live Pose (ESP32)</h3>
+                <span className="text-[11px] text-slate-400">
+                  {latestTelemetry ? `Updated: ${new Date(latestTelemetry.timestamp).toLocaleTimeString()}` : "Waiting..."}
+                </span>
+              </div>
+              <div className="h-[380px]">
+                <PoseViewer frame={liveFrame} activeJoints={POSE_KEYS} />
+              </div>
+            </div>
+
+            <div className="rounded-2xl border border-white/10 bg-slate-900/50 p-4">
+              <h3 className="text-sm font-semibold mb-3">Realtime Summary</h3>
+              {!latestTelemetry ? (
+                <p className="text-xs text-slate-500">No live telemetry yet.</p>
+              ) : (
+                <div className="space-y-2 text-xs">
+                  <p className="text-slate-400">Device: <span className="text-slate-200">{latestTelemetry.device_id}</span></p>
+                  <p className="text-slate-400">Session: <span className="text-slate-200">{latestTelemetry.session_state || "-"}</span></p>
+                  <p className="text-slate-400">Rep count: <span className="text-slate-200">{latestTelemetry.payload_json?.rep_count ?? 0}</span></p>
+                  <p className="text-slate-400">Speed: <span className="text-slate-200">{latestTelemetry.payload_json?.speed_dps ?? 0} dps</span></p>
+                  <p className="text-slate-400">Posture: <span className="text-slate-200">{latestTelemetry.payload_json?.posture?.state ?? "unknown"}</span></p>
+                  <p className="text-slate-400">
+                    Sensors: <span className="text-slate-200">{latestTelemetry.payload_json?.sensors?.length ?? 0}/8</span>
+                  </p>
+                </div>
+              )}
             </div>
           </div>
 
