@@ -157,7 +157,12 @@ export default function AdminPage() {
       const latest = (data.samples?.[0] || null) as DebugTelemetry | null;
       setLatestTelemetry(latest);
     } catch (err) {
-      setDebugError(getErrorMessage(err));
+      const message = getErrorMessage(err);
+      if (message.includes("Quota exceeded") || message.includes("RESOURCE_EXHAUSTED")) {
+        setDebugError("Google Sheets quota ชั่วคราวเต็ม ระบบจะอ่านข้อมูลช้าลงอัตโนมัติ");
+      } else {
+        setDebugError(message);
+      }
     }
   }, [apiUrl]);
 
@@ -206,7 +211,7 @@ export default function AdminPage() {
     }, 0);
     const interval = setInterval(() => {
       void fetchDebugTelemetry(debugDeviceId);
-    }, 1000);
+    }, 4000);
     return () => {
       clearTimeout(bootstrap);
       clearInterval(interval);

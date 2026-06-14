@@ -364,7 +364,6 @@ async function getPendingCommand(env: Env, token: string, deviceId: string) {
 }
 
 async function listRecentTelemetry(env: Env, token: string, deviceId: string | null, limit: number): Promise<DebugTelemetryRow[]> {
-  await ensureSheet(env, token, "Sheet1");
   const rows = await readSheetValues(env, token, "Sheet1!A:I");
 
   const telemetryRows = rows
@@ -386,7 +385,6 @@ async function listRecentTelemetry(env: Env, token: string, deviceId: string | n
 }
 
 async function listDebugSamples(env: Env, token: string, deviceId: string | null, limit: number): Promise<DebugSample[]> {
-  await ensureSheet(env, token, "DebugSamples");
   const rows = await readSheetValues(env, token, "DebugSamples!A:G");
   const samples = rows
     .filter((row) => row[0] && row[0] !== "Timestamp")
@@ -404,7 +402,6 @@ async function listDebugSamples(env: Env, token: string, deviceId: string | null
 }
 
 async function listPoseLibrary(env: Env, token: string, limit: number): Promise<PoseTemplate[]> {
-  await ensureSheet(env, token, "PoseLibrary");
   const rows = await readSheetValues(env, token, "PoseLibrary!A:F");
   const poses = rows
     .filter((row) => row[0] && row[0] !== "Created_At")
