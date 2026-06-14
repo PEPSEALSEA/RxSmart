@@ -52,7 +52,7 @@ const uint16_t ALERT_CODE_JOINT_ANGLE = 1 << 0;
 const uint16_t ALERT_CODE_SPEED = 1 << 1;
 
 const bool USE_MPU6050_TEST = true;
-const uint8_t I2C_SDA_PIN = 21;
+const uint8_t I2C_SDA_PIN = 23;
 const uint8_t I2C_SCL_PIN = 22;
 const uint8_t MPU6050_ADDR_1 = 0x68; // AD0 -> GND
 const uint8_t MPU6050_ADDR_2 = 0x69; // AD0 -> 3V3

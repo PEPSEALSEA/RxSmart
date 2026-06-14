@@ -826,6 +826,6 @@ export default {
       }
     }
 
-    return new Response("Not Found", { status: 404, headers: jsonHeaders });
+    return jsonResponse({ error: "Not Found" }, { status: 404 });
   },
 };
