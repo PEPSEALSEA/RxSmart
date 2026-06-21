@@ -1,97 +1,424 @@
-RxSmart Project Overall (Master Checklist)
+================================================================================
+  RxSmart — Smart Physical Therapy System (ระบบช่วยทำกายภาพบำบัดอัจฉริยะ)
+  เอกสารสถาปัตยกรรมระบบ + แผนที่โค้ด (Code Map)
+  อัปเดตจากการสำรวจ codebase จริง — 2026-06-20
+================================================================================
 
-Goal:
-สร้างเครื่องกายภาพบำบัดที่วัดการเคลื่อนไหวจากเซนเซอร์ 8 จุด
-(ต้นแขนซ้าย/ขวา, ปลายแขนซ้าย/ขวา, ต้นขาซ้าย/ขวา, ปลายขาซ้าย/ขวา)
-และสรุปผลเป็นมุม (angle), ความเร็ว (speed), ท่าทาง (posture), จำนวนรอบ (rep)
+จุดเด่นหลัก: Hybrid Motion Tracking
+  รองรับ 2 โหมดติดตามการเคลื่อนไหวที่สลับกันได้
+  • IMU Mode   — สวม MPU6050 บนข้อต่อ (แม่นยำสูง, เหมาะห้องแล็บ/โรงพยาบาล)
+  • Camera Mode — ใช้กล้อง + MediaPipe (ไม่ต้องสวมอุปกรณ์, เหมาะใช้ที่บ้าน)
+  • Fusion Mode — ผสานข้อมูล Camera + IMU ด้วย Complementary Filter (ใน rxsmart-local)
 
-==================================================
-1) Product Definition
-==================================================
-[ ] นิยาม use case หลักตามโรค/อาการที่ต้องรองรับ
-[ ] กำหนดท่ากายภาพบำบัดหลักที่ระบบต้องวัด
-[ ] นิยาม KPI ของระบบ (ความแม่นยำ, latency, ความเสถียร)
-[ ] ระบุเกณฑ์ผ่าน/ไม่ผ่านของแต่ละท่า
 
-==================================================
-2) Hardware & Sensor Layer
-==================================================
-[ ] เลือก/ยืนยันชนิดเซนเซอร์ที่ใช้ทั้ง 8 จุด
-[ ] ออกแบบการติดตั้งเซนเซอร์บนร่างกายให้ซ้ำได้จริง
-[x] อ่านข้อมูลเซนเซอร์จริงครบ 8 ตัวพร้อม timestamp
-[x] ทำ calibration flow ก่อนเริ่ม session
-[ ] เพิ่มการกรองสัญญาณเพื่อลด noise/drift
-[ ] จัดการ battery/power และความปลอดภัยอุปกรณ์
+================================================================================
+1. โครงสร้างโฟลเดอร์โปรเจกต์ (Repository Layout)
+================================================================================
 
-==================================================
-3) Motion Algorithm Layer
-==================================================
-[x] สร้าง data model สำหรับข้อมูล 8 เซนเซอร์
-[x] คำนวณมุมที่จำเป็นต่อแต่ละท่าฝึก
-[x] คำนวณความเร็วการเคลื่อนไหว
-[x] ทำระบบนับจำนวนรอบ (rep counter)
-[x] วิเคราะห์ posture ว่าถูก/ผิดท่า
-[x] ทำกติกาเตือนท่าเสี่ยงบาดเจ็บ
+RxSmart/
+├── ESP32DevKitV1-ArduinoIDE-Code.ino   ← Firmware หลัก (Hardware / IMU Mode)
+├── hardware_connection.txt             ← แผนผังการต่อสาย MPU6050 (ชุดทดสอบ 2 ตัว)
+├── rxsmart-local/                      ← Local Pipeline (Camera + IoT Fusion)
+│   ├── main.py                         ← Entry point, event loop OpenCV
+│   ├── config.py                       ← ตั้งค่า camera / transport / fusion
+│   ├── camera_pose_engine.py           ← MediaPipe Pose + คำนวณมุมข้อต่อ
+│   ├── iot_receiver.py                 ← รับ telemetry จาก ESP32 (serial/http/server)
+│   ├── system_mode_manager.py          ← สลับโหมด + FusionEngine
+│   ├── visual_debugger.py              ← หน้าจอ debug แบบ split-panel
+│   ├── data_models.py                  ← JointData, SystemMode, DebugStats
+│   ├── firmware_local_server_snippet.ino ← Snippet สำหรับ ESP32 POST ตรง LAN
+│   └── requirements.txt                ← Python deps (mediapipe, opencv, flask, …)
+│
+├── cloudflare-worker/                  ← Backend API (Cloudflare Workers)
+│   ├── src/index.ts                    ← REST endpoints + Google Sheets writer
+│   ├── src/schemas/telemetry-v2.ts     ← Schema / parser telemetry v2
+│   └── wrangler.toml                   ← Worker config + SPREADSHEET_ID
+│
+├── dashboard/                          ← Frontend Web App (Next.js 16)
+│   ├── src/app/page.tsx                ← หน้าหลัก: ฝึกกายภาพ + live telemetry
+│   ├── src/app/admin/page.tsx          ← Admin/Debug: อุปกรณ์, pose library, samples
+│   ├── src/components/                 ← UI components (3D mannequin, rehab panel)
+│   │   ├── PoseViewer.tsx              ← Three.js 3D skeleton viewer
+│   │   ├── Mannequin.tsx               ← 3D mannequin rig
+│   │   ├── RehabPanel.tsx              ← แผงเลือกโปรแกรมฝึก + feedback
+│   │   └── SensorReadout.tsx           ← แสดงค่า sensor 8 จุด
+│   └── src/lib/                        ← Business logic ฝั่ง frontend
+│       ├── pose.ts                     ← Pose key, sensor mapping, neutral pose
+│       ├── rehab-exercises.ts          ← ชุดท่าฝึก (phases, reps, hold time)
+│       ├── pose-physics.ts             ← Session engine + scoring + physics sim
+│       ├── biomechanics.ts             ← Joint limits, velocity, tolerance
+│       ├── mannequin-rig.ts            ← 3D rig geometry
+│       └── devices.ts                  ← API client, device online status
+│
+├── package.json                        ← Root: wrangler + TypeScript (deploy worker)
+├── implementation_plan.md              ← แผนเริ่มต้น IoT + Web App
+├── todolist.txt                        ← สถานะงาน P0/P1/P2
+└── project-overall.txt                 ← เอกสารนี้
 
-==================================================
-4) Embedded Firmware (ESP32)
-==================================================
-[x] Wi-Fi provisioning (Captive Portal)
-[x] บันทึกค่า Wi-Fi และ recovery flow
-[x] Internet watchdog
-[x] Device registration + command polling + telemetry พื้นฐาน
-[x] telemetry v2: ส่งข้อมูลแยก 8 เซนเซอร์ + angle/speed/posture/rep
-[x] state machine session: idle -> calibrate -> exercise -> complete
-[ ] fault handling (sensor missing, packet loss, reconnect)
 
-==================================================
-5) Cloud/API/Data
-==================================================
-[x] ออกแบบ API contract สำหรับ session กายภาพบำบัด
-[x] ออกแบบฐานข้อมูล (user/session/exercise/metrics/events)
-[x] จัดเก็บข้อมูล time-series สำหรับการวิเคราะห์ย้อนหลัง
-[ ] ทำ auth และสิทธิ์เข้าถึงข้อมูลผู้ป่วย/ผู้ดูแล
-[ ] เพิ่ม logging/monitoring สำหรับอุปกรณ์และ API
+================================================================================
+2. Hardware Architecture (IMU Mode)
+================================================================================
 
-==================================================
-6) App / Dashboard
-==================================================
-[x] หน้าติดตามแบบ real-time (angle/speed/posture/rep)
-[ ] สรุปผลราย session พร้อมคะแนนคุณภาพท่า
-[ ] ประวัติแนวโน้มอาการรายสัปดาห์/รายเดือน
-[x] ระบบแจ้งเตือนเมื่อทำท่าผิดหรือเกินช่วงปลอดภัย
-[ ] หน้าจัดการโปรแกรมฝึกตามโรค/อาการ
+[เป้าหมายระบบ]
+  Microcontroller : ESP32 DevKitC-V1
+  Sensor          : MPU6050 (GY-521) × 8 ตัว (6-DOF ต่อตัว)
+  Multiplexer     : TCA9548A I2C Multiplexer × 1 (implement แล้วใน firmware ✓)
 
-==================================================
-7) Clinical / Safety / Compliance
-==================================================
-[ ] ทบทวนเกณฑ์ทางกายภาพบำบัดร่วมกับผู้เชี่ยวชาญ
-[ ] วางขอบเขตการใช้งานและข้อจำกัดของระบบ
-[ ] จัดทำคำแนะนำการติดตั้งและใช้งานอย่างปลอดภัย
-[ ] นโยบายความเป็นส่วนตัวและการคุ้มครองข้อมูลสุขภาพ
+[ตำแหน่งติดตั้ง Sensor 8 จุด]
+  แขนซ้าย  : ต้นแขน (upper arm) + แขนท่อนล่าง (forearm)
+  แขนขวา  : ต้นแขน + แขนท่อนล่าง
+  ขาซ้าย  : ต้นขา (thigh) + หน้าแข้ง (shin)
+  ขาขวา  : ต้นขา + หน้าแข้ง
 
-==================================================
-8) Testing & Validation
-==================================================
-[ ] unit test สำหรับ algorithm หลัก
-[ ] integration test (sensor -> firmware -> cloud -> dashboard)
-[ ] test ภาคสนามกับผู้ใช้งานจริงหลายกลุ่ม
-[ ] ตรวจสอบความแม่นยำเทียบมาตรฐานอ้างอิง
-[ ] ทดสอบความทนทานระยะยาว (long run stability)
+[สถานะในโค้ดปัจจุบัน]
+  ไฟล์     : ESP32DevKitV1-ArduinoIDE-Code.ino
+  แผนผัง   : hardware_connection.txt (ทดสอบ 2 MPU6050 บน I2C 0x68 / 0x69)
+  Flag     : USE_MPU6050_TEST = true → อ่าน MPU6050 จริง 8 ตัว ผ่าน TCA9548A
+  Data model 8 sensor keys (1:1 กับ TCA channel):
+    CH0=left_upper_arm, CH1=right_upper_arm, CH2=left_forearm, CH3=right_forearm,
+    CH4=left_thigh,     CH5=right_thigh,     CH6=left_shin,    CH7=right_shin
+  I2C pins : SDA=GPIO21 (primary), SCL=GPIO22 | fallback SDA=GPIO23
+  TCA9548A : addr=0x70 (A0=A1=A2=GND) | MPU6050 all addr=0x68 (AD0→GND)
 
-==================================================
-9) Deployment & Operations
-==================================================
-[ ] เวิร์กโฟลว์ release firmware และ rollback
-[ ] คู่มือติดตั้งหน้างานและ troubleshooting
-[ ] ระบบ support/incident response
-[ ] แผนบำรุงรักษาและอัปเดตโปรแกรมฝึก
+[ฟังก์ชันหลักใน Firmware]
+  • WiFi Captive Portal (AP "ESP32-Setup") + บันทึก credentials ด้วย Preferences
+  • Internet Watchdog (ตรวจทุก 60 วินาที, หลุด → กลับ AP mode)
+  • OTA Firmware Update (GET /api/firmware-version จาก Cloudflare)
+  • Device Registration + Command Polling จาก server
+  • Calibration 3 วินาที (zero offset ก่อนเริ่ม session)
+  • คำนวณมุม : elbow_left/right, knee_left/right
+  • Rep counting (threshold up/down), speed (deg/s)
+  • Posture detection + fault mask (symmetry, range)
+  • Injury alert (มุมเกินช่วงปลอดภัย / ความเร็วสูงเกิน)
+  • Session state machine : idle → calibrate → exercise → complete
+  • Telemetry POST JSON schema v2 ไป Cloudflare /api/telemetry
 
-==================================================
-10) Milestone Suggestion
-==================================================
-[ ] M1: อุปกรณ์อ่านเซนเซอร์จริง 8 จุด + calibration ได้
-[ ] M2: คำนวณ angle/speed/rep ได้เสถียร
-[x] M3: posture detection + alert ใช้งานได้จริง
-[ ] M4: dashboard + history + รายงานผลครบ
-[ ] M5: pilot test และปิดช่องโหว่ก่อนใช้งานจริง
+[การต่อสาย (production — hardware_connection.txt)]
+  ESP32 GPIO21 (SDA), GPIO22 (SCL) → TCA9548A SDA/SCL
+  ESP32 3V3/GND → TCA9548A VCC/GND + RESET(3V3) + A0,A1,A2(GND)
+  TCA9548A SD0-SD7 / SC0-SC7 → MPU6050 #0-#7 SDA/SCL
+  MPU6050 ทุกตัว AD0 → GND (addr 0x68, แยกด้วย TCA channel)
+
+
+================================================================================
+3. Vision Architecture (Camera Mode)
+================================================================================
+
+[เป้าหมาย]
+  Webcam / Smartphone Camera → MediaPipe Pose Landmarker → 3D skeleton joints
+  → คำนวณมุมข้อศอก/ข้อเข่า/ไหล่ ด้วย vector math (dot product / arccos)
+
+[สถานะในโค้ด — 2 ที่]
+
+  (A) rxsmart-local/  — Local Python Pipeline (รัน offline บน PC)
+      camera_pose_engine.py
+        • Background thread จับภาพ OpenCV
+        • MediaPipe Pose (model_complexity 0–2)
+        • _calc_angle() คำนวณมุมที่ vertex จาก 3 landmarks
+        • Output: JointData (elbow/knee/shoulder L/R + confidence)
+
+      visual_debugger.py
+        • แสดง skeleton overlay + debug panel (FPS, latency, mode, log)
+
+  (B) dashboard/  — Web Frontend (ยังไม่มี MediaPipe ใน browser โดยตรง)
+      • ใช้ physics simulation + live telemetry จาก ESP32 เป็นหลัก
+      • PoseViewer.tsx + Mannequin.tsx แสดง 3D skeleton จาก SensorFrame
+      • รองรับ map telemetry → SensorFrame สำหรับแสดงผล real-time
+
+
+================================================================================
+4. Hybrid / Fusion Mode (Local Pipeline)
+================================================================================
+
+Path: rxsmart-local/
+
+system_mode_manager.py
+  SystemMode:
+    CAMERA_ONLY  — ใช้ MediaPipe อย่างเดียว
+    IOT_ONLY     — ใช้ ESP32 telemetry อย่างเดียว
+    FUSION       — ผสานทั้งสองแหล่ง
+
+FusionEngine (Complementary Filter):
+  fused_angle = α × camera_angle + (1−α) × imu_angle
+  α  default = 0.6 (config.FUSION_ALPHA)
+  ลด α อัตโนมัติเมื่อ MediaPipe confidence ต่ำ
+
+IoTReceiver — 3 transport modes (config.IOT_TRANSPORT):
+  "serial"  → USB Serial 115200 baud (~500 ms)
+  "http"    → Poll Cloudflare /api/debug/telemetry (~1–3 s)
+  "server"  → Python Flask รับ POST /telemetry จาก ESP32 บน LAN (~50 ms)
+
+main.py — คีย์บอร์ด:
+  1/2/3 = สลับโหมด | d = toggle debug | q/ESC = ออก
+
+
+================================================================================
+5. Frontend & User System
+================================================================================
+
+Path: dashboard/  (Next.js App Router + React 19 + Tailwind + Three.js)
+
+[หน้าจอหลัก — src/app/page.tsx]
+  • เลือกอุปกรณ์ ESP32 ที่ online
+  • เลือกโปรแกรมฝึกจาก REHAB_EXERCISES (rehab-exercises.ts)
+  • 3D PoseViewer แสดงท่าทาง real-time
+  • RehabPanel: accuracy feedback, rep counter, phase label, score
+  • SensorReadout: ค่า 8 sensor + มุมข้อต่อ
+  • Poll telemetry จาก Cloudflare เป็นระยะ
+
+[โปรแกรมฝึก — src/lib/rehab-exercises.ts]
+  ท่าที่ implement แล้ว (ตัวอย่าง):
+    shoulder_flex_l, shoulder_abduct_l, elbow_flex_l, knee_flex_l,
+    bilateral_arm_raise, squat_assessment, …
+  แต่ละท่ามี:
+    phases[]     → targets, holdSeconds, moveSpeed, activeJoints
+    reps         → จำนวนครั้งเป้าหมาย
+    category     → arm | leg | bilateral | assessment
+
+[Admin / Therapist Debug — src/app/admin/page.tsx]
+  • รายการอุปกรณ์ + สถานะ online
+  • ดู debug telemetry ล่าสุด
+  • บันทึก debug samples + pose library ลง Google Sheets
+  • ส่งคำสั่งไปอุปกรณ์ (WiFi config, start session, rep target)
+
+[ฟีเจอร์ที่วางแผนไว้ แต่ยังไม่ implement ครบ]
+  ☐ User Profile & History (น้ำหนัก, ส่วนสูง, ประวัติย้อนหลัง)
+  ☐ Streaks & Achievements (gamification)
+  ☐ Disease Selection → Set Combo ตามโรค (P2 ใน todolist)
+  ☐ Therapist Dashboard แบบเต็ม (กราฟแนวโน้ม, custom program)
+  ☐ Mobile App แยก (ปัจจุบันเป็น Web responsive)
+
+
+================================================================================
+6. Scoring System (ระบบคะแนน)
+================================================================================
+
+[ที่ implement แล้ว — dashboard/src/lib/pose-physics.ts + biomechanics.ts]
+
+  1. Angle Matching Score
+     • เปรียบเทียบมุม/elevation/plane ปัจจุบัน vs target ของ phase
+     • tolerance ต่อ joint กำหนดใน biomechanics.ts (±6–12°)
+     • angleOk = |error| ≤ tolerance
+
+  2. Hold Time Score
+     • ExercisePhase.holdSeconds → สถานะ "holding"
+     • ต้องค้างท่าครบเวลาก่อนไป phase ถัดไป
+
+  3. Smoothness / Velocity Score
+     • idealVelocityMin/Max ต่อ joint
+     • velocityOk = ความเร็วอยู่ในช่วงที่เหมาะสม
+     • Spring-damper physics (stepPhysics) จำลองการเคลื่อนไหว
+
+  SessionFeedback.score = คะแนนรวม 0–100 ต่อ frame
+  Messages[] = คำแนะนำ real-time (เช่น "งอเข่าไม่พอ", "ช้าเกินไป")
+
+[ฝั่ง Firmware — injury alert แยกจาก score]
+  SAFE_MAX_JOINT_ANGLE = 165°
+  SAFE_MAX_SPEED_DPS   = 220°/s
+  alert level: none | warn | critical
+
+[Smoothness จาก IMU (แผน / บางส่วนใน firmware)]
+  • speed_dps จาก delta angle / delta time
+  • posture stability score (-5 ถึง +5)
+  ☐ P2: moving average / complementary filter ลด noise (todolist)
+
+
+================================================================================
+7. Data Pipeline & Backend
+================================================================================
+
+Path: cloudflare-worker/src/index.ts
+Deploy: npx wrangler deploy  (URL: rxsmart-worker.sealseapep.workers.dev)
+
+[Data Flow Diagram]
+
+  ESP32 ──POST /api/telemetry──► Cloudflare Worker
+                                      │
+                                      ├─► In-memory / Sheet1 (raw log, throttled)
+                                      ├─► Sessions sheet (upsert session state)
+                                      ├─► SessionSamples (sample ต่อ packet)
+                                      ├─► Events sheet (alerts)
+                                      └─► Devices sheet (last online)
+
+  Dashboard ──GET /api/devices, /api/debug/telemetry──► Worker ──► Google Sheets
+  Dashboard ──POST /api/sessions/start|complete────────► Worker
+  ESP32     ──GET  /api/devices/{id}/command──────────► Worker (poll commands)
+
+[REST API Endpoints]
+
+  GET  /api/firmware-version          → OTA version + bin URL
+  POST /api/telemetry                 → รับ telemetry v2 จาก ESP32
+  POST /api/devices/register          → ลงทะเบียนอุปกรณ์
+  GET  /api/devices                   → รายการอุปกรณ์
+  GET  /api/devices/{id}              → ข้อมูลอุปกรณ์
+  GET  /api/devices/{id}/command      → ESP32 poll คำสั่ง
+  POST /api/sessions/start            → เริ่ม session
+  POST /api/sessions/complete         → จบ session
+  GET  /api/sessions/latest           → session ล่าสุด
+  GET  /api/debug/telemetry           → telemetry ล่าสุด (สำหรับ dashboard/local)
+  GET  /api/debug/samples             → debug samples
+  POST /api/debug/samples             → บันทึก sample
+  GET  /api/debug/poses               → pose library
+  POST /api/debug/poses               → เพิ่ม pose template
+  POST /api/fix-sheet                 → สร้าง header row ใน Sheets
+  GET  /api/commands                  → รายการคำสั่ง
+
+[Google Sheets Schema — 7+ sheets]
+
+  Sheet1         : Timestamp, Device_ID, Schema_Version, Session_ID, …
+  Devices        : Device_ID, WiFi_SSID, Last_Online
+  Commands       : Device_ID, Command, WiFi_SSID, Session_ID, Rep_Target, …
+  Sessions       : Session_ID, State, Rep_Final, Posture_Fault_Mask, …
+  SessionSamples : Timestamp, Payload_JSON (per sample)
+  Events         : Alert_Level, Alert_Code, Detail_JSON
+  DebugSamples   : Pose_Name, Sensor_Map, Packet_JSON
+  PoseLibrary    : Reference_JSON, Test_Target
+
+[Google Sheets Quota Protection — implement แล้ว]
+  • shouldThrottleSheetsWrites() + exponential backoff เมื่อ quota exceeded
+  • แนวทางที่วางไว้: aggregate ก่อน write (1 request ต่อ set/session)
+  • Frontend cache ก่อน submit สรุป (planned — ยังไม่ครบ)
+
+[Real-time Transport]
+  ปัจจุบัน : HTTP polling (ESP32 POST + Dashboard GET ทุก ~1 s)
+  แผน      : WebSocket ผ่าน Cloudflare (ยังไม่ implement ใน src/index.ts)
+
+
+================================================================================
+8. Telemetry Schema v2
+================================================================================
+
+Path: cloudflare-worker/src/schemas/telemetry-v2.ts
+      ESP32DevKitV1-ArduinoIDE-Code.ino (sendTelemetryData)
+
+{
+  schema_version, firmware_version, device_id, device_ts_ms,
+  session_id, session_state,     // idle | calibrate | exercise | complete
+  exercise_id, rep_target, rep_count,
+  calibrated, speed_dps,
+  sensors: [{ key, pin, raw, zero_offset, calibrated, timestamp_ms }],
+  angles: { elbow_left, elbow_right, knee_left, knee_right, primary },
+  posture: { state, fault_mask, stability_score },
+  alerts: [{ level, code }]
+}
+
+
+================================================================================
+9. Session State Machine (End-to-End)
+================================================================================
+
+  [Idle]
+    ↓  server ส่ง command "start" / calibrate
+  [Calibrate]  (3 วินาที, zero offset)
+    ↓
+  [Exercise]   (sample ทุก 50 ms, rep count, posture check)
+    ↓  rep ครบ / command "complete"
+  [Complete]   (summary_pending → ส่ง telemetry สรุป → กลับ Idle)
+
+  Dashboard RehabSessionEngine (pose-physics.ts) มี state แยก:
+    idle → moving → holding → rest → complete
+
+
+================================================================================
+10. สถานะการพัฒนา (จาก todolist.txt)
+================================================================================
+
+  [DONE — P0/P1]
+    ✓ Data model sensor 8 จุด
+    ✓ TCA9548A + MPU6050 × 8 อ่านแยกช่องทาง (A6 ✓)
+    ✓ Calibration, คำนวณมุม, speed, rep count
+    ✓ Posture detection + injury alert
+    ✓ Telemetry v2 + session API + state machine
+    ✓ WiFi Captive Portal, OTA, device registration, command polling
+
+  [TODO — P2]
+    ☐ Signal filtering (moving average / complementary filter)
+    ☐ หลายโปรแกรมตามโรค/อาการ
+    ☐ Dashboard สรุปผลราย session + แนวโน้ม
+    ☐ Unit test + test กับการเคลื่อนไหวจริง
+    ☐ WebSocket real-time
+    ☐ User system + gamification
+
+
+================================================================================
+11. วิธีรันแต่ละส่วน
+================================================================================
+
+  [Firmware]
+    เปิด ESP32DevKitV1-ArduinoIDE-Code.ino ใน Arduino IDE → flash ESP32
+
+  [Cloudflare Worker]
+    cd cloudflare-worker
+    npx wrangler dev          # local
+    npx wrangler deploy       # production
+    npx wrangler secret put GOOGLE_PRIVATE_KEY
+
+  [Dashboard]
+    cd dashboard
+    npm install && npm run dev    # http://localhost:3000
+    ตั้ง NEXT_PUBLIC_API_URL ชี้ไป worker URL
+
+  [Local Pipeline (Camera + Fusion)]
+    cd rxsmart-local
+    pip install -r requirements.txt
+    แก้ config.py (CAMERA_INDEX, IOT_TRANSPORT, SERIAL_PORT, …)
+    python main.py
+
+
+================================================================================
+12. สรุป Architecture Layers
+================================================================================
+
+  ┌─────────────────────────────────────────────────────────────────┐
+  │  Layer 4 — Frontend (dashboard/)                                │
+  │  Next.js, 3D PoseViewer, Rehab Exercises, Scoring UI            │
+  └───────────────────────────┬─────────────────────────────────────┘
+                              │ HTTP REST (poll)
+  ┌───────────────────────────▼─────────────────────────────────────┐
+  │  Layer 3 — Backend (cloudflare-worker/)                         │
+  │  REST API, Session Mgmt, Google Sheets, OTA, Commands           │
+  └───────────────────────────▲─────────────────────────────────────┘
+                              │ HTTP POST telemetry
+  ┌───────────────────────────┴─────────────────────────────────────┐
+  │  Layer 2 — Edge Device (ESP32DevKitV1-ArduinoIDE-Code.ino)       │
+  │  MPU6050×8, Calibration, Angles, Reps, Alerts, WiFi, OTA         │
+  └───────────────────────────▲─────────────────────────────────────┘
+                              │ Serial / LAN / Cloud poll
+  ┌───────────────────────────┴─────────────────────────────────────┐
+  │  Layer 1b — Local Fusion (rxsmart-local/)  [optional]             │
+  │  MediaPipe Camera + IMU Fusion + OpenCV Debug                     │
+  └─────────────────────────────────────────────────────────────────┘
+
+  Layer 1a — Camera Only: MediaPipe ใน rxsmart-local หรือ (แผน) Web browser
+
+================================================================================
+13. สถานะ Integration & เกณฑ์ Finish (อัปเดต v2)
+================================================================================
+
+  ระบบยังไม่เป็น product เดียว — มี 3 pipeline แยกกัน:
+
+  Pipeline 1 — Web IMU (dashboard + ESP32 + worker)
+    คำนวณบนบอร์ด: elbow/knee/rep/posture ✓
+    คำนวณ score บน web: แค่โหมดจำลอง ✓ | จาก sensor จริง ✗
+
+  Pipeline 2 — Camera Local (rxsmart-local)
+    คำนวณมุม MediaPipe ✓ | โปรแกรมฝึก + score ✗
+
+  Pipeline 3 — Fusion (rxsmart-local mode 3)
+    ผสาน camera+IMU ✓ | ต่อ scoring/session ✗
+
+  ช่องว่างหลักที่ block "ใช้ได้ calculate ครบ":
+    • dashboard/page.tsx ไม่ส่ง START_SESSION ไป ESP32
+    • โหมด Live ข้าม RehabSessionEngine — ไม่เรียก buildSessionFeedback()
+    • rxsmart-local ไม่มี rehab-exercises / scoring
+    • ไม่มี camera บน Web frontend
+
+  Finish ขั้นต่ำ (เลือก 1 track — ดู todolist.txt P0):
+    Track A: IMU + Web     → P0 ข้อ A1–A4, A6, X1
+    Track B: Camera Local  → P0 ข้อ B1–B3, X1
+    Track C: Hybrid        → หลัง A หรือ B + C1–C3
+
+  P2 (โรค, gamification, กราฟ) ไม่จำเป็นต่อการ calculate ครบ
+
+================================================================================

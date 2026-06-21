@@ -3,18 +3,29 @@
 import dynamic from "next/dynamic";
 import Link from "next/link";
 import { FormEvent, useCallback, useEffect, useMemo, useState } from "react";
-import { Device, getApiUrl, getErrorMessage, isDeviceOnline } from "@/lib/devices";
+import AdminDeviceModal from "@/components/admin/AdminDeviceModal";
+import AdminSensorDebugGrid from "@/components/admin/AdminSensorDebugGrid";
+import SensorReadout from "@/components/SensorReadout";
+import FadeIn from "@/components/ui/FadeIn";
+import { Device, formatLastSeen, getApiUrl, getErrorMessage, isDeviceOnline } from "@/lib/devices";
 import { FIRMWARE_SENSOR_TO_POSE, isUpperKey, POSE_KEYS, POSE_LABELS, PoseKey } from "@/lib/pose";
-import { createNeutralFrame, SensorFrame } from "@/lib/pose-physics";
+import { REHAB_EXERCISES } from "@/lib/rehab-exercises";
+import {
+  buildSessionFeedback,
+  createNeutralFrame,
+  SensorFrame,
+} from "@/lib/pose-physics";
 
 const PoseViewer = dynamic(() => import("@/components/PoseViewer"), {
   ssr: false,
   loading: () => (
-    <div className="flex h-full min-h-[360px] items-center justify-center rounded-2xl border border-white/10 bg-slate-900/50">
-      <div className="h-9 w-9 animate-spin rounded-full border-2 border-slate-700 border-t-indigo-400" />
+    <div className="flex h-full min-h-[320px] items-center justify-center rounded-2xl border border-neutral-200 bg-neutral-50">
+      <div className="h-8 w-8 animate-spin rounded-full border-2 border-neutral-200 border-t-neutral-900" />
     </div>
   ),
 });
+
+type AdminTab = "devices" | "telemetry" | "commands" | "lab" | "system";
 
 type DebugTelemetry = {
   timestamp: string;
@@ -23,21 +34,7 @@ type DebugTelemetry = {
   session_id: string;
   session_state: string;
   exercise_id: string;
-  payload_json: {
-    sensors?: Array<{ key?: string; calibrated?: number }>;
-    angles?: {
-      elbow_left?: number;
-      elbow_right?: number;
-      knee_left?: number;
-      knee_right?: number;
-    };
-    rep_count?: number;
-    speed_dps?: number;
-    posture?: {
-      state?: string;
-    };
-    [key: string]: unknown;
-  } | null;
+  payload_json: Record<string, unknown> | null;
   status: string;
   wifi_ssid: string;
 };
@@ -61,24 +58,60 @@ type PoseTemplate = {
   device_id: string;
 };
 
+type PendingCommand = {
+  command?: string;
+  wifi_ssid?: string;
+  session_id?: string;
+  exercise_id?: string;
+  rep_target?: number;
+  [key: string]: unknown;
+} | null;
+
+type LatestSession = {
+  session_id: string;
+  device_id: string;
+  exercise_id: string;
+  state: string;
+  started_at: string;
+  ended_at: string;
+  rep_target: number;
+  rep_final: number;
+};
+
+type FirmwareInfo = {
+  latest_version: string;
+  bin_url: string;
+};
+
+const TABS: { id: AdminTab; label: string }[] = [
+  { id: "devices", label: "อุปกรณ์" },
+  { id: "telemetry", label: "Live Telemetry" },
+  { id: "commands", label: "คำสั่ง & Session" },
+  { id: "lab", label: "Debug Lab" },
+  { id: "system", label: "ระบบ" },
+];
+
 function toDisplayAngle(value: unknown): number {
   if (typeof value !== "number" || Number.isNaN(value)) return 0;
   return Math.max(0, Math.min(180, value));
 }
 
-function mapTelemetryToFrame(payload: DebugTelemetry["payload_json"]): SensorFrame {
+function mapTelemetryToFrame(payload: Record<string, unknown> | null): SensorFrame {
   const frame = createNeutralFrame();
   if (!payload) return frame;
 
-  if (payload.angles) {
-    frame.l_arm_lower.bend = toDisplayAngle(payload.angles.elbow_left);
-    frame.r_arm_lower.bend = toDisplayAngle(payload.angles.elbow_right);
-    frame.l_leg_lower.bend = toDisplayAngle(payload.angles.knee_left);
-    frame.r_leg_lower.bend = toDisplayAngle(payload.angles.knee_right);
+  const angles = payload.angles as Record<string, unknown> | undefined;
+  if (angles) {
+    frame.l_arm_lower.bend = toDisplayAngle(angles.elbow_left);
+    frame.r_arm_lower.bend = toDisplayAngle(angles.elbow_right);
+    frame.l_leg_lower.bend = toDisplayAngle(angles.knee_left);
+    frame.r_leg_lower.bend = toDisplayAngle(angles.knee_right);
   }
 
-  if (Array.isArray(payload.sensors)) {
-    for (const sensor of payload.sensors) {
+  const sensors = payload.sensors;
+  if (Array.isArray(sensors)) {
+    for (const item of sensors) {
+      const sensor = item as { key?: string; calibrated?: number };
       const poseKey = sensor.key ? FIRMWARE_SENSOR_TO_POSE[sensor.key] : undefined;
       if (!poseKey || typeof sensor.calibrated !== "number") continue;
       const angle = Math.max(0, Math.min(180, Math.abs(sensor.calibrated) * (180 / 4095)));
@@ -93,27 +126,51 @@ function mapTelemetryToFrame(payload: DebugTelemetry["payload_json"]): SensorFra
   return frame;
 }
 
+function payloadField(payload: Record<string, unknown> | null, path: string, fallback = "—"): string {
+  if (!payload) return fallback;
+  const parts = path.split(".");
+  let current: unknown = payload;
+  for (const part of parts) {
+    if (!current || typeof current !== "object") return fallback;
+    current = (current as Record<string, unknown>)[part];
+  }
+  if (current === undefined || current === null || current === "") return fallback;
+  return String(current);
+}
+
 export default function AdminPage() {
-  const [loadingFix, setLoadingFix] = useState(false);
-  const [message, setMessage] = useState("");
-  const [error, setError] = useState("");
+  const [tab, setTab] = useState<AdminTab>("devices");
   const [devices, setDevices] = useState<Device[]>([]);
+  const [activeDeviceId, setActiveDeviceId] = useState("");
+  const [selectedDeviceId, setSelectedDeviceId] = useState<string | null>(null);
   const [loadingDevices, setLoadingDevices] = useState(true);
   const [devicesError, setDevicesError] = useState("");
-  const [selectedDeviceId, setSelectedDeviceId] = useState<string | null>(null);
-  const [wifiSsid, setWifiSsid] = useState("");
-  const [wifiPassword, setWifiPassword] = useState("");
-  const [actionLoading, setActionLoading] = useState("");
-  const [actionMessage, setActionMessage] = useState("");
-  const [actionError, setActionError] = useState("");
   const [currentTime, setCurrentTime] = useState(0);
-  const [debugLoading, setDebugLoading] = useState(false);
-  const [debugError, setDebugError] = useState("");
-  const [debugMessage, setDebugMessage] = useState("");
+  const [livePoll, setLivePoll] = useState(true);
+
   const [latestTelemetry, setLatestTelemetry] = useState<DebugTelemetry | null>(null);
   const [debugSamples, setDebugSamples] = useState<SavedDebugSample[]>([]);
   const [poseTemplates, setPoseTemplates] = useState<PoseTemplate[]>([]);
-  const [debugDeviceId, setDebugDeviceId] = useState("");
+  const [pendingCommand, setPendingCommand] = useState<PendingCommand>(null);
+  const [latestSession, setLatestSession] = useState<LatestSession | null>(null);
+  const [firmwareInfo, setFirmwareInfo] = useState<FirmwareInfo | null>(null);
+
+  const [debugLoading, setDebugLoading] = useState(false);
+  const [debugError, setDebugError] = useState("");
+  const [debugMessage, setDebugMessage] = useState("");
+
+  const [loadingFix, setLoadingFix] = useState(false);
+  const [fixMessage, setFixMessage] = useState("");
+  const [fixError, setFixError] = useState("");
+
+  const [wifiSsid, setWifiSsid] = useState("");
+  const [wifiPassword, setWifiPassword] = useState("");
+  const [exerciseId, setExerciseId] = useState("general");
+  const [repTarget, setRepTarget] = useState(10);
+  const [actionLoading, setActionLoading] = useState("");
+  const [actionMessage, setActionMessage] = useState("");
+  const [actionError, setActionError] = useState("");
+
   const [poseName, setPoseName] = useState("");
   const [notes, setNotes] = useState("");
   const [testTarget, setTestTarget] = useState<PoseKey>("l_arm_upper");
@@ -121,11 +178,22 @@ export default function AdminPage() {
   const [sensorBKey, setSensorBKey] = useState<PoseKey>("r_arm_upper");
 
   const apiUrl = getApiUrl();
+  const activeDevice = useMemo(
+    () => devices.find((d) => d.device_id === activeDeviceId) || null,
+    [devices, activeDeviceId],
+  );
   const selectedDevice = useMemo(
-    () => devices.find((device) => device.device_id === selectedDeviceId) || null,
+    () => devices.find((d) => d.device_id === selectedDeviceId) || null,
     [devices, selectedDeviceId],
   );
-  const liveFrame = useMemo(() => mapTelemetryToFrame(latestTelemetry?.payload_json ?? null), [latestTelemetry]);
+  const payload = latestTelemetry?.payload_json ?? null;
+  const liveFrame = useMemo(() => mapTelemetryToFrame(payload), [payload]);
+  const onlineCount = devices.filter((d) => isDeviceOnline(d.last_online, currentTime)).length;
+
+  const mappedFeedback = useMemo(() => {
+    const exercise = REHAB_EXERCISES[0];
+    return buildSessionFeedback(liveFrame, exercise.startPose, exercise.phases[0], 0, exercise.reps, "idle");
+  }, [liveFrame]);
 
   const fetchDevices = useCallback(async () => {
     setLoadingDevices(true);
@@ -134,11 +202,11 @@ export default function AdminPage() {
     try {
       const res = await fetch(`${apiUrl}/api/devices`);
       const data = await res.json();
-      if (!res.ok) throw new Error(data.error || "Failed to fetch devices");
+      if (!res.ok) throw new Error(data.error || "โหลดอุปกรณ์ไม่สำเร็จ");
       const nextDevices = data.devices || [];
       setDevices(nextDevices);
-      setDebugDeviceId((current) => {
-        if (current && nextDevices.some((device: Device) => device.device_id === current)) return current;
+      setActiveDeviceId((current) => {
+        if (current && nextDevices.some((d: Device) => d.device_id === current)) return current;
         return nextDevices[0]?.device_id || "";
       });
     } catch (err) {
@@ -153,13 +221,13 @@ export default function AdminPage() {
     try {
       const res = await fetch(`${apiUrl}/api/debug/telemetry?device_id=${encodeURIComponent(deviceId)}&limit=1`);
       const data = await res.json();
-      if (!res.ok) throw new Error(data.error || "Failed to fetch telemetry");
-      const latest = (data.samples?.[0] || null) as DebugTelemetry | null;
-      setLatestTelemetry(latest);
+      if (!res.ok) throw new Error(data.error || "โหลด telemetry ไม่สำเร็จ");
+      setLatestTelemetry((data.samples?.[0] || null) as DebugTelemetry | null);
+      setDebugError("");
     } catch (err) {
       const message = getErrorMessage(err);
       if (message.includes("Quota exceeded") || message.includes("RESOURCE_EXHAUSTED")) {
-        setDebugError("Google Sheets quota ชั่วคราวเต็ม ระบบจะอ่านข้อมูลช้าลงอัตโนมัติ");
+        setDebugError("Google Sheets quota เต็มชั่วคราว — ลองใหม่ภายหลัง");
       } else {
         setDebugError(message);
       }
@@ -171,7 +239,7 @@ export default function AdminPage() {
     try {
       const res = await fetch(`${apiUrl}/api/debug/samples?device_id=${encodeURIComponent(deviceId)}&limit=20`);
       const data = await res.json();
-      if (!res.ok) throw new Error(data.error || "Failed to fetch samples");
+      if (!res.ok) throw new Error(data.error || "โหลด samples ไม่สำเร็จ");
       setDebugSamples(data.samples || []);
     } catch (err) {
       setDebugError(getErrorMessage(err));
@@ -182,44 +250,89 @@ export default function AdminPage() {
     try {
       const res = await fetch(`${apiUrl}/api/debug/poses?limit=20`);
       const data = await res.json();
-      if (!res.ok) throw new Error(data.error || "Failed to fetch pose templates");
+      if (!res.ok) throw new Error(data.error || "โหลด pose library ไม่สำเร็จ");
       setPoseTemplates(data.poses || []);
     } catch (err) {
       setDebugError(getErrorMessage(err));
     }
   }, [apiUrl]);
 
-  useEffect(() => {
-    const initialLoad = setTimeout(() => {
-      void fetchDevices();
-    }, 0);
-    const interval = setInterval(() => {
-      void fetchDevices();
-    }, 30000);
-    return () => {
-      clearTimeout(initialLoad);
-      clearInterval(interval);
-    };
-  }, [fetchDevices]);
+  const fetchPendingCommand = useCallback(async (deviceId: string) => {
+    if (!deviceId) return;
+    try {
+      const res = await fetch(`${apiUrl}/api/commands?device_id=${encodeURIComponent(deviceId)}`);
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "โหลด command ไม่สำเร็จ");
+      setPendingCommand(data.command ?? null);
+    } catch (err) {
+      setDebugError(getErrorMessage(err));
+    }
+  }, [apiUrl]);
+
+  const fetchLatestSession = useCallback(async (deviceId: string) => {
+    if (!deviceId) return;
+    try {
+      const res = await fetch(`${apiUrl}/api/sessions/latest?device_id=${encodeURIComponent(deviceId)}`);
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "โหลด session ไม่สำเร็จ");
+      setLatestSession(data.session ?? null);
+    } catch (err) {
+      setLatestSession(null);
+    }
+  }, [apiUrl]);
+
+  const fetchFirmware = useCallback(async () => {
+    try {
+      const res = await fetch(`${apiUrl}/api/firmware-version`);
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "โหลด firmware ไม่สำเร็จ");
+      setFirmwareInfo(data as FirmwareInfo);
+    } catch {
+      setFirmwareInfo(null);
+    }
+  }, [apiUrl]);
+
+  const refreshAllDebug = useCallback(async (deviceId: string) => {
+    if (!deviceId) return;
+    await Promise.all([
+      fetchDebugTelemetry(deviceId),
+      fetchDebugSamples(deviceId),
+      fetchPoseTemplates(),
+      fetchPendingCommand(deviceId),
+      fetchLatestSession(deviceId),
+    ]);
+  }, [fetchDebugTelemetry, fetchDebugSamples, fetchPoseTemplates, fetchPendingCommand, fetchLatestSession]);
 
   useEffect(() => {
-    if (!debugDeviceId) return;
     const bootstrap = setTimeout(() => {
-      void fetchPoseTemplates();
-      void fetchDebugTelemetry(debugDeviceId);
-      void fetchDebugSamples(debugDeviceId);
+      void fetchDevices();
+      void fetchFirmware();
     }, 0);
-    const interval = setInterval(() => {
-      void fetchDebugTelemetry(debugDeviceId);
-    }, 4000);
+    const interval = setInterval(() => void fetchDevices(), 30000);
     return () => {
       clearTimeout(bootstrap);
       clearInterval(interval);
     };
-  }, [debugDeviceId, fetchDebugTelemetry, fetchDebugSamples, fetchPoseTemplates]);
+  }, [fetchDevices, fetchFirmware]);
+
+  useEffect(() => {
+    if (!activeDeviceId) return;
+    const bootstrap = setTimeout(() => void refreshAllDebug(activeDeviceId), 0);
+    if (!livePoll) return () => clearTimeout(bootstrap);
+
+    const interval = setInterval(() => {
+      void fetchDebugTelemetry(activeDeviceId);
+      void fetchPendingCommand(activeDeviceId);
+    }, 3000);
+    return () => {
+      clearTimeout(bootstrap);
+      clearInterval(interval);
+    };
+  }, [activeDeviceId, livePoll, refreshAllDebug, fetchDebugTelemetry, fetchPendingCommand]);
 
   const openDevice = (device: Device) => {
     setSelectedDeviceId(device.device_id);
+    setActiveDeviceId(device.device_id);
     setWifiSsid(device.wifi_ssid === "Unknown" ? "" : device.wifi_ssid);
     setWifiPassword("");
     setActionMessage("");
@@ -228,16 +341,15 @@ export default function AdminPage() {
 
   const fixSheet = async () => {
     setLoadingFix(true);
-    setMessage("");
-    setError("");
-
+    setFixMessage("");
+    setFixError("");
     try {
       const res = await fetch(`${apiUrl}/api/fix-sheet`, { method: "POST" });
       const data = await res.json();
-      if (!res.ok) throw new Error(data.error || "Failed to fix sheet");
-      setMessage(data.message);
+      if (!res.ok) throw new Error(data.error || "fix-sheet ล้มเหลว");
+      setFixMessage(data.message || "สำเร็จ");
     } catch (err) {
-      setError(getErrorMessage(err));
+      setFixError(getErrorMessage(err));
     } finally {
       setLoadingFix(false);
     }
@@ -246,22 +358,22 @@ export default function AdminPage() {
   const queueCommand = async (
     command: "SET_WIFI" | "CLEAR_WIFI" | "START_SESSION" | "END_SESSION" | "RECALIBRATE",
     body: Record<string, string | number> = {},
+    deviceId = selectedDevice?.device_id || activeDeviceId,
   ) => {
-    if (!selectedDevice) return;
-
+    if (!deviceId) return;
     setActionLoading(command);
     setActionMessage("");
     setActionError("");
-
     try {
-      const res = await fetch(`${apiUrl}/api/devices/${encodeURIComponent(selectedDevice.device_id)}/command`, {
+      const res = await fetch(`${apiUrl}/api/devices/${encodeURIComponent(deviceId)}/command`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ command, ...body }),
       });
       const data = await res.json();
-      if (!res.ok) throw new Error(data.error || "Failed to queue command");
-      setActionMessage(data.message || "Command queued.");
+      if (!res.ok) throw new Error(data.error || "ส่ง command ไม่สำเร็จ");
+      setActionMessage(data.message || "Command queued");
+      await fetchPendingCommand(deviceId);
     } catch (err) {
       setActionError(getErrorMessage(err));
     } finally {
@@ -279,18 +391,21 @@ export default function AdminPage() {
 
   const removeDevice = async () => {
     if (!selectedDevice) return;
-    if (!confirm(`Remove ${selectedDevice.device_id} from the dashboard? This does not erase the physical board.`)) return;
-
+    if (!confirm(`ลบ ${selectedDevice.device_id} จาก dashboard? (ไม่ลบบอร์ดจริง)`)) return;
     setActionLoading("REMOVE");
     setActionMessage("");
     setActionError("");
-
     try {
-      const res = await fetch(`${apiUrl}/api/devices/${encodeURIComponent(selectedDevice.device_id)}`, { method: "DELETE" });
+      const res = await fetch(`${apiUrl}/api/devices/${encodeURIComponent(selectedDevice.device_id)}`, {
+        method: "DELETE",
+      });
       const data = await res.json();
-      if (!res.ok) throw new Error(data.error || "Failed to remove board");
-      setDevices((current) => current.filter((device) => device.device_id !== selectedDevice.device_id));
+      if (!res.ok) throw new Error(data.error || "ลบไม่สำเร็จ");
+      setDevices((current) => current.filter((d) => d.device_id !== selectedDevice.device_id));
       setSelectedDeviceId(null);
+      if (activeDeviceId === selectedDevice.device_id) {
+        setActiveDeviceId("");
+      }
     } catch (err) {
       setActionError(getErrorMessage(err));
     } finally {
@@ -298,37 +413,31 @@ export default function AdminPage() {
     }
   };
 
-  const checkSelectedStatus = async () => {
-    await fetchDevices();
-    setActionMessage("Status refreshed from the dashboard data.");
-  };
-
   const captureSample = async () => {
-    if (!debugDeviceId || !latestTelemetry) {
-      setDebugError("No telemetry available to capture yet.");
+    if (!activeDeviceId || !payload) {
+      setDebugError("ยังไม่มี telemetry ให้บันทึก");
       return;
     }
     setDebugLoading(true);
     setDebugError("");
     setDebugMessage("");
     try {
-      const sensorMap = { sensorA: sensorAKey, sensorB: sensorBKey };
       const res = await fetch(`${apiUrl}/api/debug/samples`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          device_id: debugDeviceId,
+          device_id: activeDeviceId,
           pose_name: poseName.trim() || "debug-sample",
           test_target: testTarget,
-          sensor_map: sensorMap,
-          packet: latestTelemetry.payload_json,
+          sensor_map: { sensorA: sensorAKey, sensorB: sensorBKey },
+          packet: payload,
           notes: notes.trim(),
         }),
       });
       const data = await res.json();
-      if (!res.ok) throw new Error(data.error || "Failed to save sample");
-      setDebugMessage("Saved sample snapshot.");
-      await fetchDebugSamples(debugDeviceId);
+      if (!res.ok) throw new Error(data.error || "บันทึก sample ไม่สำเร็จ");
+      setDebugMessage("บันทึก sample แล้ว");
+      await fetchDebugSamples(activeDeviceId);
     } catch (err) {
       setDebugError(getErrorMessage(err));
     } finally {
@@ -337,34 +446,33 @@ export default function AdminPage() {
   };
 
   const saveAsPoseTemplate = async () => {
-    if (!debugDeviceId || !latestTelemetry) {
-      setDebugError("No telemetry available to create pose.");
+    if (!activeDeviceId || !payload) {
+      setDebugError("ยังไม่มี telemetry ให้สร้าง pose");
       return;
     }
-    const normalizedPoseName = poseName.trim();
-    if (!normalizedPoseName) {
-      setDebugError("Pose name is required.");
+    const name = poseName.trim();
+    if (!name) {
+      setDebugError("ต้องใส่ชื่อ pose");
       return;
     }
     setDebugLoading(true);
     setDebugError("");
     setDebugMessage("");
     try {
-      const sensorMap = { sensorA: sensorAKey, sensorB: sensorBKey };
       const res = await fetch(`${apiUrl}/api/debug/poses`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          device_id: debugDeviceId,
-          pose_name: normalizedPoseName,
+          device_id: activeDeviceId,
+          pose_name: name,
           test_target: testTarget,
-          sensor_map: sensorMap,
-          reference: latestTelemetry.payload_json,
+          sensor_map: { sensorA: sensorAKey, sensorB: sensorBKey },
+          reference: payload,
         }),
       });
       const data = await res.json();
-      if (!res.ok) throw new Error(data.error || "Failed to save pose template");
-      setDebugMessage("Added new pose template.");
+      if (!res.ok) throw new Error(data.error || "บันทึก pose ไม่สำเร็จ");
+      setDebugMessage("เพิ่ม pose template แล้ว");
       await fetchPoseTemplates();
     } catch (err) {
       setDebugError(getErrorMessage(err));
@@ -373,155 +481,416 @@ export default function AdminPage() {
     }
   };
 
-  const onlineCount = devices.filter((device) => isDeviceOnline(device.last_online, currentTime)).length;
+  const alerts = Array.isArray(payload?.alerts) ? (payload?.alerts as Array<{ level?: string; code?: number }>) : [];
+  const sensors = Array.isArray(payload?.sensors) ? payload.sensors : undefined;
 
   return (
-    <main className="min-h-screen bg-slate-950 text-slate-200 p-6 font-sans relative overflow-hidden">
-      <div className="absolute top-[-10%] left-[-10%] w-[40%] h-[40%] bg-indigo-600 rounded-full blur-[120px] opacity-20 pointer-events-none" />
-      <div className="absolute bottom-[-10%] right-[-10%] w-[40%] h-[40%] bg-rose-600 rounded-full blur-[120px] opacity-20 pointer-events-none" />
-
-      <div className="relative z-10 max-w-6xl mx-auto space-y-8">
-        <header className="flex flex-col md:flex-row justify-between items-center bg-white/5 backdrop-blur-xl border border-white/10 p-6 rounded-3xl shadow-xl">
-          <div>
-            <p className="text-xs uppercase tracking-widest text-slate-500 mb-1">Admin</p>
-            <h1 className="text-2xl font-bold text-transparent bg-clip-text bg-gradient-to-r from-indigo-400 to-rose-400">
-              IoT Control Center
-            </h1>
-            <p className="text-sm text-slate-400">Click a board to edit WiFi, clear WiFi, refresh status, or remove it.</p>
-          </div>
-
-          <div className="flex items-center gap-6 mt-4 md:mt-0">
-            <div className="flex items-center space-x-6">
-              <div className="text-center">
-                <p className="text-xs text-slate-400 uppercase tracking-wider font-semibold">Total Boards</p>
-                <p className="text-2xl font-bold text-white">{devices.length}</p>
-              </div>
-              <div className="w-px h-10 bg-white/10" />
-              <div className="text-center">
-                <p className="text-xs text-slate-400 uppercase tracking-wider font-semibold">Online</p>
-                <p className="text-2xl font-bold text-emerald-400">{onlineCount}</p>
-              </div>
-            </div>
-            <Link
-              href="/"
-              className="text-sm text-slate-400 hover:text-white border border-white/10 rounded-xl px-4 py-2 transition-colors"
-            >
-              หน้าผู้ใช้
-            </Link>
-          </div>
-        </header>
-
-        <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
-          <section className="lg:col-span-2 bg-white/5 backdrop-blur-xl border border-white/10 p-6 rounded-3xl shadow-xl">
-            <div className="flex justify-between items-center mb-6">
-              <h2 className="text-xl font-semibold">Boards</h2>
-              <button onClick={fetchDevices} className="text-sm text-indigo-400 hover:text-indigo-300 transition-colors">
-                {loadingDevices ? "Refreshing..." : "Refresh"}
-              </button>
-            </div>
-
-            {loadingDevices && devices.length === 0 ? (
-              <div className="flex justify-center items-center h-40">
-                <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-indigo-500" />
-              </div>
-            ) : devicesError ? (
-              <div className="p-4 bg-rose-500/10 border border-rose-500/20 text-rose-400 rounded-xl text-sm">
-                Error loading devices: {devicesError}
-              </div>
-            ) : devices.length === 0 ? (
-              <div className="text-center text-slate-500 py-10">No boards found in the database.</div>
-            ) : (
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                {devices.map((device) => {
-                  const online = isDeviceOnline(device.last_online, currentTime);
-                  return (
-                    <button
-                      key={device.device_id}
-                      onClick={() => openDevice(device)}
-                      className="text-left rounded-2xl border border-white/10 bg-slate-900/60 p-5 hover:bg-white/10 hover:border-indigo-400/40 transition-colors"
-                    >
-                      <div className="flex justify-between gap-3">
-                        <p className="font-mono text-sm text-white break-all">{device.device_id}</p>
-                        <span className={`shrink-0 h-fit px-2.5 py-0.5 rounded-full text-xs font-medium border ${
-                          online
-                            ? "bg-emerald-500/10 text-emerald-400 border-emerald-500/20"
-                            : "bg-rose-500/10 text-rose-400 border-rose-500/20"
-                        }`}>
-                          {online ? "Online" : "Offline"}
-                        </span>
-                      </div>
-                      <div className="mt-4 space-y-2 text-sm text-slate-400">
-                        <p>WiFi: <span className="text-slate-200">{device.wifi_ssid}</span></p>
-                        <p>Last online: <span className="text-slate-200">{new Date(device.last_online).toLocaleString()}</span></p>
-                      </div>
-                    </button>
-                  );
-                })}
-              </div>
-            )}
-          </section>
-
-          <section className="bg-white/5 backdrop-blur-xl border border-white/10 p-6 rounded-3xl shadow-xl h-fit">
-            <h2 className="text-xl font-semibold mb-6">System Tools</h2>
-            <div className="bg-slate-900/50 p-5 rounded-2xl border border-white/5">
-              <h3 className="text-sm font-semibold mb-2">Google Sheets Auto-Fix</h3>
-              <p className="text-xs text-slate-400 mb-5">
-                Restores telemetry headers and ensures the Devices and Commands tabs exist.
-              </p>
-              <button
-                onClick={fixSheet}
-                disabled={loadingFix}
-                className="w-full py-2.5 px-4 rounded-xl text-sm font-semibold bg-gradient-to-r from-indigo-600 to-purple-600 hover:from-indigo-500 hover:to-purple-500 disabled:opacity-60"
-              >
-                {loadingFix ? "Processing..." : "Run Auto-Fix"}
-              </button>
-
-              {message && <div className="mt-4 p-3 bg-emerald-500/10 border border-emerald-500/20 text-emerald-400 rounded-lg text-xs">{message}</div>}
-              {error && <div className="mt-4 p-3 bg-rose-500/10 border border-rose-500/20 text-rose-400 rounded-lg text-xs">{error}</div>}
-            </div>
-          </section>
-        </div>
-
-        <section className="bg-white/5 backdrop-blur-xl border border-white/10 p-6 rounded-3xl shadow-xl">
-          <div className="flex flex-wrap items-center justify-between gap-3 mb-6">
+    <main className="min-h-screen bg-[#fafafa] text-neutral-900">
+      <div className="mx-auto max-w-7xl px-4 py-6 sm:px-6 sm:py-8">
+        <FadeIn>
+          <header className="mb-6 flex flex-col gap-4 border-b border-neutral-200/80 pb-6 lg:flex-row lg:items-end lg:justify-between">
             <div>
-              <h2 className="text-xl font-semibold">MPU6050 Debug Lab (2 Sensors)</h2>
-              <p className="text-xs text-slate-400">เลือกจุดทดสอบ บันทึก sample และเพิ่มท่าใหม่จากข้อมูลจริงของ ESP32</p>
+              <p className="text-xs font-medium uppercase tracking-[0.2em] text-neutral-400">RxSmart Admin</p>
+              <h1 className="mt-2 text-2xl font-semibold tracking-tight sm:text-3xl">Therapist Debug Console</h1>
+              <p className="mt-2 max-w-2xl text-sm text-neutral-500">
+                ดู telemetry v2 ครบ 8 sensor · ส่งคำสั่ง ESP32 · บันทึก debug sample & pose library
+              </p>
             </div>
-            <button
-              onClick={() => {
-                if (!debugDeviceId) return;
-                void fetchDebugTelemetry(debugDeviceId);
-                void fetchDebugSamples(debugDeviceId);
-                void fetchPoseTemplates();
-              }}
-              className="text-sm text-indigo-400 hover:text-indigo-300 transition-colors"
-            >
-              Refresh Debug Data
-            </button>
-          </div>
-
-          <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
-            <div className="rounded-2xl border border-white/10 bg-slate-900/50 p-4 space-y-3">
-              <label className="text-xs text-slate-400 uppercase tracking-wider">Device</label>
-              <select
-                value={debugDeviceId}
-                onChange={(event) => setDebugDeviceId(event.target.value)}
-                className="w-full rounded-xl border border-white/10 bg-slate-950 px-3 py-2 text-sm"
+            <div className="flex flex-wrap items-center gap-2">
+              <div className="rounded-xl border border-neutral-200 bg-white px-3 py-2 text-center">
+                <p className="text-[10px] uppercase tracking-wider text-neutral-400">Boards</p>
+                <p className="font-mono text-lg font-semibold">{devices.length}</p>
+              </div>
+              <div className="rounded-xl border border-neutral-200 bg-white px-3 py-2 text-center">
+                <p className="text-[10px] uppercase tracking-wider text-neutral-400">Online</p>
+                <p className="font-mono text-lg font-semibold text-emerald-600">{onlineCount}</p>
+              </div>
+              <Link
+                href="/"
+                className="rounded-xl border border-neutral-200 bg-white px-3 py-2 text-xs font-medium text-neutral-600 transition hover:border-neutral-300"
               >
-                <option value="">Select board</option>
+                หน้าผู้ใช้
+              </Link>
+            </div>
+          </header>
+        </FadeIn>
+
+        <FadeIn delay={60}>
+          <div className="mb-6 flex flex-col gap-3 rounded-2xl border border-neutral-200/80 bg-white p-4 shadow-sm sm:flex-row sm:items-center sm:justify-between">
+            <div className="flex flex-1 flex-wrap items-center gap-3">
+              <label className="text-xs font-medium text-neutral-500">อุปกรณ์ที่ debug</label>
+              <select
+                value={activeDeviceId}
+                onChange={(event) => setActiveDeviceId(event.target.value)}
+                className="min-w-[200px] rounded-xl border border-neutral-200 bg-neutral-50 px-3 py-2 text-sm"
+              >
+                <option value="">— เลือกบอร์ด —</option>
                 {devices.map((device) => (
                   <option key={device.device_id} value={device.device_id}>
                     {device.device_id}
                   </option>
                 ))}
               </select>
+              {activeDevice && (
+                <span
+                  className={`text-xs font-medium ${
+                    isDeviceOnline(activeDevice.last_online, currentTime)
+                      ? "text-emerald-600"
+                      : "text-neutral-400"
+                  }`}
+                >
+                  {isDeviceOnline(activeDevice.last_online, currentTime) ? "● online" : "○ offline"}
+                </span>
+              )}
+            </div>
+            <div className="flex flex-wrap items-center gap-2">
+              <button
+                type="button"
+                onClick={() => setLivePoll((v) => !v)}
+                className={`rounded-lg px-3 py-1.5 text-xs font-medium transition ${
+                  livePoll ? "bg-neutral-900 text-white" : "bg-neutral-100 text-neutral-600"
+                }`}
+              >
+                {livePoll ? "Live poll ON" : "Live poll OFF"}
+              </button>
+              <button
+                type="button"
+                onClick={() => activeDeviceId && void refreshAllDebug(activeDeviceId)}
+                disabled={!activeDeviceId}
+                className="rounded-lg border border-neutral-200 px-3 py-1.5 text-xs font-medium text-neutral-600 hover:bg-neutral-50 disabled:opacity-40"
+              >
+                รีเฟรชทั้งหมด
+              </button>
+              <button
+                type="button"
+                onClick={fetchDevices}
+                className="rounded-lg border border-neutral-200 px-3 py-1.5 text-xs font-medium text-neutral-600 hover:bg-neutral-50"
+              >
+                {loadingDevices ? "…" : "รีเฟรช devices"}
+              </button>
+            </div>
+          </div>
+        </FadeIn>
 
-              <label className="text-xs text-slate-400 uppercase tracking-wider">Test Target</label>
+        <FadeIn delay={100}>
+          <nav className="mb-6 flex flex-wrap gap-1 rounded-xl border border-neutral-200 bg-white p-1 shadow-sm">
+            {TABS.map((item) => (
+              <button
+                key={item.id}
+                type="button"
+                onClick={() => setTab(item.id)}
+                className={`rounded-lg px-3 py-2 text-xs font-medium transition-all duration-300 ${
+                  tab === item.id
+                    ? "bg-neutral-900 text-white shadow-sm"
+                    : "text-neutral-500 hover:bg-neutral-50 hover:text-neutral-800"
+                }`}
+              >
+                {item.label}
+              </button>
+            ))}
+          </nav>
+        </FadeIn>
+
+        {(debugMessage || debugError) && (
+          <div className="mb-4 space-y-2">
+            {debugMessage && (
+              <p className="animate-fade-in-only rounded-xl bg-emerald-50 px-4 py-2 text-sm text-emerald-700">
+                {debugMessage}
+              </p>
+            )}
+            {debugError && (
+              <p className="animate-fade-in-only rounded-xl bg-red-50 px-4 py-2 text-sm text-red-700">{debugError}</p>
+            )}
+          </div>
+        )}
+
+        {tab === "devices" && (
+          <FadeIn delay={140} className="space-y-4">
+            {devicesError && (
+              <p className="rounded-xl bg-red-50 px-4 py-3 text-sm text-red-700">{devicesError}</p>
+            )}
+            {loadingDevices && devices.length === 0 ? (
+              <div className="flex h-40 items-center justify-center rounded-2xl border border-neutral-200 bg-white">
+                <div className="h-8 w-8 animate-spin rounded-full border-2 border-neutral-200 border-t-neutral-900" />
+              </div>
+            ) : devices.length === 0 ? (
+              <p className="rounded-2xl border border-dashed border-neutral-200 bg-white px-6 py-12 text-center text-sm text-neutral-400">
+                ยังไม่มีบอร์ดในระบบ — flash ESP32 แล้วให้ register ผ่าน WiFi captive portal
+              </p>
+            ) : (
+              <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+                {devices.map((device, index) => {
+                  const online = isDeviceOnline(device.last_online, currentTime);
+                  const selected = activeDeviceId === device.device_id;
+                  return (
+                    <button
+                      key={device.device_id}
+                      type="button"
+                      onClick={() => {
+                        setActiveDeviceId(device.device_id);
+                        openDevice(device);
+                      }}
+                      className={`animate-fade-in rounded-2xl border p-4 text-left transition-all duration-300 ${
+                        selected
+                          ? "border-neutral-900 bg-neutral-900 text-white shadow-md"
+                          : "border-neutral-200 bg-white hover:border-neutral-300 hover:shadow-sm"
+                      }`}
+                      style={{ animationDelay: `${index * 40}ms` }}
+                    >
+                      <div className="flex items-start justify-between gap-2">
+                        <p className="break-all font-mono text-xs">{device.device_id}</p>
+                        <span
+                          className={`shrink-0 text-[10px] font-medium ${
+                            selected
+                              ? online
+                                ? "text-emerald-300"
+                                : "text-neutral-400"
+                              : online
+                                ? "text-emerald-600"
+                                : "text-neutral-400"
+                          }`}
+                        >
+                          {online ? "online" : "offline"}
+                        </span>
+                      </div>
+                      <p className={`mt-3 text-xs ${selected ? "text-neutral-400" : "text-neutral-500"}`}>
+                        WiFi: {device.wifi_ssid}
+                      </p>
+                      <p className={`mt-1 text-[10px] ${selected ? "text-neutral-500" : "text-neutral-400"}`}>
+                        {formatLastSeen(device.last_online)}
+                      </p>
+                    </button>
+                  );
+                })}
+              </div>
+            )}
+          </FadeIn>
+        )}
+
+        {tab === "telemetry" && (
+          <FadeIn delay={140} className="space-y-6">
+            {!activeDeviceId ? (
+              <p className="rounded-2xl border border-dashed border-neutral-200 bg-white px-6 py-12 text-center text-sm text-neutral-400">
+                เลือกอุปกรณ์ด้านบนก่อน
+              </p>
+            ) : (
+              <>
+                <div className="grid gap-4 lg:grid-cols-3">
+                  {[
+                    { label: "Session", value: payloadField(payload, "session_state", latestTelemetry?.session_state) },
+                    { label: "Exercise", value: payloadField(payload, "exercise_id", latestTelemetry?.exercise_id) },
+                    { label: "Rep", value: `${payloadField(payload, "rep_count", "0")} / ${payloadField(payload, "rep_target", "—")}` },
+                    { label: "Speed", value: `${payloadField(payload, "speed_dps", "0")} °/s` },
+                    { label: "Posture", value: payloadField(payload, "posture.state") },
+                    { label: "Stability", value: payloadField(payload, "posture.stability_score") },
+                    { label: "Calibrated", value: payloadField(payload, "calibrated") },
+                    { label: "Firmware", value: payloadField(payload, "firmware_version") },
+                    { label: "Sensors", value: `${sensors?.length ?? 0}/8` },
+                  ].map((item, index) => (
+                    <div
+                      key={item.label}
+                      className="animate-fade-in rounded-xl border border-neutral-200 bg-white px-4 py-3"
+                      style={{ animationDelay: `${index * 30}ms` }}
+                    >
+                      <p className="text-[10px] font-medium uppercase tracking-wider text-neutral-400">{item.label}</p>
+                      <p className="mt-1 font-mono text-sm font-semibold text-neutral-900">{item.value}</p>
+                    </div>
+                  ))}
+                </div>
+
+                {alerts.length > 0 && (
+                  <div className="rounded-2xl border border-red-200 bg-red-50 p-4">
+                    <p className="text-xs font-medium uppercase tracking-wider text-red-600">Alerts</p>
+                    <div className="mt-2 space-y-1">
+                      {alerts.map((alert, index) => (
+                        <p key={index} className="font-mono text-sm text-red-800">
+                          [{alert.level ?? "?"}] code={alert.code ?? "—"}
+                        </p>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
+                <div className="grid gap-6 lg:grid-cols-2">
+                  <div className="rounded-2xl border border-neutral-200 bg-white p-4 shadow-sm">
+                    <div className="mb-3 flex items-center justify-between">
+                      <h3 className="text-sm font-semibold">3D Live Pose</h3>
+                      <span className="text-[10px] text-neutral-400">
+                        {latestTelemetry
+                          ? new Date(latestTelemetry.timestamp).toLocaleTimeString("th-TH")
+                          : "รอข้อมูล…"}
+                      </span>
+                    </div>
+                    <div className="h-[360px]">
+                      <PoseViewer frame={liveFrame} activeJoints={POSE_KEYS} />
+                    </div>
+                  </div>
+
+                  <div className="rounded-2xl border border-neutral-200 bg-white p-4 shadow-sm">
+                    <h3 className="mb-3 text-sm font-semibold">มุมข้อต่อ (angles)</h3>
+                    <dl className="grid grid-cols-2 gap-2 font-mono text-sm">
+                      {[
+                        ["elbow_left", "ข้อศอก ซ้าย"],
+                        ["elbow_right", "ข้อศอก ขวา"],
+                        ["knee_left", "เข่า ซ้าย"],
+                        ["knee_right", "เข่า ขวา"],
+                        ["primary", "primary"],
+                      ].map(([key, label]) => (
+                        <div key={key} className="rounded-xl bg-neutral-50 px-3 py-2">
+                          <dt className="text-[10px] text-neutral-400">{label}</dt>
+                          <dd className="font-semibold text-neutral-900">
+                            {payloadField(payload, `angles.${key}`, "0")}°
+                          </dd>
+                        </div>
+                      ))}
+                    </dl>
+                  </div>
+                </div>
+
+                <div className="rounded-2xl border border-neutral-200 bg-white p-4 shadow-sm">
+                  <h3 className="mb-3 text-sm font-semibold">MPU6050 × 8 — Raw Debug</h3>
+                  <AdminSensorDebugGrid sensors={sensors as Parameters<typeof AdminSensorDebugGrid>[0]["sensors"]} />
+                </div>
+
+                <div className="rounded-2xl border border-neutral-200 bg-white p-4 shadow-sm">
+                  <h3 className="mb-3 text-sm font-semibold">Mapped Joints (dashboard scoring view)</h3>
+                  <SensorReadout jointFeedback={mappedFeedback.jointFeedback} />
+                </div>
+
+                <div className="rounded-2xl border border-neutral-200 bg-white p-4 shadow-sm">
+                  <h3 className="mb-2 text-sm font-semibold">Raw JSON (telemetry v2)</h3>
+                  <pre className="max-h-80 overflow-auto rounded-xl bg-neutral-950 p-4 text-[11px] leading-relaxed text-neutral-300">
+                    {payload ? JSON.stringify(payload, null, 2) : "ยังไม่มี packet"}
+                  </pre>
+                </div>
+              </>
+            )}
+          </FadeIn>
+        )}
+
+        {tab === "commands" && (
+          <FadeIn delay={140} className="grid gap-6 lg:grid-cols-2">
+            <div className="rounded-2xl border border-neutral-200 bg-white p-5 shadow-sm">
+              <h3 className="text-sm font-semibold">ส่งคำสั่งไป ESP32</h3>
+              <p className="mt-1 text-xs text-neutral-500">คำสั่งจะเข้าคิวใน Google Sheets — บอร์ด poll จาก cloud</p>
+
+              {!activeDeviceId ? (
+                <p className="mt-6 text-sm text-neutral-400">เลือกอุปกรณ์ก่อน</p>
+              ) : (
+                <div className="mt-4 space-y-4">
+                  <div className="grid gap-3 sm:grid-cols-2">
+                    <div>
+                      <label className="text-xs text-neutral-500">exercise_id</label>
+                      <select
+                        value={exerciseId}
+                        onChange={(e) => setExerciseId(e.target.value)}
+                        className="mt-1 w-full rounded-xl border border-neutral-200 px-3 py-2 text-sm"
+                      >
+                        <option value="general">general</option>
+                        {REHAB_EXERCISES.map((ex) => (
+                          <option key={ex.id} value={ex.id}>
+                            {ex.name}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                    <div>
+                      <label className="text-xs text-neutral-500">rep_target</label>
+                      <input
+                        type="number"
+                        min={1}
+                        value={repTarget}
+                        onChange={(e) => setRepTarget(Number(e.target.value) || 10)}
+                        className="mt-1 w-full rounded-xl border border-neutral-200 px-3 py-2 text-sm"
+                      />
+                    </div>
+                  </div>
+
+                  <div className="grid grid-cols-2 gap-2">
+                    {(
+                      [
+                        ["START_SESSION", "Start Session", "bg-emerald-600 text-white hover:bg-emerald-500"],
+                        ["END_SESSION", "End Session", "bg-neutral-900 text-white hover:bg-neutral-800"],
+                        ["RECALIBRATE", "Recalibrate", "border border-neutral-200 hover:bg-neutral-50"],
+                      ] as const
+                    ).map(([cmd, label, cls]) => (
+                      <button
+                        key={cmd}
+                        type="button"
+                        onClick={() =>
+                          cmd === "START_SESSION"
+                            ? void queueCommand(cmd, { exercise_id: exerciseId, rep_target: repTarget })
+                            : void queueCommand(cmd)
+                        }
+                        disabled={actionLoading === cmd}
+                        className={`rounded-xl px-3 py-2.5 text-xs font-medium disabled:opacity-50 ${cls}`}
+                      >
+                        {actionLoading === cmd ? "…" : label}
+                      </button>
+                    ))}
+                  </div>
+
+                  <button
+                    type="button"
+                    onClick={() => activeDevice && openDevice(activeDevice)}
+                    className="w-full rounded-xl border border-neutral-200 px-3 py-2.5 text-xs font-medium text-neutral-700 hover:bg-neutral-50"
+                  >
+                    เปิด WiFi / Remove / คำสั่งเพิ่มเติม…
+                  </button>
+                </div>
+              )}
+            </div>
+
+            <div className="space-y-4">
+              <div className="rounded-2xl border border-neutral-200 bg-white p-5 shadow-sm">
+                <h3 className="text-sm font-semibold">Pending Command (poll queue)</h3>
+                <pre className="mt-3 max-h-48 overflow-auto rounded-xl bg-neutral-950 p-3 text-[11px] text-neutral-300">
+                  {pendingCommand ? JSON.stringify(pendingCommand, null, 2) : "ไม่มีคำสั่งค้าง"}
+                </pre>
+              </div>
+
+              <div className="rounded-2xl border border-neutral-200 bg-white p-5 shadow-sm">
+                <h3 className="text-sm font-semibold">Latest Session (Sheets)</h3>
+                {latestSession ? (
+                  <dl className="mt-3 space-y-2 text-xs">
+                    <div className="flex justify-between gap-2">
+                      <dt className="text-neutral-400">session_id</dt>
+                      <dd className="font-mono text-neutral-800">{latestSession.session_id}</dd>
+                    </div>
+                    <div className="flex justify-between gap-2">
+                      <dt className="text-neutral-400">state</dt>
+                      <dd>{latestSession.state}</dd>
+                    </div>
+                    <div className="flex justify-between gap-2">
+                      <dt className="text-neutral-400">exercise</dt>
+                      <dd>{latestSession.exercise_id}</dd>
+                    </div>
+                    <div className="flex justify-between gap-2">
+                      <dt className="text-neutral-400">rep</dt>
+                      <dd>
+                        {latestSession.rep_final}/{latestSession.rep_target}
+                      </dd>
+                    </div>
+                  </dl>
+                ) : (
+                  <p className="mt-3 text-xs text-neutral-400">ไม่มี session ล่าสุด</p>
+                )}
+              </div>
+            </div>
+          </FadeIn>
+        )}
+
+        {tab === "lab" && (
+          <FadeIn delay={140} className="grid gap-6 lg:grid-cols-3">
+            <div className="space-y-3 rounded-2xl border border-neutral-200 bg-white p-4 shadow-sm lg:col-span-1">
+              <h3 className="text-sm font-semibold">Capture & Pose Library</h3>
+              <p className="text-xs text-neutral-500">บันทึก snapshot จาก telemetry จริง — 8 sensor ครบ</p>
+
+              <label className="text-xs text-neutral-500">Test target</label>
               <select
                 value={testTarget}
-                onChange={(event) => setTestTarget(event.target.value as PoseKey)}
-                className="w-full rounded-xl border border-white/10 bg-slate-950 px-3 py-2 text-sm"
+                onChange={(e) => setTestTarget(e.target.value as PoseKey)}
+                className="w-full rounded-xl border border-neutral-200 px-3 py-2 text-sm"
               >
                 {POSE_KEYS.map((key) => (
                   <option key={key} value={key}>
@@ -532,11 +901,11 @@ export default function AdminPage() {
 
               <div className="grid grid-cols-2 gap-2">
                 <div>
-                  <label className="text-xs text-slate-400 uppercase tracking-wider">Sensor A</label>
+                  <label className="text-xs text-neutral-500">Sensor A</label>
                   <select
                     value={sensorAKey}
-                    onChange={(event) => setSensorAKey(event.target.value as PoseKey)}
-                    className="mt-1 w-full rounded-xl border border-white/10 bg-slate-950 px-3 py-2 text-sm"
+                    onChange={(e) => setSensorAKey(e.target.value as PoseKey)}
+                    className="mt-1 w-full rounded-xl border border-neutral-200 px-3 py-2 text-sm"
                   >
                     {POSE_KEYS.map((key) => (
                       <option key={key} value={key}>
@@ -546,11 +915,11 @@ export default function AdminPage() {
                   </select>
                 </div>
                 <div>
-                  <label className="text-xs text-slate-400 uppercase tracking-wider">Sensor B</label>
+                  <label className="text-xs text-neutral-500">Sensor B</label>
                   <select
                     value={sensorBKey}
-                    onChange={(event) => setSensorBKey(event.target.value as PoseKey)}
-                    className="mt-1 w-full rounded-xl border border-white/10 bg-slate-950 px-3 py-2 text-sm"
+                    onChange={(e) => setSensorBKey(e.target.value as PoseKey)}
+                    className="mt-1 w-full rounded-xl border border-neutral-200 px-3 py-2 text-sm"
                   >
                     {POSE_KEYS.map((key) => (
                       <option key={key} value={key}>
@@ -561,235 +930,155 @@ export default function AdminPage() {
                 </div>
               </div>
 
-              <label className="text-xs text-slate-400 uppercase tracking-wider">Pose Name</label>
               <input
                 value={poseName}
-                onChange={(event) => setPoseName(event.target.value)}
-                placeholder="e.g. shoulder-flexion-45"
-                className="w-full rounded-xl border border-white/10 bg-slate-950 px-3 py-2 text-sm"
+                onChange={(e) => setPoseName(e.target.value)}
+                placeholder="ชื่อ pose / sample"
+                className="w-full rounded-xl border border-neutral-200 px-3 py-2 text-sm"
               />
-
-              <label className="text-xs text-slate-400 uppercase tracking-wider">Notes</label>
               <textarea
                 value={notes}
-                onChange={(event) => setNotes(event.target.value)}
-                rows={3}
-                className="w-full rounded-xl border border-white/10 bg-slate-950 px-3 py-2 text-sm"
+                onChange={(e) => setNotes(e.target.value)}
+                rows={2}
+                placeholder="notes"
+                className="w-full rounded-xl border border-neutral-200 px-3 py-2 text-sm"
               />
 
               <div className="grid grid-cols-2 gap-2">
                 <button
+                  type="button"
                   onClick={captureSample}
-                  disabled={debugLoading || !debugDeviceId}
-                  className="rounded-xl bg-cyan-600 px-4 py-2 text-sm font-semibold hover:bg-cyan-500 disabled:opacity-60"
+                  disabled={debugLoading || !activeDeviceId}
+                  className="rounded-xl bg-neutral-900 px-3 py-2 text-xs font-medium text-white hover:bg-neutral-800 disabled:opacity-50"
                 >
-                  {debugLoading ? "Saving..." : "Save Sample"}
+                  Save Sample
                 </button>
                 <button
+                  type="button"
                   onClick={saveAsPoseTemplate}
-                  disabled={debugLoading || !debugDeviceId}
-                  className="rounded-xl bg-violet-600 px-4 py-2 text-sm font-semibold hover:bg-violet-500 disabled:opacity-60"
+                  disabled={debugLoading || !activeDeviceId}
+                  className="rounded-xl border border-neutral-200 px-3 py-2 text-xs font-medium hover:bg-neutral-50 disabled:opacity-50"
                 >
-                  {debugLoading ? "Saving..." : "Add New Pose"}
+                  Add Pose
                 </button>
               </div>
             </div>
 
-            <div className="rounded-2xl border border-white/10 bg-slate-900/50 p-4">
-              <h3 className="text-sm font-semibold mb-3">Latest ESP32 Packet</h3>
-              {!latestTelemetry ? (
-                <p className="text-xs text-slate-500">No data yet. Send telemetry from ESP32 first.</p>
+            <div className="rounded-2xl border border-neutral-200 bg-white p-4 shadow-sm">
+              <h3 className="text-sm font-semibold">Saved Samples</h3>
+              <div className="mt-3 max-h-80 space-y-2 overflow-auto">
+                {debugSamples.length === 0 ? (
+                  <p className="text-xs text-neutral-400">ยังไม่มี</p>
+                ) : (
+                  debugSamples.map((sample, index) => (
+                    <div key={`${sample.timestamp}-${index}`} className="rounded-xl border border-neutral-100 bg-neutral-50 p-2 text-xs">
+                      <p className="font-medium text-neutral-800">{sample.pose_name || "debug-sample"}</p>
+                      <p className="text-neutral-400">{new Date(sample.timestamp).toLocaleString("th-TH")}</p>
+                      <p className="truncate text-neutral-500">{sample.test_target}</p>
+                    </div>
+                  ))
+                )}
+              </div>
+            </div>
+
+            <div className="rounded-2xl border border-neutral-200 bg-white p-4 shadow-sm">
+              <h3 className="text-sm font-semibold">Pose Library</h3>
+              <div className="mt-3 max-h-80 space-y-2 overflow-auto">
+                {poseTemplates.length === 0 ? (
+                  <p className="text-xs text-neutral-400">ยังไม่มี</p>
+                ) : (
+                  poseTemplates.map((pose, index) => (
+                    <div key={`${pose.created_at}-${index}`} className="rounded-xl border border-neutral-100 bg-neutral-50 p-2 text-xs">
+                      <p className="font-medium text-neutral-800">{pose.pose_name}</p>
+                      <p className="text-neutral-500">{pose.test_target || "—"}</p>
+                      <p className="text-neutral-400">{new Date(pose.created_at).toLocaleString("th-TH")}</p>
+                    </div>
+                  ))
+                )}
+              </div>
+            </div>
+          </FadeIn>
+        )}
+
+        {tab === "system" && (
+          <FadeIn delay={140} className="grid gap-6 lg:grid-cols-2">
+            <div className="rounded-2xl border border-neutral-200 bg-white p-5 shadow-sm">
+              <h3 className="text-sm font-semibold">Google Sheets Auto-Fix</h3>
+              <p className="mt-1 text-xs text-neutral-500">สร้าง header + tabs Devices, Commands, Sessions…</p>
+              <button
+                type="button"
+                onClick={fixSheet}
+                disabled={loadingFix}
+                className="mt-4 w-full rounded-xl bg-neutral-900 px-4 py-2.5 text-sm font-medium text-white hover:bg-neutral-800 disabled:opacity-50"
+              >
+                {loadingFix ? "กำลังทำ…" : "Run Auto-Fix"}
+              </button>
+              {fixMessage && <p className="mt-3 text-xs text-emerald-600">{fixMessage}</p>}
+              {fixError && <p className="mt-3 text-xs text-red-600">{fixError}</p>}
+            </div>
+
+            <div className="rounded-2xl border border-neutral-200 bg-white p-5 shadow-sm">
+              <h3 className="text-sm font-semibold">Firmware OTA</h3>
+              {firmwareInfo ? (
+                <dl className="mt-3 space-y-2 text-xs">
+                  <div className="flex justify-between">
+                    <dt className="text-neutral-400">latest_version</dt>
+                    <dd className="font-mono">{firmwareInfo.latest_version}</dd>
+                  </div>
+                  <div className="flex justify-between gap-2">
+                    <dt className="text-neutral-400">bin_url</dt>
+                    <dd className="truncate font-mono text-neutral-700">{firmwareInfo.bin_url || "—"}</dd>
+                  </div>
+                </dl>
               ) : (
-                <div className="space-y-2 text-xs">
-                  <p className="text-slate-400">Time: <span className="text-slate-200">{new Date(latestTelemetry.timestamp).toLocaleString()}</span></p>
-                  <p className="text-slate-400">Status: <span className="text-slate-200">{latestTelemetry.status || "-"}</span></p>
-                  <p className="text-slate-400">Session: <span className="text-slate-200">{latestTelemetry.session_state || "idle"}</span></p>
-                  <p className="text-slate-400">Rep: <span className="text-slate-200">{latestTelemetry.payload_json?.rep_count ?? 0}</span></p>
-                  <p className="text-slate-400">Posture: <span className="text-slate-200">{latestTelemetry.payload_json?.posture?.state ?? "-"}</span></p>
-                  <p className="text-slate-400">Speed: <span className="text-slate-200">{latestTelemetry.payload_json?.speed_dps ?? 0}</span></p>
-                  <pre className="max-h-64 overflow-auto rounded-xl border border-white/10 bg-slate-950 p-3 text-[11px] text-slate-300">
-                    {JSON.stringify(latestTelemetry.payload_json, null, 2)}
-                  </pre>
-                </div>
+                <p className="mt-3 text-xs text-neutral-400">โหลดไม่ได้</p>
               )}
             </div>
 
-            <div className="space-y-4">
-              <div className="rounded-2xl border border-white/10 bg-slate-900/50 p-4">
-                <h3 className="text-sm font-semibold mb-3">Saved Samples</h3>
-                <div className="max-h-56 overflow-auto space-y-2">
-                  {debugSamples.length === 0 ? (
-                    <p className="text-xs text-slate-500">No samples yet.</p>
-                  ) : (
-                    debugSamples.map((sample, index) => (
-                      <div key={`${sample.timestamp}-${index}`} className="rounded-xl border border-white/10 bg-slate-950/60 p-2 text-xs">
-                        <p className="text-slate-300">{sample.pose_name || "debug-sample"}</p>
-                        <p className="text-slate-500">{new Date(sample.timestamp).toLocaleString()}</p>
-                        <p className="text-slate-500 truncate">{sample.test_target}</p>
-                      </div>
-                    ))
-                  )}
-                </div>
-              </div>
-
-              <div className="rounded-2xl border border-white/10 bg-slate-900/50 p-4">
-                <h3 className="text-sm font-semibold mb-3">Pose Library</h3>
-                <div className="max-h-56 overflow-auto space-y-2">
-                  {poseTemplates.length === 0 ? (
-                    <p className="text-xs text-slate-500">No poses yet.</p>
-                  ) : (
-                    poseTemplates.map((pose, index) => (
-                      <div key={`${pose.created_at}-${index}`} className="rounded-xl border border-white/10 bg-slate-950/60 p-2 text-xs">
-                        <p className="text-slate-300">{pose.pose_name}</p>
-                        <p className="text-slate-500">{pose.test_target || "-"}</p>
-                        <p className="text-slate-500">{new Date(pose.created_at).toLocaleString()}</p>
-                      </div>
-                    ))
-                  )}
-                </div>
+            <div className="rounded-2xl border border-neutral-200 bg-white p-5 shadow-sm lg:col-span-2">
+              <h3 className="text-sm font-semibold">API Endpoint</h3>
+              <p className="mt-2 break-all font-mono text-xs text-neutral-600">{apiUrl}</p>
+              <div className="mt-4 grid gap-2 text-[11px] text-neutral-500 sm:grid-cols-2 lg:grid-cols-3">
+                {[
+                  "GET /api/devices",
+                  "GET /api/debug/telemetry",
+                  "POST /api/devices/{id}/command",
+                  "GET /api/commands",
+                  "GET /api/sessions/latest",
+                  "POST /api/debug/samples",
+                  "POST /api/fix-sheet",
+                ].map((route) => (
+                  <span key={route} className="rounded-lg bg-neutral-50 px-2 py-1 font-mono">
+                    {route}
+                  </span>
+                ))}
               </div>
             </div>
-          </div>
-
-          <div className="mt-4 grid grid-cols-1 lg:grid-cols-2 gap-4">
-            <div className="rounded-2xl border border-white/10 bg-slate-900/50 p-4">
-              <div className="mb-3 flex items-center justify-between">
-                <h3 className="text-sm font-semibold">3D Live Pose (ESP32)</h3>
-                <span className="text-[11px] text-slate-400">
-                  {latestTelemetry ? `Updated: ${new Date(latestTelemetry.timestamp).toLocaleTimeString()}` : "Waiting..."}
-                </span>
-              </div>
-              <div className="h-[380px]">
-                <PoseViewer frame={liveFrame} activeJoints={POSE_KEYS} />
-              </div>
-            </div>
-
-            <div className="rounded-2xl border border-white/10 bg-slate-900/50 p-4">
-              <h3 className="text-sm font-semibold mb-3">Realtime Summary</h3>
-              {!latestTelemetry ? (
-                <p className="text-xs text-slate-500">No live telemetry yet.</p>
-              ) : (
-                <div className="space-y-2 text-xs">
-                  <p className="text-slate-400">Device: <span className="text-slate-200">{latestTelemetry.device_id}</span></p>
-                  <p className="text-slate-400">Session: <span className="text-slate-200">{latestTelemetry.session_state || "-"}</span></p>
-                  <p className="text-slate-400">Rep count: <span className="text-slate-200">{latestTelemetry.payload_json?.rep_count ?? 0}</span></p>
-                  <p className="text-slate-400">Speed: <span className="text-slate-200">{latestTelemetry.payload_json?.speed_dps ?? 0} dps</span></p>
-                  <p className="text-slate-400">Posture: <span className="text-slate-200">{latestTelemetry.payload_json?.posture?.state ?? "unknown"}</span></p>
-                  <p className="text-slate-400">
-                    Sensors: <span className="text-slate-200">{latestTelemetry.payload_json?.sensors?.length ?? 0}/8</span>
-                  </p>
-                </div>
-              )}
-            </div>
-          </div>
-
-          {debugMessage && <div className="mt-4 p-3 bg-emerald-500/10 border border-emerald-500/20 text-emerald-400 rounded-lg text-xs">{debugMessage}</div>}
-          {debugError && <div className="mt-4 p-3 bg-rose-500/10 border border-rose-500/20 text-rose-400 rounded-lg text-xs">{debugError}</div>}
-        </section>
+          </FadeIn>
+        )}
       </div>
 
       {selectedDevice && (
-        <div className="fixed inset-0 z-50 bg-slate-950/80 backdrop-blur-sm p-4 flex items-center justify-center">
-          <section className="w-full max-w-xl rounded-3xl border border-white/10 bg-slate-900 p-6 shadow-2xl">
-            <div className="flex items-start justify-between gap-4">
-              <div>
-                <h2 className="text-xl font-semibold">Board Controls</h2>
-                <p className="font-mono text-xs text-slate-400 mt-1 break-all">{selectedDevice.device_id}</p>
-              </div>
-              <button onClick={() => setSelectedDeviceId(null)} className="text-slate-400 hover:text-white">Close</button>
-            </div>
-
-            <div className="grid grid-cols-2 gap-3 mt-6">
-              <div className="rounded-2xl bg-white/5 p-4">
-                <p className="text-xs uppercase tracking-wider text-slate-500">Status</p>
-                <p className={isDeviceOnline(selectedDevice.last_online, currentTime) ? "text-emerald-400 font-semibold" : "text-rose-400 font-semibold"}>
-                  {isDeviceOnline(selectedDevice.last_online, currentTime) ? "Online" : "Offline"}
-                </p>
-              </div>
-              <div className="rounded-2xl bg-white/5 p-4">
-                <p className="text-xs uppercase tracking-wider text-slate-500">Current WiFi</p>
-                <p className="text-slate-200 truncate">{selectedDevice.wifi_ssid}</p>
-              </div>
-            </div>
-
-            <form onSubmit={submitWifi} className="mt-6 space-y-4">
-              <div>
-                <label className="text-sm text-slate-300" htmlFor="wifiSsid">New WiFi SSID</label>
-                <input
-                  id="wifiSsid"
-                  value={wifiSsid}
-                  onChange={(event) => setWifiSsid(event.target.value)}
-                  required
-                  className="mt-2 w-full rounded-xl border border-white/10 bg-slate-950 px-4 py-3 text-sm outline-none focus:border-indigo-400"
-                />
-              </div>
-              <div>
-                <label className="text-sm text-slate-300" htmlFor="wifiPassword">New WiFi Password</label>
-                <input
-                  id="wifiPassword"
-                  value={wifiPassword}
-                  onChange={(event) => setWifiPassword(event.target.value)}
-                  type="password"
-                  placeholder="Leave blank for open network"
-                  className="mt-2 w-full rounded-xl border border-white/10 bg-slate-950 px-4 py-3 text-sm outline-none focus:border-indigo-400"
-                />
-              </div>
-              <button
-                disabled={actionLoading === "SET_WIFI"}
-                className="w-full rounded-xl bg-indigo-600 px-4 py-3 text-sm font-semibold text-white hover:bg-indigo-500 disabled:opacity-60"
-              >
-                {actionLoading === "SET_WIFI" ? "Queueing..." : "Save New WiFi To Board"}
-              </button>
-            </form>
-
-            <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 mt-4">
-              <button onClick={checkSelectedStatus} className="rounded-xl bg-slate-800 px-4 py-3 text-sm hover:bg-slate-700">
-                Check Status
-              </button>
-              <button
-                onClick={() => queueCommand("START_SESSION", { exercise_id: "general", rep_target: 10 })}
-                disabled={actionLoading === "START_SESSION"}
-                className="rounded-xl bg-emerald-600 px-4 py-3 text-sm font-semibold hover:bg-emerald-500 disabled:opacity-60"
-              >
-                {actionLoading === "START_SESSION" ? "Queueing..." : "Start Session"}
-              </button>
-              <button
-                onClick={() => queueCommand("END_SESSION")}
-                disabled={actionLoading === "END_SESSION"}
-                className="rounded-xl bg-indigo-600 px-4 py-3 text-sm font-semibold hover:bg-indigo-500 disabled:opacity-60"
-              >
-                {actionLoading === "END_SESSION" ? "Queueing..." : "End Session"}
-              </button>
-              <button
-                onClick={() => queueCommand("RECALIBRATE")}
-                disabled={actionLoading === "RECALIBRATE"}
-                className="rounded-xl bg-cyan-700 px-4 py-3 text-sm font-semibold hover:bg-cyan-600 disabled:opacity-60"
-              >
-                {actionLoading === "RECALIBRATE" ? "Queueing..." : "Recalibrate"}
-              </button>
-              <button
-                onClick={() => queueCommand("CLEAR_WIFI")}
-                disabled={actionLoading === "CLEAR_WIFI"}
-                className="rounded-xl bg-amber-600/90 px-4 py-3 text-sm font-semibold hover:bg-amber-500 disabled:opacity-60"
-              >
-                {actionLoading === "CLEAR_WIFI" ? "Queueing..." : "Clear Board WiFi"}
-              </button>
-              <button
-                onClick={removeDevice}
-                disabled={actionLoading === "REMOVE"}
-                className="rounded-xl bg-rose-600 px-4 py-3 text-sm font-semibold hover:bg-rose-500 disabled:opacity-60"
-              >
-                {actionLoading === "REMOVE" ? "Removing..." : "Remove Board"}
-              </button>
-            </div>
-
-            <p className="mt-4 text-xs text-slate-500">
-              WiFi commands apply when the board is online and checks the cloud. Clear WiFi restarts the board into setup mode.
-            </p>
-            {actionMessage && <div className="mt-4 p-3 bg-emerald-500/10 border border-emerald-500/20 text-emerald-400 rounded-lg text-xs">{actionMessage}</div>}
-            {actionError && <div className="mt-4 p-3 bg-rose-500/10 border border-rose-500/20 text-rose-400 rounded-lg text-xs">{actionError}</div>}
-          </section>
-        </div>
+        <AdminDeviceModal
+          device={selectedDevice}
+          currentTime={currentTime}
+          wifiSsid={wifiSsid}
+          wifiPassword={wifiPassword}
+          exerciseId={exerciseId}
+          repTarget={repTarget}
+          actionLoading={actionLoading}
+          actionMessage={actionMessage}
+          actionError={actionError}
+          onClose={() => setSelectedDeviceId(null)}
+          onWifiSsidChange={setWifiSsid}
+          onWifiPasswordChange={setWifiPassword}
+          onExerciseIdChange={setExerciseId}
+          onRepTargetChange={setRepTarget}
+          onSubmitWifi={submitWifi}
+          onRefreshStatus={fetchDevices}
+          onQueueCommand={(cmd, body) => void queueCommand(cmd, body ?? {})}
+          onRemove={removeDevice}
+        />
       )}
     </main>
   );

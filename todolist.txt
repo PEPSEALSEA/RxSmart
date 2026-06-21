@@ -1,23 +1,180 @@
-[x] P0: กำหนด data model ของเซนเซอร์ 8 ตัว (ตำแหน่งซ้าย/ขวา, ต้นแขน/ปลายแขน/ต้นขา/ปลายขา)
-[x] P0: อ่านข้อมูลจากเซนเซอร์จริงครบ 8 ตัว (แทนค่าจำลอง)
-[x] P0: ทำ calibration ก่อนเริ่มใช้งาน (zero offset/ท่ายืนอ้างอิง)
-[x] P0: คำนวณมุมหลักที่ต้องใช้ในกายภาพบำบัด
-[x] P0: คำนวณความเร็วการเคลื่อนไหวจากข้อมูลเวลา
-[x] P0: นับจำนวนรอบ (rep count) ต่อท่าออกกำลังกาย
-[x] P1: ตรวจจับท่าทาง (posture detection) และแยกถูก/ผิดท่า
-[x] P1: ทำเกณฑ์เตือนความเสี่ยงบาดเจ็บ/มุมเกินช่วงปลอดภัย
-[x] P1: ปรับ telemetry ให้ส่งข้อมูลแยก 8 เซนเซอร์ + angle/speed/posture/rep
-[x] P1: ออกแบบ API payload/DB schema สำหรับเก็บ session กายภาพบำบัด
-[x] P1: เพิ่ม state machine การฝึก (idle -> calibrate -> exercise -> complete)
-[ ] P2: กรองสัญญาณลด noise (moving average / complementary filter)
-[ ] P2: รองรับหลายโปรแกรมฝึกตามโรค/อาการ
-[ ] P2: เพิ่มแดชบอร์ดสรุปผลราย session และแนวโน้ม
-[ ] P2: ทำ test plan (unit test + test กับการเคลื่อนไหวจริง)
+# RxSmart Todo List — System Review v2 (2026-06-20)
+# สัญลักษณ์: [x] เสร็จ | [~] บางส่วน | [ ] ยังไม่ทำ
 
-[x] DONE: Wi-Fi setup ผ่าน Captive Portal
-[x] DONE: บันทึก/ล้างค่า Wi-Fi ด้วย Preferences
-[x] DONE: Internet watchdog
-[x] DONE: Device registration กับ server
-[x] DONE: Firmware update check
-[x] DONE: รับคำสั่งจาก server (command polling)
-[x] DONE: ส่ง telemetry พื้นฐานขึ้น server
+================================================================================
+คำตอบสำคัญ: ทำ todolist ครบแล้ว จะ finish แล้วใช้ได้ + calculate ครบไหม?
+================================================================================
+
+  คำตอบสั้น: **ยังไม่ใช่ทั้งหมด** — โค้ดที่มีอยู่เป็น 3 ก้อนที่ยังไม่ต่อกัน
+
+  ┌─────────────────────┬──────────────────────────────────────────────────┐
+  │ ก้อน                │ สถานะ calculate จริง                             │
+  ├─────────────────────┼──────────────────────────────────────────────────┤
+  │ dashboard/ (Web)    │ score ทำงานเต็ม แค่โหมด Physics จำลอง            │
+  │                     │ โหมด Live ESP32 → แสดงมุม/rep แต่ **ไม่ score**  │
+  ├─────────────────────┼──────────────────────────────────────────────────┤
+  │ ESP32 firmware      │ คำนวณ elbow/knee/rep/posture บนบอร์ด ✓          │
+  │                     │ แต่ dashboard ยังไม่เอาไปเทียบ target ท่าฝึก     │
+  ├─────────────────────┼──────────────────────────────────────────────────┤
+  │ rxsmart-local/      │ คำนวณมุม Camera/IMU/Fusion ✓                     │
+  │                     │ **ไม่มี** โปรแกรมฝึก / scoring / บันทึก session  │
+  └─────────────────────┴──────────────────────────────────────────────────┘
+
+  ทำ P2 (โรค, streak, gamification) ครบ **ไม่ทำให้** calculate ครบเอง
+  ต้องทำ **P0 Integration** ก่อน ถึงจะ "กดฝึก → วัด → ให้คะแนน → บันทึก" ได้จริง
+
+  เป้าหมาย Finish แบ่ง 3 Track — เลือกทำอย่างน้อย 1 track ให้ครบ:
+
+  Track A — IMU + Web     สวม sensor → เปิด dashboard → ฝึก → score จาก sensor จริง
+  Track B — Camera Local  เปิด python main.py → กล้อง → ฝึก → score จาก MediaPipe
+  Track C — Hybrid        Fusion camera+IMU → ฝึก → score (local หรือ web)
+
+================================================================================
+DONE — พื้นฐานที่มีแล้ว (ใช้เป็นฐานต่อ)
+================================================================================
+
+--- Firmware (ESP32DevKitV1-ArduinoIDE-Code.ino) ---
+[x] Data model sensor 8 จุด + telemetry v2
+[x] TCA9548A I2C Multiplexer + MPU6050 × 8 (CH0–CH7)
+[x] Calibration, มุม elbow/knee, speed, rep, posture, injury alert
+[x] Session state machine (idle → calibrate → exercise → complete)
+[x] WiFi Captive Portal, watchdog, OTA check, device register, command poll
+[x] POST telemetry → Cloudflare
+
+--- Backend (cloudflare-worker/) ---
+[x] REST API ครบ (telemetry, devices, commands, sessions, debug)
+[x] Google Sheets 7+ sheets + quota backoff
+[x] Telemetry v2 parser
+
+--- Frontend (dashboard/) ---
+[x] 3D PoseViewer + RehabPanel + 9 โปรแกรมฝึก
+[x] Scoring engine (angle + hold + velocity) ใน pose-physics.ts
+[x] แสดง live telemetry (poll) + admin ส่ง command ได้
+
+--- Local (rxsmart-local/) ---
+[x] Camera / IoT / Fusion mode + OpenCV debug UI
+[x] MediaPipe คำนวณมุม elbow/knee/shoulder
+[x] IoT transport: serial | http | server (Flask LAN)
+
+================================================================================
+GAP — ช่องว่างระบบ (ทำไม calculate ยังไม่ครบ end-to-end)
+================================================================================
+
+[~] Dashboard หน้าหลัก กด Start/Stop → รันแค่ physics ใน browser
+    → ไม่ส่ง START_SESSION ไป ESP32 (ส่งได้แค่หน้า /admin)
+
+[~] โหมด Live มี telemetry → ข้าม RehabSessionEngine.tick()
+    → ใช้ makeLiveFeedback() แทน buildSessionFeedback() = ไม่มี score จริง
+
+[~] mapTelemetryToFrame() ใส่ elevation ให้ upper joint แต่ไม่มี plane
+    → ท่าไหล่/สะโพกที่ต้อง plane (abduction, swim) score ไม่ได้แม้ต่อ sensor แล้ว
+
+[~] Firmware rep count ใช้ primaryAngle = เฉลี่ย 4 ข้อ — ไม่ผูก exercise ที่เลือก
+    → rep บน ESP32 กับ rep บน dashboard อาจไม่ตรงกัน
+
+[x] Firmware อ่าน MPU6050 8 ตัวผ่าน TCA9548A แยก channel 0–7
+    → แขน/ขา ซ้าย/ขวา อ่านค่าแยกกันได้จริงแล้ว
+
+[~] rxsmart-local ไม่ share โค้ด scoring / rehab-exercises กับ dashboard
+    → กล้องคำนวณมุมได้ แต่ไม่บอกว่าท่าถูก/ผิด/คะแนนเท่าไร
+
+[~] ไม่มี Camera frontend บน Web (กล้องอยู่แค่ Python local)
+
+[~] Google Sheets ยัง append ทุก packet — ยังไม่ aggregate ต่อเซ็ต
+
+================================================================================
+P0 — MUST DO (ทำครบถึงจะ Finish & ใช้ calculate ได้จริง)
+================================================================================
+
+--- Track A: IMU + Web Dashboard (แนะนำเป็น MVP หลัก) ---
+
+[ ] A1. หน้าหลัก: กด Start → POST command START_SESSION + exercise_id + rep_target
+[ ] A2. หน้าหลัก: กด Stop  → POST command END_SESSION
+[ ] A3. Live mode: ทุก poll ใช้ buildSessionFeedback(frame, targets, phase, …)
+        แทน makeLiveFeedback — frame จาก mapTelemetryToFrame(telemetry)
+[ ] A4. Live mode: ยังใช้ RehabSessionEngine จัด phase/hold/rest (ไม่ข้าม engine)
+[ ] A5. Firmware: rep counter เลือกมุมตาม exercise_id (elbow-only / knee-only / …)
+[x] A6. TCA9548A + MPU6050 × 8 อ่านแยกช่อง (แทน map 2→8)
+[ ] A7. Firmware: คำนวณมุมจาก IMU จริง (accel+gyro / segment angle) + filter noise
+[ ] A8. จำกัดหรือแก้ท่าฝึกให้ match ข้อมูล IMU (elbow/knee MVP ก่อน shoulder 2DOF)
+[ ] A9. รวม firmware_local_server_snippet เข้า .ino หลัก (optional แต่ช่วย LAN เร็ว)
+
+--- Track B: Camera Local (ไม่ต้อง ESP32) ---
+
+[ ] B1. นำ rehab-exercises + buildSessionFeedback ไปใช้ใน rxsmart-local
+        (port TypeScript → Python หรือ shared JSON config)
+[ ] B2. แปลง JointData (camera) → SensorFrame ให้ตรง schema dashboard
+[ ] B3. แสดง score + phase + rep บน visual_debugger panel
+[ ] B4. (optional) บันทึก session summary ส่ง worker / Sheets ตอนจบ
+
+--- Track C: Hybrid Fusion ---
+
+[ ] C1. Track A หรือ B อย่างใดอย่างหนึ่ง finish ก่อน
+[ ] C2. ใช้ fused JointData เป็น input ของ scoring engine
+[ ] C3. กำหนด UX ชัด: Fusion รันที่ local แล้วส่ง score ขึ้น web หรือรวม dashboard
+
+--- ทุก Track ต้องมี ---
+
+[ ] X1. E2E test 1 รอบ: เลือกท่า → เริ่ม → ทำท่า → เห็น score เปลี่ยน → จบ → มีข้อมูล session
+[ ] X2. เอกสาร user flow 1 หน้า: ใช้โหมดไหน / เปิดอะไร / ลำดับขั้นตอน
+
+================================================================================
+P1 — ความแม่นยำ & ข้อมูล (หลัง P0 ใช้ได้แล้ว ค่อย polish)
+================================================================================
+
+[ ] กรองสัญญาณ IMU (moving average / complementary filter บน firmware)
+[ ] Smoothness Score จาก acceleration jitter MPU6050
+[ ] Upper joint plane จาก IMU 2 segment (ไหล่/สะโพก 2DOF ครบ)
+[ ] Aggregate Google Sheets: 1 write ต่อเซ็ต/ท่า (ลด quota)
+[ ] ลด latency: poll เร็วขึ้น หรือ WebSocket (optional)
+[ ] OTA: bin_url จริง + ทดสอบ flash
+
+================================================================================
+P2 — ฟีเจอร์เพิ่ม (เล่มรายงาน / product — ไม่ blocking calculate)
+================================================================================
+
+[ ] เลือกโรค/อาการ → Set Combo ท่าทาง
+[ ] Dashboard กราฟแนวโน้ม session / มุมข้อต่อย้อนหลัง
+[ ] Camera Mode ใน Web browser (MediaPipe WASM / tasks-vision)
+[ ] User profile, history, streaks, achievements
+[ ] Therapist dashboard + custom program
+[ ] Frontend cache + submit สรุปตอนจบ session
+
+================================================================================
+P3 — คุณภาพ / DevOps
+================================================================================
+
+[ ] Unit test: telemetry parser, mapTelemetryToFrame, buildSessionFeedback
+[ ] Integration test: ESP32 → Worker → Dashboard
+[ ] Test การเคลื่อนไหวจริง (calibration, rep, alert, score)
+[ ] CI: typecheck worker + build dashboard
+[ ] Production setup guide (env, secrets, flash, WiFi)
+
+================================================================================
+CHECKLIST — เมื่อไหร่ถึงถือว่า "Finish & ใช้ได้ calculate ครบ"
+================================================================================
+
+Track A (IMU + Web) — ครบเมื่อ:
+  [ ] A1–A4 + X1  (A6 ✓ เสร็จแล้ว)
+  → ผู้ใช้เปิด dashboard, เลือกท่า, กด Start, สวม sensor, เห็น 3D + score อัปเดตจาก sensor จริง
+
+Track B (Camera Local) — ครบเมื่อ:
+  [ ] B1–B3 + X1
+  → ผู้ใช้รัน python main.py, โหมด Camera, เลือกท่า, เห็น score จากกล้อง
+
+Track C (Hybrid) — ครบเมื่อ:
+  [ ] C1–C3 + (A หรือ B finish) + X1
+  → Fusion เป็น input ของ scoring ได้จริง
+
+  **ไม่จำเป็นต้องทำ P2 ทั้งหมด** เพื่อให้ calculate ครบ
+  **ต้องทำ P0 ของ track ที่เลือก** เป็นขั้นต่ำ
+
+================================================================================
+สรุปเร็ว — ลำดับแนะนำ
+================================================================================
+
+  1. A1–A4  (ต่อ dashboard ↔ ESP32 ↔ scoring)     ← ได้ผลเร็วที่สุด
+  2. A6–A7  (hardware 8 sensor จริง)
+  3. A5, A8 (rep + ท่าที่ match IMU)
+  4. B1–B3  (ถ้าต้องการ Camera path)
+  5. P1 → P2 → P3

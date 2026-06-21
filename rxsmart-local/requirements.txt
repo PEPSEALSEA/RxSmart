@@ -1,0 +1,17 @@
+# RxSmart Local Pipeline — Python dependencies
+#
+# Python 3.8 – 3.11 recommended (MediaPipe 0.10.x does not support 3.12+ on Windows yet)
+#
+# Install:
+#   pip install -r requirements.txt
+#
+# Note: pyserial is only required when IOT_TRANSPORT = "serial" in config.py
+#       requests  is only required when IOT_TRANSPORT = "http"
+#       flask     is only required when IOT_TRANSPORT = "server"
+
+mediapipe>=0.10.31          # 0.10.31+ ใช้ py3-none wheel รองรับ Python 3.9–3.14+
+opencv-python>=4.8.0
+numpy>=1.24.0
+pyserial>=3.5
+requests>=2.31.0
+flask>=2.3.0
