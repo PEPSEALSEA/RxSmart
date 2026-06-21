@@ -4,9 +4,11 @@ import dynamic from "next/dynamic";
 import Link from "next/link";
 import { useCallback, useEffect, useRef, useState } from "react";
 import RehabPanel from "@/components/RehabPanel";
+import LocalBridgePanel from "@/components/LocalBridgePanel";
 import SensorReadout from "@/components/SensorReadout";
 import FadeIn from "@/components/ui/FadeIn";
 import { Device, formatLastSeen, getApiUrl, getErrorMessage, isDeviceOnline } from "@/lib/devices";
+import { LocalBridgeState, mapLocalJointsToFrame } from "@/lib/local-bridge";
 import { FIRMWARE_SENSOR_TO_POSE, isUpperKey } from "@/lib/pose";
 import { REHAB_EXERCISES, RehabExercise } from "@/lib/rehab-exercises";
 import {
@@ -33,7 +35,7 @@ type LiveTelemetry = {
   sensors?: Array<{ key?: string; calibrated?: number }>;
 };
 
-type DataMode = "simulation" | "live";
+type DataMode = "simulation" | "live" | "camera";
 
 const PoseViewer = dynamic(() => import("@/components/PoseViewer"), {
   ssr: false,
@@ -104,6 +106,28 @@ function makeLiveFeedback(exercise: RehabExercise, payload: LiveTelemetry): Sess
   };
 }
 
+function makeCameraFeedback(exercise: RehabExercise, state: LocalBridgeState): SessionFeedback {
+  const joints = state.joints;
+  const frame = mapLocalJointsToFrame(joints);
+  const fb = buildSessionFeedback(
+    frame,
+    exercise.startPose,
+    exercise.phases[0],
+    joints?.rep_count ?? 0,
+    joints?.rep_target ?? exercise.reps,
+    mapSessionState(joints?.session_state),
+  );
+  return {
+    ...fb,
+    messages: [
+      `Local bridge · ${state.mode.replace("_", " ")}`,
+      joints
+        ? `confidence ${Math.round(joints.confidence * 100)}% · ${joints.source}`
+        : "รอ MediaPipe จับ pose…",
+    ],
+  };
+}
+
 export default function UserHome() {
   const [frame, setFrame] = useState<SensorFrame>(createNeutralFrame);
   const [feedback, setFeedback] = useState<SessionFeedback>(() =>
@@ -119,6 +143,8 @@ export default function UserHome() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [currentTime, setCurrentTime] = useState(0);
+  const [bridgeConnected, setBridgeConnected] = useState(false);
+  const [bridgeState, setBridgeState] = useState<LocalBridgeState | null>(null);
 
   const frameRef = useRef<SensorFrame>(createNeutralFrame());
   const engineRef = useRef<RehabSessionEngine>(new RehabSessionEngine(REHAB_EXERCISES[0]));
@@ -127,6 +153,8 @@ export default function UserHome() {
 
   const apiUrl = getApiUrl();
   const isLive = dataMode === "live" && Boolean(liveDeviceId && liveTelemetry);
+  const isCameraBridge = dataMode === "camera" && bridgeConnected;
+  const useExternalFrame = isLive || isCameraBridge;
 
   const fetchDevices = useCallback(async () => {
     setLoading(true);
@@ -211,7 +239,7 @@ export default function UserHome() {
       const nextFrame = stepPhysics(frameRef.current, targets, dt);
       frameRef.current = nextFrame;
 
-      if (!isLive) {
+      if (!useExternalFrame) {
         const sessionFeedback = engine.tick(dt, nextFrame);
         setFrame({ ...nextFrame });
         setFeedback(sessionFeedback);
@@ -224,12 +252,14 @@ export default function UserHome() {
     return () => {
       if (rafRef.current !== null) cancelAnimationFrame(rafRef.current);
     };
-  }, [isLive]);
+  }, [useExternalFrame]);
 
   const handleSelectExercise = (next: RehabExercise) => {
     engineRef.current.setExercise(next);
     setExercise(next);
-    if (isLive && liveTelemetry) {
+    if (isCameraBridge && bridgeState) {
+      setFeedback(makeCameraFeedback(next, bridgeState));
+    } else if (isLive && liveTelemetry) {
       const mappedFrame = mapTelemetryToFrame(liveTelemetry);
       frameRef.current = mappedFrame;
       setFrame(mappedFrame);
@@ -259,15 +289,41 @@ export default function UserHome() {
 
   const handleModeChange = (mode: DataMode) => {
     setDataMode(mode);
+    if (mode !== "camera") {
+      setBridgeConnected(false);
+      setBridgeState(null);
+    }
     if (mode === "simulation") {
       frameRef.current = createNeutralFrame();
       setFrame(createNeutralFrame());
       setFeedback(makeIdleFeedback(exercise, createNeutralFrame()));
-    } else if (liveTelemetry) {
+    } else if (mode === "live" && liveTelemetry) {
       const mappedFrame = mapTelemetryToFrame(liveTelemetry);
       frameRef.current = mappedFrame;
       setFrame(mappedFrame);
       setFeedback(makeLiveFeedback(exercise, liveTelemetry));
+    }
+  };
+
+  const handleBridgeFrameUpdate = (nextFrame: SensorFrame) => {
+    frameRef.current = nextFrame;
+    setFrame(nextFrame);
+  };
+
+  const handleBridgeStateUpdate = (state: LocalBridgeState | null) => {
+    setBridgeState(state);
+    if (state) {
+      setFeedback(makeCameraFeedback(exercise, state));
+    }
+  };
+
+  const handleBridgeConnectChange = (connected: boolean) => {
+    setBridgeConnected(connected);
+    if (!connected) {
+      setBridgeState(null);
+      frameRef.current = createNeutralFrame();
+      setFrame(createNeutralFrame());
+      setFeedback(makeIdleFeedback(exercise, createNeutralFrame()));
     }
   };
 
@@ -285,7 +341,7 @@ export default function UserHome() {
                 กายภาพบำบัดอัจฉริยะ
               </h1>
               <p className="mt-2 max-w-lg text-sm text-neutral-500">
-                Hybrid Motion Tracking — จำลอง physics หรือเชื่อม ESP32 IMU แบบ real-time
+                Hybrid Motion Tracking — Physics · Live IMU · Camera (MediaPipe local)
               </p>
             </div>
 
@@ -312,6 +368,17 @@ export default function UserHome() {
                   }`}
                 >
                   Live IMU
+                </button>
+                <button
+                  type="button"
+                  onClick={() => handleModeChange("camera")}
+                  className={`rounded-lg px-3 py-1.5 text-xs font-medium transition-all duration-300 ${
+                    dataMode === "camera"
+                      ? "bg-neutral-900 text-white shadow-sm"
+                      : "text-neutral-500 hover:text-neutral-800"
+                  }`}
+                >
+                  Camera
                 </button>
               </div>
 
@@ -425,6 +492,66 @@ export default function UserHome() {
           </FadeIn>
         )}
 
+        {dataMode === "camera" && (
+          <FadeIn delay={80} className="mb-6 space-y-6">
+            <LocalBridgePanel
+              onConnectChange={handleBridgeConnectChange}
+              onFrameUpdate={handleBridgeFrameUpdate}
+              onStateUpdate={handleBridgeStateUpdate}
+            />
+
+            {bridgeConnected && (
+              <section className="grid gap-6 lg:grid-cols-12 lg:gap-8">
+                <FadeIn delay={120} className="lg:col-span-7">
+                  <div className="flex h-full flex-col rounded-2xl border border-neutral-200/80 bg-white p-4 shadow-sm sm:p-5">
+                    <div className="mb-4 flex items-center justify-between">
+                      <div>
+                        <h2 className="text-sm font-semibold text-neutral-900">3D จาก Camera Bridge</h2>
+                        <p className="mt-0.5 text-xs text-neutral-400">
+                          {bridgeState?.mode.replace("_", " ") ?? "—"} · MediaPipe joints
+                        </p>
+                      </div>
+                      <span className="animate-fade-in-only rounded-full border border-neutral-200 bg-neutral-50 px-2.5 py-1 text-[10px] font-medium uppercase tracking-wider text-neutral-500">
+                        Camera Live
+                      </span>
+                    </div>
+                    <div className="min-h-[min(52vh,480px)] flex-1">
+                      <PoseViewer frame={frame} activeJoints={activeJoints} />
+                    </div>
+                  </div>
+                </FadeIn>
+
+                <FadeIn delay={180} className="lg:col-span-5">
+                  <div className="flex h-full min-h-[480px] flex-col rounded-2xl border border-neutral-200/80 bg-white p-4 shadow-sm sm:p-5">
+                    <RehabPanel
+                      exercise={exercise}
+                      feedback={feedback}
+                      onSelectExercise={handleSelectExercise}
+                      onStart={handleStart}
+                      onStop={handleStop}
+                      onReset={handleReset}
+                    />
+                  </div>
+                </FadeIn>
+              </section>
+            )}
+
+            {bridgeConnected && (
+              <FadeIn delay={240}>
+                <section className="overflow-hidden rounded-2xl border border-neutral-200/80 bg-white shadow-sm">
+                  <div className="border-b border-neutral-100 px-5 py-4">
+                    <h2 className="text-sm font-semibold text-neutral-900">Joint readout (camera)</h2>
+                  </div>
+                  <div className="px-5 pb-5 pt-4">
+                    <SensorReadout jointFeedback={feedback.jointFeedback} />
+                  </div>
+                </section>
+              </FadeIn>
+            )}
+          </FadeIn>
+        )}
+
+        {dataMode !== "camera" && (
         <section className="grid gap-6 lg:grid-cols-12 lg:gap-8">
           <FadeIn delay={120} className="lg:col-span-7">
             <div className="flex h-full flex-col rounded-2xl border border-neutral-200/80 bg-white p-4 shadow-sm sm:p-5">
@@ -459,7 +586,9 @@ export default function UserHome() {
             </div>
           </FadeIn>
         </section>
+        )}
 
+        {dataMode !== "camera" && (
         <FadeIn delay={240} className="mt-6">
           <section className="overflow-hidden rounded-2xl border border-neutral-200/80 bg-white shadow-sm">
             <button
@@ -487,12 +616,19 @@ export default function UserHome() {
             </div>
           </section>
         </FadeIn>
+        )}
 
         <FadeIn delay={300}>
           <footer className="mt-10 flex flex-col items-center justify-between gap-2 border-t border-neutral-200/80 pt-6 text-center sm:flex-row sm:text-left">
             <p className="text-xs text-neutral-400">RxSmart · Smart Physical Therapy</p>
             <p className="text-xs text-neutral-300">
-              {isLive ? `Device ${liveDeviceId}` : "Simulation mode — ไม่ต้องใช้อุปกรณ์"}
+              {dataMode === "camera"
+                ? bridgeConnected
+                  ? `Camera bridge · ${bridgeState?.mode ?? "—"}`
+                  : "Camera — รัน python main.py แล้วกดเชื่อมต่อ"
+                : isLive
+                  ? `Device ${liveDeviceId}`
+                  : "Simulation mode — ไม่ต้องใช้อุปกรณ์"}
             </p>
           </footer>
         </FadeIn>

@@ -18,8 +18,6 @@ import config
 from data_models import ConnectionStatus, JointData
 
 mp_pose = mp.solutions.pose
-mp_drawing = mp.solutions.drawing_utils
-mp_drawing_styles = mp.solutions.drawing_styles
 
 # ---------------------------------------------------------------------------
 # Geometry helpers
@@ -170,12 +168,7 @@ class CameraPoseEngine:
             joint_data: Optional[JointData] = None
 
             if results.pose_landmarks:
-                mp_drawing.draw_landmarks(
-                    annotated,
-                    results.pose_landmarks,
-                    mp_pose.POSE_CONNECTIONS,
-                    landmark_drawing_spec=mp_drawing_styles.get_default_pose_landmarks_style(),
-                )
+                self._draw_minimal_skeleton(annotated, results.pose_landmarks, mp_pose)
                 joint_data = self._compute_joints(
                     results.pose_landmarks.landmark, w, h, annotated
                 )
@@ -248,8 +241,8 @@ class CameraPoseEngine:
         self._annotate_angle(frame, pt(L.RIGHT_ELBOW), elbow_right, "ER")
         self._annotate_angle(frame, pt(L.LEFT_KNEE), knee_left, "KL")
         self._annotate_angle(frame, pt(L.RIGHT_KNEE), knee_right, "KR")
-        self._annotate_angle(frame, pt(L.LEFT_SHOULDER), shoulder_left, "SL", color=(180, 255, 180))
-        self._annotate_angle(frame, pt(L.RIGHT_SHOULDER), shoulder_right, "SR", color=(180, 255, 180))
+        self._annotate_angle(frame, pt(L.LEFT_SHOULDER), shoulder_left, "SL")
+        self._annotate_angle(frame, pt(L.RIGHT_SHOULDER), shoulder_right, "SR")
 
         return JointData(
             elbow_left=elbow_left,
@@ -265,17 +258,57 @@ class CameraPoseEngine:
         )
 
     @staticmethod
+    def _draw_minimal_skeleton(
+        frame: np.ndarray,
+        landmarks,
+        mp_pose_module,
+    ) -> None:
+        h, w = frame.shape[:2]
+
+        def px(idx: int) -> tuple[int, int]:
+            lm = landmarks.landmark[idx]
+            return int(lm.x * w), int(lm.y * h)
+
+        for a, b in mp_pose_module.POSE_CONNECTIONS:
+            cv2.line(frame, px(a), px(b), config.COLOR_SKELETON, 2, cv2.LINE_AA)
+
+        for idx in [
+            mp_pose_module.PoseLandmark.LEFT_SHOULDER,
+            mp_pose_module.PoseLandmark.RIGHT_SHOULDER,
+            mp_pose_module.PoseLandmark.LEFT_ELBOW,
+            mp_pose_module.PoseLandmark.RIGHT_ELBOW,
+            mp_pose_module.PoseLandmark.LEFT_WRIST,
+            mp_pose_module.PoseLandmark.RIGHT_WRIST,
+            mp_pose_module.PoseLandmark.LEFT_HIP,
+            mp_pose_module.PoseLandmark.RIGHT_HIP,
+            mp_pose_module.PoseLandmark.LEFT_KNEE,
+            mp_pose_module.PoseLandmark.RIGHT_KNEE,
+            mp_pose_module.PoseLandmark.LEFT_ANKLE,
+            mp_pose_module.PoseLandmark.RIGHT_ANKLE,
+        ]:
+            x, y = px(idx)
+            cv2.circle(frame, (x, y), 4, config.COLOR_SKELETON_ACTIVE, -1, cv2.LINE_AA)
+            cv2.circle(frame, (x, y), 5, config.COLOR_ACCENT, 1, cv2.LINE_AA)
+
+    @staticmethod
     def _annotate_angle(
         frame: np.ndarray,
         pos: np.ndarray,
         angle: float,
         label: str,
-        color: tuple = (0, 255, 255),
+        color: tuple = None,
     ) -> None:
+        if color is None:
+            color = config.COLOR_ANGLE_LABEL
         x, y = int(pos[0]), int(pos[1])
-        text = f"{label}:{angle:.1f}"
-        # Outline for readability
-        cv2.putText(frame, text, (x + 6, y - 8), cv2.FONT_HERSHEY_SIMPLEX,
-                    0.48, (0, 0, 0), 3, cv2.LINE_AA)
-        cv2.putText(frame, text, (x + 6, y - 8), cv2.FONT_HERSHEY_SIMPLEX,
-                    0.48, color, 1, cv2.LINE_AA)
+        text = f"{label} {angle:.0f}"
+        pad_x, pad_y = x + 8, y - 10
+        (tw, th), _ = cv2.getTextSize(text, cv2.FONT_HERSHEY_SIMPLEX, 0.42, 1)
+        cv2.rectangle(
+            frame,
+            (pad_x - 4, pad_y - th - 6),
+            (pad_x + tw + 4, pad_y + 4),
+            config.COLOR_HUD_BG,
+            -1,
+        )
+        cv2.putText(frame, text, (pad_x, pad_y), cv2.FONT_HERSHEY_SIMPLEX, 0.42, color, 1, cv2.LINE_AA)

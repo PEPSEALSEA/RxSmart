@@ -26,6 +26,7 @@ from data_models import SystemMode
 from iot_receiver import IoTReceiver
 from system_mode_manager import SystemModeManager
 from visual_debugger import AdvancedVisualDebugger
+from web_bridge import WebBridgeServer
 
 _KEY_MODE_MAP = {
     ord("1"): SystemMode.CAMERA_ONLY,
@@ -44,6 +45,7 @@ def main() -> None:
         print(f"  API base URL  : {config.API_BASE_URL}")
     print(f"  Camera index  : {config.CAMERA_INDEX}")
     print(f"  Fusion α      : {config.FUSION_ALPHA}")
+    print(f"  Web bridge    : http://127.0.0.1:{config.WEB_BRIDGE_PORT}/api/state")
     print("=" * 60)
 
     # --- Instantiate modules ---
@@ -51,10 +53,12 @@ def main() -> None:
     iot = IoTReceiver(transport=config.IOT_TRANSPORT)
     manager = SystemModeManager(camera, iot, initial_mode=SystemMode.CAMERA_ONLY)
     debugger = AdvancedVisualDebugger()
+    bridge = WebBridgeServer(manager)
 
     # --- Start background threads ---
     camera.start()
     iot.start()
+    bridge.start()
 
     manager.stats.add_log("Pipeline started")
     manager.stats.add_log(f"Transport: {config.IOT_TRANSPORT.upper()}")
@@ -75,6 +79,8 @@ def main() -> None:
             joint_data, cam_frame = manager.get_frame_and_data()
             stats = manager.stats
 
+            if cam_frame is not None:
+                debugger.notify_new_frame()
             display = debugger.render(cam_frame, joint_data, stats)
             cv2.imshow(config.WINDOW_NAME, display)
 
@@ -103,6 +109,7 @@ def main() -> None:
         print("[main] Stopping threads…")
         camera.stop()
         iot.stop()
+        bridge.stop()
         cv2.destroyAllWindows()
         print("[main] Done.")
         sys.exit(0)
