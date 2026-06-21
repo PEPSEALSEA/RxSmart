@@ -18,6 +18,10 @@ from __future__ import annotations
 
 import sys
 
+from runtime_check import ensure_standard_python
+
+ensure_standard_python()
+
 import cv2
 
 import config
