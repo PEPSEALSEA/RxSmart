@@ -23,11 +23,11 @@ const STATUS_LABELS: Record<SessionStatus, string> = {
 };
 
 const STATUS_DOT: Record<SessionStatus, string> = {
-  idle: "bg-neutral-400",
-  moving: "bg-neutral-900 animate-pulse-soft",
-  holding: "bg-amber-500",
-  rest: "bg-violet-500",
-  complete: "bg-emerald-500",
+  idle: "bg-cohere-muted",
+  moving: "bg-cohere-on-primary animate-pulse-soft",
+  holding: "bg-cohere-coral",
+  rest: "bg-cohere-action-blue",
+  complete: "bg-cohere-deep-green",
 };
 
 const CATEGORY_TABS: { id: ExerciseCategory | "all"; label: string }[] = [
@@ -61,16 +61,16 @@ export default function RehabPanel({
   );
 
   return (
-    <div className="flex h-full flex-col gap-5">
+    <div className="flex h-full flex-col gap-6">
       <FadeIn>
         <div className="flex items-center justify-between gap-3">
           <div className="flex items-center gap-2">
             <span className={`h-2 w-2 rounded-full ${STATUS_DOT[feedback.status]}`} />
-            <span className="text-xs font-medium tracking-wide text-neutral-500">
+            <span className="cohere-mono-label text-[11px]">
               {STATUS_LABELS[feedback.status]}
             </span>
           </div>
-          <span className="rounded-full border border-neutral-200 bg-neutral-50 px-2.5 py-0.5 text-[10px] font-medium uppercase tracking-wider text-neutral-500">
+          <span className="cohere-chip-coral" data-active="false">
             {exercise.category}
           </span>
         </div>
@@ -78,40 +78,44 @@ export default function RehabPanel({
 
       <FadeIn delay={60}>
         <div>
-          <h2 className="text-xl font-semibold tracking-tight text-neutral-900">{exercise.name}</h2>
-          <p className="mt-1.5 text-sm leading-relaxed text-neutral-500">{exercise.description}</p>
+          <h2 className="font-display text-2xl font-normal tracking-[-0.02em] text-cohere-ink">
+            {exercise.name}
+          </h2>
+          <p className="mt-2 text-base leading-relaxed text-cohere-body-muted">
+            {exercise.description}
+          </p>
         </div>
       </FadeIn>
 
       <FadeIn delay={120}>
         <div className="grid grid-cols-3 gap-3">
-          <div className="rounded-2xl border border-neutral-200/80 bg-neutral-50/50 px-3 py-3">
-            <p className="text-[10px] font-medium uppercase tracking-wider text-neutral-400">Rep</p>
-            <p className="mt-1 font-mono text-lg font-semibold text-neutral-900">
+          <div className="cohere-product-card">
+            <p className="cohere-mono-label text-[10px]">Rep</p>
+            <p className="mt-1 font-mono-label text-xl font-medium tabular-nums text-cohere-ink">
               {feedback.rep}
-              <span className="text-sm font-normal text-neutral-400">/{feedback.totalReps}</span>
+              <span className="text-sm font-normal text-cohere-muted">/{feedback.totalReps}</span>
             </p>
           </div>
-          <div className="rounded-2xl border border-neutral-200/80 bg-neutral-50/50 px-3 py-3">
-            <p className="text-[10px] font-medium uppercase tracking-wider text-neutral-400">Phase</p>
-            <p className="mt-1 truncate text-sm font-medium text-neutral-800">{feedback.phaseLabel}</p>
+          <div className="cohere-product-card">
+            <p className="cohere-mono-label text-[10px]">Phase</p>
+            <p className="mt-1 truncate text-sm font-medium text-cohere-ink">{feedback.phaseLabel}</p>
           </div>
-          <div className="rounded-2xl border border-neutral-900/10 bg-neutral-900 px-3 py-3 text-white">
-            <p className="text-[10px] font-medium uppercase tracking-wider text-neutral-400">Score</p>
-            <p className="mt-1 font-mono text-lg font-semibold tabular-nums">{feedback.score}</p>
+          <div className="rounded-cohere-sm bg-cohere-primary px-4 py-4 text-cohere-on-primary">
+            <p className="cohere-mono-label text-[10px] text-cohere-muted">Score</p>
+            <p className="mt-1 font-mono-label text-xl font-medium tabular-nums">{feedback.score}</p>
           </div>
         </div>
       </FadeIn>
 
       <FadeIn delay={160}>
         <div>
-          <div className="mb-2 flex justify-between text-[11px] text-neutral-400">
+          <div className="mb-2 flex justify-between text-xs text-cohere-muted">
             <span>ความคืบหน้า</span>
             <span>{Math.round(progress)}%</span>
           </div>
-          <div className="h-1 overflow-hidden rounded-full bg-neutral-100">
+          <div className="h-1 overflow-hidden rounded-full bg-cohere-hairline/60">
             <div
-              className="h-full rounded-full bg-neutral-900 transition-all duration-700 ease-out"
+              className="h-full rounded-full bg-cohere-primary transition-all duration-700 ease-out"
               style={{ width: `${progress}%` }}
             />
           </div>
@@ -123,7 +127,7 @@ export default function RehabPanel({
           {feedback.messages.map((msg, index) => (
             <p
               key={`${msg}-${index}`}
-              className="animate-fade-in-only rounded-xl border border-neutral-200/80 bg-white px-3 py-2.5 text-sm text-neutral-600"
+              className="animate-fade-in-only rounded-cohere-sm border border-cohere-hairline bg-cohere-pale-blue px-4 py-3 text-sm text-cohere-ink"
               style={{ animationDelay: `${220 + index * 60}ms` }}
             >
               {msg}
@@ -138,7 +142,7 @@ export default function RehabPanel({
             <button
               type="button"
               onClick={onStart}
-              className="flex-1 rounded-xl bg-neutral-900 px-4 py-3 text-sm font-medium text-white transition hover:bg-neutral-800 active:scale-[0.98]"
+              className="cohere-btn-primary flex-1 text-sm active:scale-[0.98]"
             >
               {feedback.status === "complete" ? "ฝึกอีกครั้ง" : "เริ่มฝึก"}
             </button>
@@ -146,7 +150,7 @@ export default function RehabPanel({
             <button
               type="button"
               onClick={onStop}
-              className="flex-1 rounded-xl bg-neutral-100 px-4 py-3 text-sm font-medium text-neutral-900 ring-1 ring-neutral-200 transition hover:bg-neutral-200 active:scale-[0.98]"
+              className="flex-1 rounded-cohere-pill border border-cohere-hairline bg-cohere-soft-stone px-6 py-3 text-sm font-medium text-cohere-ink transition hover:bg-cohere-hairline/40 active:scale-[0.98]"
             >
               หยุดชั่วคราว
             </button>
@@ -154,7 +158,7 @@ export default function RehabPanel({
           <button
             type="button"
             onClick={onReset}
-            className="rounded-xl border border-neutral-200 bg-white px-4 py-3 text-sm font-medium text-neutral-600 transition hover:border-neutral-300 hover:bg-neutral-50 active:scale-[0.98]"
+            className="cohere-btn-pill-outline px-5 py-3 text-sm active:scale-[0.98]"
           >
             รีเซ็ต
           </button>
@@ -165,10 +169,10 @@ export default function RehabPanel({
         <button
           type="button"
           onClick={() => setListOpen((open) => !open)}
-          className="mb-3 flex w-full items-center justify-between text-left text-xs font-medium uppercase tracking-wider text-neutral-400 transition hover:text-neutral-600"
+          className="cohere-mono-label mb-3 flex w-full items-center justify-between text-left text-[11px] transition hover:text-cohere-ink"
         >
           <span>เลือกโปรแกรมฝึก</span>
-          <span className="text-neutral-300">{listOpen ? "−" : "+"}</span>
+          <span className="font-display text-lg text-cohere-muted">{listOpen ? "−" : "+"}</span>
         </button>
 
         <div
@@ -183,11 +187,8 @@ export default function RehabPanel({
                 type="button"
                 onClick={() => setCategory(tab.id)}
                 disabled={isRunning}
-                className={`rounded-lg px-2.5 py-1 text-[11px] font-medium transition disabled:opacity-40 ${
-                  category === tab.id
-                    ? "bg-neutral-900 text-white"
-                    : "bg-neutral-100 text-neutral-600 hover:bg-neutral-200"
-                }`}
+                data-active={category === tab.id}
+                className="cohere-chip-coral text-[11px] disabled:opacity-40"
               >
                 {tab.label}
               </button>
@@ -201,17 +202,17 @@ export default function RehabPanel({
                 type="button"
                 onClick={() => onSelectExercise(item)}
                 disabled={isRunning}
-                className={`animate-fade-in w-full rounded-xl border px-3 py-2.5 text-left text-sm transition disabled:opacity-40 ${
+                className={`animate-fade-in w-full rounded-cohere-sm border px-4 py-3 text-left text-sm transition disabled:opacity-40 ${
                   item.id === exercise.id
-                    ? "border-neutral-900 bg-neutral-900 text-white"
-                    : "border-transparent bg-neutral-50 text-neutral-700 hover:border-neutral-200 hover:bg-white"
+                    ? "border-cohere-primary bg-cohere-primary text-cohere-on-primary"
+                    : "border-transparent bg-cohere-soft-stone text-cohere-ink hover:border-cohere-hairline"
                 }`}
                 style={{ animationDelay: `${index * 30}ms` }}
               >
                 <span className="font-medium">{item.name}</span>
                 <span
                   className={`ml-2 text-xs ${
-                    item.id === exercise.id ? "text-neutral-400" : "text-neutral-400"
+                    item.id === exercise.id ? "text-cohere-muted" : "text-cohere-slate"
                   }`}
                 >
                   {item.reps} reps

@@ -210,31 +210,31 @@ export default function LocalBridgePanel({
   return (
     <div className="space-y-6">
       <FadeIn>
-        <div className="rounded-2xl border border-neutral-200/80 bg-white p-4 shadow-sm sm:p-5">
+        <div className="cohere-card p-5 sm:p-6">
           <div className="flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between">
             <div className="flex-1">
-              <p className="text-xs font-medium uppercase tracking-wider text-neutral-400">
+              <p className="cohere-mono-label text-[11px]">
                 {imuStats
                   ? "Local USB — Python bridge (ไม่ผ่าน Cloudflare)"
                   : "Local Bridge — เชื่อม Web กับ Python บนเครื่องนี้"}
               </p>
-              <div className="mt-2 flex flex-col gap-2 sm:flex-row sm:items-center">
+              <div className="mt-3 flex flex-col gap-2 sm:flex-row sm:items-center">
                 <input
                   value={bridgeUrl}
                   onChange={(e) => setBridgeUrl(e.target.value)}
                   placeholder="http://127.0.0.1:8766"
-                  className="w-full rounded-xl border border-neutral-200 bg-neutral-50 px-3 py-2.5 font-mono text-sm outline-none focus:border-neutral-400 sm:max-w-md"
+                  className="cohere-input w-full font-mono-label text-sm sm:max-w-md"
                 />
                 <button
                   type="button"
                   onClick={() => void connect()}
                   disabled={checking}
-                  className="rounded-xl bg-neutral-900 px-4 py-2.5 text-sm font-medium text-white transition hover:bg-neutral-800 disabled:opacity-50"
+                  className="cohere-btn-primary px-5 py-2.5 text-sm disabled:opacity-50"
                 >
                   {checking ? "กำลังเชื่อม…" : connected ? "เชื่อมต่อแล้ว" : "เชื่อมต่อเครื่องนี้"}
                 </button>
               </div>
-              <p className="mt-2 text-xs text-neutral-400">
+              <p className="mt-3 text-sm text-cohere-body-muted">
                 {imuStats
                   ? "เสียบ Pico 2 W / ESP32 ทาง USB → รัน python main.py → ข้อมูล IMU realtime ~400 ms"
                   : "GitHub Pages เรียก 127.0.0.1:8766 ได้เมื่อเปิดเว็บและรัน Python บน PC เครื่องเดียวกัน"}
@@ -243,26 +243,26 @@ export default function LocalBridgePanel({
             <div className="flex items-center gap-2">
               <span
                 className={`h-2 w-2 rounded-full ${
-                  connected ? "bg-emerald-500 animate-pulse-soft" : "bg-neutral-300"
+                  connected ? "bg-cohere-deep-green animate-pulse-soft" : "bg-cohere-hairline"
                 }`}
               />
-              <span className="text-xs font-medium text-neutral-500">
+              <span className="cohere-mono-label text-[11px]">
                 {connected ? "Bridge online" : "รอ Python bridge"}
               </span>
             </div>
           </div>
 
           {error && (
-            <p className="mt-3 animate-fade-in-only rounded-xl bg-red-50 px-3 py-2 text-xs text-red-700">
+            <p className="mt-4 animate-fade-in-only rounded-cohere-sm border border-cohere-error/20 bg-cohere-error/5 px-4 py-2.5 text-xs text-cohere-error">
               {error}
             </p>
           )}
 
           {!connected && !autoConnect && (
-            <ol className="mt-4 space-y-1.5 border-t border-neutral-100 pt-4 text-sm text-neutral-600">
-              <li>1. <code className="text-xs">cd rxsmart-local</code></li>
-              <li>2. <code className="text-xs">pip install -r requirements.txt</code></li>
-              <li>3. <code className="text-xs">python main.py</code></li>
+            <ol className="mt-5 space-y-2 border-t border-cohere-hairline pt-5 text-sm text-cohere-body-muted">
+              <li>1. <code className="font-mono-label text-xs text-cohere-ink">cd rxsmart-local</code></li>
+              <li>2. <code className="font-mono-label text-xs text-cohere-ink">pip install -r requirements.txt</code></li>
+              <li>3. <code className="font-mono-label text-xs text-cohere-ink">python main.py</code></li>
               <li>4. กด &quot;เชื่อมต่อเครื่องนี้&quot; ด้านบน</li>
             </ol>
           )}
@@ -278,11 +278,8 @@ export default function LocalBridgePanel({
                   key={mode.id}
                   type="button"
                   onClick={() => void handleMode(mode.id)}
-                  className={`rounded-lg px-3 py-1.5 text-xs font-medium transition ${
-                    state.mode === mode.id
-                      ? "bg-neutral-900 text-white"
-                      : "border border-neutral-200 bg-white text-neutral-600 hover:bg-neutral-50"
-                  }`}
+                  data-active={state.mode === mode.id}
+                  className="cohere-btn-pill-outline text-xs"
                 >
                   {mode.label}
                 </button>
@@ -290,11 +287,8 @@ export default function LocalBridgePanel({
               <button
                 type="button"
                 onClick={() => void handleSkeletonDebug(!(state.skeleton_debug ?? false))}
-                className={`rounded-lg px-3 py-1.5 text-xs font-medium transition ${
-                  state.skeleton_debug
-                    ? "bg-neutral-900 text-white"
-                    : "border border-neutral-200 bg-white text-neutral-600 hover:bg-neutral-50"
-                }`}
+                data-active={state.skeleton_debug ?? false}
+                className="cohere-btn-pill-outline text-xs"
               >
                 Skeleton debug
               </button>
@@ -312,12 +306,9 @@ export default function LocalBridgePanel({
                   { label: "Reps", value: state.joints ? `${state.joints.rep_count ?? 0}/${state.joints.rep_target ?? 0}` : "—" },
                   { label: "Confidence", value: state.joints ? `${Math.round(state.joints.confidence * 100)}%` : "—" },
                 ].map((item) => (
-                  <div
-                    key={item.label}
-                    className="rounded-xl border border-neutral-200 bg-white px-3 py-2.5"
-                  >
-                    <p className="text-[10px] uppercase tracking-wider text-neutral-400">{item.label}</p>
-                    <p className="mt-0.5 font-mono text-sm font-semibold text-neutral-900">{item.value}</p>
+                  <div key={item.label} className="cohere-product-card py-3">
+                    <p className="cohere-mono-label text-[10px]">{item.label}</p>
+                    <p className="mt-1 font-mono-label text-sm font-medium text-cohere-ink">{item.value}</p>
                   </div>
                 ))}
               </>
@@ -337,12 +328,9 @@ export default function LocalBridgePanel({
                       : "—",
                   },
                 ].map((item) => (
-                  <div
-                    key={item.label}
-                    className="rounded-xl border border-neutral-200 bg-white px-3 py-2.5"
-                  >
-                    <p className="text-[10px] uppercase tracking-wider text-neutral-400">{item.label}</p>
-                    <p className="mt-0.5 font-mono text-sm font-semibold text-neutral-900">{item.value}</p>
+                  <div key={item.label} className="cohere-product-card py-3">
+                    <p className="cohere-mono-label text-[10px]">{item.label}</p>
+                    <p className="mt-1 font-mono-label text-sm font-medium text-cohere-ink">{item.value}</p>
                   </div>
                 ))}
               </>
@@ -350,30 +338,30 @@ export default function LocalBridgePanel({
           </div>
 
           {showPreview && (
-            <div className="overflow-hidden rounded-2xl border border-neutral-200 bg-black shadow-sm">
+            <div className="overflow-hidden rounded-cohere-lg border border-cohere-hairline bg-cohere-black">
               {/* eslint-disable-next-line @next/next/no-img-element */}
               <img
                 src={bridgeFrameUrl(bridgeUrl, frameTick)}
                 alt="Camera feed from local Python bridge"
                 className={`aspect-video w-full object-contain animate-fade-in-only ${
-                  state.skeleton_debug ? "bg-black" : "bg-neutral-950"
+                  state.skeleton_debug ? "bg-cohere-black" : "bg-cohere-primary"
                 }`}
               />
               {state.skeleton_debug && (
-                <p className="border-t border-neutral-800 bg-black px-3 py-2 text-center text-[10px] uppercase tracking-wider text-neutral-500">
+                <p className="cohere-mono-label border-t border-cohere-primary bg-cohere-black px-4 py-2.5 text-center text-[10px] text-cohere-muted">
                   Skeleton debug — video hidden, joints only
                 </p>
               )}
             </div>
           )}
           {imuStats && connected && (
-            <div className="rounded-2xl border border-neutral-200/80 bg-white p-4 shadow-sm">
+            <div className="cohere-card p-5">
               <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
                 <div>
-                  <p className="text-xs font-medium uppercase tracking-wider text-neutral-400">
+                  <p className="cohere-mono-label text-[11px]">
                     Sensor mapping · auto-calibrate
                   </p>
-                  <p className="mt-1 text-xs text-neutral-500">
+                  <p className="mt-2 text-sm text-cohere-body-muted">
                     confidence{" "}
                     {mapping ? `${Math.round(mapping.confidence * 100)}%` : "—"}
                     {mapping?.calibration_step && mapping.calibration_step !== "idle"
@@ -386,7 +374,7 @@ export default function LocalBridgePanel({
                     type="button"
                     disabled={Boolean(mapBusy)}
                     onClick={() => void runMapAction("auto_recheck")}
-                    className="rounded-lg border border-neutral-200 px-3 py-1.5 text-xs font-medium text-neutral-700 hover:bg-neutral-50 disabled:opacity-50"
+                    className="cohere-btn-pill-outline text-xs disabled:opacity-50"
                   >
                     {mapBusy === "auto_recheck" ? "…" : "Auto recheck"}
                   </button>
@@ -394,7 +382,7 @@ export default function LocalBridgePanel({
                     type="button"
                     disabled={Boolean(mapBusy)}
                     onClick={() => void runMapAction("calibrate_start")}
-                    className="rounded-lg border border-neutral-200 px-3 py-1.5 text-xs font-medium text-neutral-700 hover:bg-neutral-50 disabled:opacity-50"
+                    className="cohere-btn-pill-outline text-xs disabled:opacity-50"
                   >
                     เริ่ม calibrate
                   </button>
@@ -406,7 +394,7 @@ export default function LocalBridgePanel({
                       mapping.calibration_step === "idle"
                     }
                     onClick={() => void runMapAction("calibrate_next")}
-                    className="rounded-lg bg-neutral-900 px-3 py-1.5 text-xs font-medium text-white hover:bg-neutral-800 disabled:opacity-50"
+                    className="cohere-btn-primary px-4 py-2 text-xs disabled:opacity-50"
                   >
                     {mapBusy === "calibrate_next" ? "…" : "ขั้นถัดไป"}
                   </button>
@@ -414,14 +402,14 @@ export default function LocalBridgePanel({
                     type="button"
                     disabled={Boolean(mapBusy)}
                     onClick={() => void runMapAction("reset")}
-                    className="rounded-lg border border-dashed border-neutral-300 px-3 py-1.5 text-xs font-medium text-neutral-500 hover:bg-neutral-50 disabled:opacity-50"
+                    className="cohere-btn-pill-outline border-dashed text-xs disabled:opacity-50"
                   >
                     Reset default
                   </button>
                 </div>
               </div>
               {mapMessage && (
-                <p className="mt-3 rounded-lg bg-neutral-50 px-3 py-2 text-xs text-neutral-600">{mapMessage}</p>
+                <p className="mt-4 rounded-cohere-sm bg-cohere-pale-green px-4 py-2.5 text-xs text-cohere-ink">{mapMessage}</p>
               )}
             </div>
           )}

@@ -1,30 +1,202 @@
 @import "tailwindcss";
 
 :root {
-  --background: #fafafa;
-  --foreground: #171717;
-  --muted: #737373;
-  --border: #e5e5e5;
-  --accent: #0a0a0a;
-  --accent-soft: #f5f5f5;
-  --surface: #ffffff;
-  --success: #16a34a;
-  --warning: #ca8a04;
-  --danger: #dc2626;
+  --cohere-primary: #17171c;
+  --cohere-black: #000000;
+  --cohere-ink: #212121;
+  --cohere-deep-green: #003c33;
+  --cohere-dark-navy: #071829;
+  --cohere-canvas: #ffffff;
+  --cohere-soft-stone: #eeece7;
+  --cohere-pale-green: #edfce9;
+  --cohere-pale-blue: #f1f5ff;
+  --cohere-hairline: #d9d9dd;
+  --cohere-border-light: #e5e7eb;
+  --cohere-card-border: #f2f2f2;
+  --cohere-muted: #93939f;
+  --cohere-slate: #75758a;
+  --cohere-body-muted: #616161;
+  --cohere-action-blue: #1863dc;
+  --cohere-focus-blue: #4c6ee6;
+  --cohere-coral: #ff7759;
+  --cohere-coral-soft: #ffad9b;
+  --cohere-form-focus: #9b60aa;
+  --cohere-on-primary: #ffffff;
+  --cohere-error: #b30000;
+
+  --background: var(--cohere-canvas);
+  --foreground: var(--cohere-ink);
 }
 
 @theme inline {
   --color-background: var(--background);
   --color-foreground: var(--foreground);
-  --font-sans: var(--font-geist-sans);
-  --font-mono: var(--font-geist-mono);
+  --color-cohere-primary: var(--cohere-primary);
+  --color-cohere-black: var(--cohere-black);
+  --color-cohere-ink: var(--cohere-ink);
+  --color-cohere-deep-green: var(--cohere-deep-green);
+  --color-cohere-dark-navy: var(--cohere-dark-navy);
+  --color-cohere-canvas: var(--cohere-canvas);
+  --color-cohere-soft-stone: var(--cohere-soft-stone);
+  --color-cohere-pale-green: var(--cohere-pale-green);
+  --color-cohere-pale-blue: var(--cohere-pale-blue);
+  --color-cohere-hairline: var(--cohere-hairline);
+  --color-cohere-border-light: var(--cohere-border-light);
+  --color-cohere-card-border: var(--cohere-card-border);
+  --color-cohere-muted: var(--cohere-muted);
+  --color-cohere-slate: var(--cohere-slate);
+  --color-cohere-body-muted: var(--cohere-body-muted);
+  --color-cohere-action-blue: var(--cohere-action-blue);
+  --color-cohere-focus-blue: var(--cohere-focus-blue);
+  --color-cohere-coral: var(--cohere-coral);
+  --color-cohere-coral-soft: var(--cohere-coral-soft);
+  --color-cohere-form-focus: var(--cohere-form-focus);
+  --color-cohere-on-primary: var(--cohere-on-primary);
+  --color-cohere-error: var(--cohere-error);
+  --font-sans: var(--font-body);
+  --font-display: var(--font-display);
+  --font-mono: var(--font-mono);
+  --radius-cohere-xs: 4px;
+  --radius-cohere-sm: 8px;
+  --radius-cohere-md: 16px;
+  --radius-cohere-lg: 22px;
+  --radius-cohere-xl: 30px;
+  --radius-cohere-pill: 32px;
 }
 
 body {
   background: var(--background);
   color: var(--foreground);
-  font-family: var(--font-geist-sans), system-ui, sans-serif;
+  font-family: var(--font-body), Inter, Arial, ui-sans-serif, system-ui, sans-serif;
   -webkit-font-smoothing: antialiased;
+}
+
+.font-display {
+  font-family: var(--font-display), "Space Grotesk", Inter, ui-sans-serif, system-ui, sans-serif;
+}
+
+.font-mono-label {
+  font-family: var(--font-mono), ui-monospace, monospace;
+  letter-spacing: 0.28px;
+}
+
+.cohere-mono-label {
+  font-family: var(--font-mono), ui-monospace, monospace;
+  font-size: 12px;
+  font-weight: 400;
+  letter-spacing: 0.28px;
+  text-transform: uppercase;
+  color: var(--cohere-muted);
+}
+
+.cohere-btn-primary {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 12px 24px;
+  border-radius: var(--radius-cohere-pill);
+  background-color: var(--cohere-primary);
+  color: var(--cohere-on-primary);
+  font-size: 14px;
+  font-weight: 500;
+  line-height: 1.71;
+  transition: opacity 150ms ease;
+}
+
+.cohere-btn-primary:hover:not(:disabled) {
+  opacity: 0.88;
+}
+
+.cohere-btn-primary:disabled {
+  opacity: 0.5;
+}
+
+.cohere-btn-pill-outline {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 6px 14px;
+  border-radius: var(--radius-cohere-xl);
+  border: 1px solid var(--cohere-hairline);
+  background: transparent;
+  color: var(--cohere-primary);
+  font-size: 14px;
+  font-weight: 500;
+  transition: border-color 150ms ease, background-color 150ms ease;
+}
+
+.cohere-btn-pill-outline:hover {
+  border-color: var(--cohere-primary);
+  background-color: var(--cohere-soft-stone);
+}
+
+.cohere-btn-pill-outline[data-active="true"] {
+  background-color: var(--cohere-primary);
+  border-color: var(--cohere-primary);
+  color: var(--cohere-on-primary);
+}
+
+.cohere-card {
+  border-radius: var(--radius-cohere-lg);
+  border: 1px solid var(--cohere-hairline);
+  background-color: var(--cohere-canvas);
+}
+
+.cohere-product-card {
+  border-radius: var(--radius-cohere-sm);
+  background-color: var(--cohere-soft-stone);
+  padding: 16px;
+}
+
+.cohere-agent-card {
+  border-radius: var(--radius-cohere-sm);
+  background-color: var(--cohere-primary);
+  color: var(--cohere-on-primary);
+}
+
+.cohere-chip-coral {
+  border-radius: var(--radius-cohere-sm);
+  border: 1px solid var(--cohere-coral-soft);
+  color: var(--cohere-coral);
+  font-size: 12px;
+  font-weight: 500;
+  padding: 4px 10px;
+}
+
+.cohere-chip-coral[data-active="true"] {
+  background-color: var(--cohere-coral);
+  border-color: var(--cohere-coral);
+  color: var(--cohere-primary);
+}
+
+.cohere-input {
+  border-radius: var(--radius-cohere-xs);
+  border: 1px solid var(--cohere-hairline);
+  background-color: var(--cohere-canvas);
+  padding: 10px 14px;
+  font-size: 14px;
+  outline: none;
+  transition: border-color 150ms ease;
+}
+
+.cohere-input:focus {
+  border-color: var(--cohere-form-focus);
+}
+
+.cohere-announcement {
+  background-color: var(--cohere-black);
+  color: var(--cohere-on-primary);
+  font-size: 12px;
+  height: 36px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.cohere-dark-band {
+  background-color: var(--cohere-deep-green);
+  color: var(--cohere-on-primary);
+  border-radius: var(--radius-cohere-lg);
 }
 
 @keyframes fade-in {
@@ -96,9 +268,9 @@ body {
 .progress-shimmer {
   background: linear-gradient(
     90deg,
-    #171717 0%,
+    var(--cohere-primary) 0%,
     #404040 50%,
-    #171717 100%
+    var(--cohere-primary) 100%
   );
   background-size: 200% 100%;
   animation: progress-shimmer 2s linear infinite;

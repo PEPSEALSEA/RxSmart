@@ -28,11 +28,11 @@ function speedTone(
   idealMax: number,
   active: boolean,
 ): string {
-  if (!active) return "text-neutral-300";
-  if (speed > max * 0.85) return "text-red-500";
-  if (speed >= idealMin && speed <= idealMax) return "text-emerald-600";
-  if (speed < idealMin * 0.4 && speed > 0.5) return "text-amber-600";
-  return "text-neutral-600";
+  if (!active) return "text-cohere-muted";
+  if (speed > max * 0.85) return "text-cohere-error";
+  if (speed >= idealMin && speed <= idealMax) return "text-cohere-deep-green";
+  if (speed < idealMin * 0.4 && speed > 0.5) return "text-cohere-coral";
+  return "text-cohere-body-muted";
 }
 
 function SensorCard({
@@ -63,30 +63,30 @@ function SensorCard({
   return (
     <FadeIn delay={delay}>
       <div
-        className={`group rounded-2xl border p-3 transition-all duration-300 ${
+        className={`group rounded-cohere-sm border p-3 transition-all duration-300 ${
           active
-            ? "border-neutral-900/15 bg-white shadow-sm ring-1 ring-neutral-900/5"
-            : "border-neutral-200/80 bg-neutral-50/40 hover:border-neutral-300/80"
+            ? "border-cohere-primary/20 bg-cohere-canvas"
+            : "border-cohere-hairline bg-cohere-soft-stone/60 hover:border-cohere-slate/40"
         }`}
       >
         <div className="flex items-start justify-between gap-2">
           <div>
-            <p className="text-[10px] font-medium uppercase tracking-wider text-neutral-400">
+            <p className="cohere-mono-label text-[10px]">
               Ch{channel} · {role}
             </p>
-            <p className="mt-1 text-xs font-medium text-neutral-700">{label}</p>
+            <p className="mt-1 text-xs font-medium text-cohere-ink">{label}</p>
           </div>
           {active && (
-            <span className="mt-0.5 h-1.5 w-1.5 rounded-full bg-neutral-900 animate-pulse-soft" />
+            <span className="mt-0.5 h-1.5 w-1.5 rounded-full bg-cohere-primary animate-pulse-soft" />
           )}
         </div>
 
-        <p className="mt-2 font-mono text-base font-semibold tabular-nums text-neutral-900">{primary}</p>
-        {secondary && <p className="mt-0.5 text-[10px] text-neutral-500">{secondary}</p>}
+        <p className="mt-2 font-mono-label text-base font-medium tabular-nums text-cohere-ink">{primary}</p>
+        {secondary && <p className="mt-0.5 text-[10px] text-cohere-body-muted">{secondary}</p>}
 
-        <p className={`mt-1.5 font-mono text-[10px] tabular-nums ${speedClass}`}>{speed}</p>
+        <p className={`mt-1.5 font-mono-label text-[10px] tabular-nums ${speedClass}`}>{speed}</p>
 
-        <div className="mt-2.5 h-1 overflow-hidden rounded-full bg-neutral-100">
+        <div className="mt-2.5 h-1 overflow-hidden rounded-full bg-cohere-hairline/60">
           <div
             className={`h-full rounded-full transition-all duration-500 ease-out ${progressTone}`}
             style={{ width: `${Math.min(100, progress)}%` }}
@@ -131,7 +131,7 @@ export default function SensorReadout({ jointFeedback }: SensorReadoutProps) {
               fb.isActive,
             )}
             progress={elevPct}
-            progressTone={fb.angleOk && fb.isActive ? "bg-emerald-500" : "bg-neutral-400"}
+            progressTone={fb.angleOk && fb.isActive ? "bg-cohere-deep-green" : "bg-cohere-muted"}
           />
         );
       })}
@@ -161,7 +161,7 @@ export default function SensorReadout({ jointFeedback }: SensorReadoutProps) {
               fb.isActive,
             )}
             progress={pct}
-            progressTone={fb.angleOk && fb.isActive ? "bg-emerald-500" : "bg-neutral-500"}
+            progressTone={fb.angleOk && fb.isActive ? "bg-cohere-deep-green" : "bg-cohere-slate"}
           />
         );
       })}
