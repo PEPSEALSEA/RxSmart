@@ -15,8 +15,25 @@ CAMERA_TARGET_FPS: int = 30
 # MediaPipe Pose
 # ---------------------------------------------------------------------------
 MEDIAPIPE_MODEL_COMPLEXITY: int = 1     # 0=lite (fast), 1=full, 2=heavy (accurate)
+MEDIAPIPE_MAX_POSES: int = 4            # max people detected in one frame (1-4)
 MEDIAPIPE_MIN_DETECTION_CONFIDENCE: float = 0.5
 MEDIAPIPE_MIN_TRACKING_CONFIDENCE: float = 0.5
+
+# ---------------------------------------------------------------------------
+# MediaPipe Hands — finger skeleton + palm direction check
+# ---------------------------------------------------------------------------
+HAND_TRACKING_ENABLED: bool = True
+HAND_MAX_NUM: int = 2                     # hands per frame (1-4)
+HAND_MIN_DETECTION_CONFIDENCE: float = 0.5
+HAND_MIN_TRACKING_CONFIDENCE: float = 0.5
+
+# Expected palm orientation for "pass hand" rehab check
+# toward_camera | away | edge
+PALM_EXPECTED_FACING: str = "toward_camera"
+PALM_FACING_THRESHOLD: float = 0.35       # dot product vs camera axis
+PALM_REQUIRE_FINGERS_EXTENDED: bool = True
+PALM_REQUIRE_FINGERS_STRAIGHT: bool = True
+FINGER_STRAIGHT_THRESHOLD: float = 0.55    # 0-1, higher = straighter fingers required
 
 # ---------------------------------------------------------------------------
 # IoT  —  choose transport:
@@ -25,10 +42,11 @@ MEDIAPIPE_MIN_TRACKING_CONFIDENCE: float = 0.5
 #   "server"  — Python listens as local HTTP server; ESP32 POSTs directly
 #               over LAN (~50 ms, no cable, requires both on same WiFi)
 # ---------------------------------------------------------------------------
-IOT_TRANSPORT: str = "server"   # "serial" | "http" | "server"
+IOT_TRANSPORT: str = "serial"   # "serial" | "http" | "server"
 
-# Serial (USB) settings
-SERIAL_PORT: str = "COM3"
+# Serial (USB) settings — "auto" = detect ESP32, else highest COM at startup
+SERIAL_PORT: str = "auto"
+SERIAL_PORT_FALLBACK: str = "COM3"
 SERIAL_BAUDRATE: int = 115200
 SERIAL_TIMEOUT: float = 2.0
 IOT_WATCHDOG_TIMEOUT_S: float = 3.0
@@ -45,6 +63,9 @@ LOCAL_SERVER_PORT: int = 8765
 # Web bridge — GitHub Pages / browser calls Python on this PC
 WEB_BRIDGE_HOST: str = "0.0.0.0"
 WEB_BRIDGE_PORT: int = 8766
+
+# Persisted IMU channel → body-segment mapping (auto-calibration)
+SENSOR_MAP_FILE: str = "sensor_map.json"
 
 # ---------------------------------------------------------------------------
 # Sensor Fusion (Complementary Filter)
@@ -86,3 +107,16 @@ COLOR_HUD_BG = (30, 30, 30)          # semi-transparent bar base
 COLOR_SKELETON = (200, 200, 200)
 COLOR_SKELETON_ACTIVE = (255, 220, 120)
 COLOR_ANGLE_LABEL = (240, 240, 240)
+
+COLOR_HAND_OK = (255, 220, 80)
+COLOR_HAND_WARN = (120, 180, 255)
+COLOR_HAND_FINGER_TIP = (180, 255, 180)
+
+# Per-person skeleton colors (BGR) when multiple poses in frame
+PERSON_SKELETON_COLORS: list[tuple[tuple, tuple]] = [
+    (COLOR_SKELETON, COLOR_SKELETON_ACTIVE),
+    ((255, 180, 80), (255, 200, 120)),
+    ((255, 120, 200), (255, 160, 220)),
+    ((120, 255, 160), (160, 255, 190)),
+]
+SKELETON_DEBUG_BG = (0, 0, 0)

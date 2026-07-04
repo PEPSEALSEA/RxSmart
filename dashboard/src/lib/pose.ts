@@ -48,20 +48,32 @@ export const POSE_LABELS: Record<PoseKey, string> = {
   r_leg_lower: "ขาขวา ล่าง (เข่า)",
 };
 
-/** MPU6050 ช่องบน TCA9548A — proximal segment ต่อข้อต่อบน */
+/** MPU6050 ช่องบน TCA9548A — ตรงกับ firmware CH0–CH7 */
 export const UPPER_SENSOR_CHANNEL: Record<UpperPoseKey, number> = {
   l_arm_upper: 0,
-  r_arm_upper: 2,
+  r_arm_upper: 1,
   l_leg_upper: 4,
-  r_leg_upper: 6,
+  r_leg_upper: 5,
 };
 
 /** distal segment ต่อข้อต่อล่าง */
 export const LOWER_SENSOR_CHANNEL: Record<LowerPoseKey, number> = {
-  l_arm_lower: 1,
+  l_arm_lower: 2,
   r_arm_lower: 3,
-  l_leg_lower: 5,
+  l_leg_lower: 6,
   r_leg_lower: 7,
+};
+
+/** CH index → pose key (firmware default wiring) */
+export const DEFAULT_CHANNEL_TO_POSE: Record<number, PoseKey> = {
+  0: "l_arm_upper",
+  1: "r_arm_upper",
+  2: "l_arm_lower",
+  3: "r_arm_lower",
+  4: "l_leg_upper",
+  5: "r_leg_upper",
+  6: "l_leg_lower",
+  7: "r_leg_lower",
 };
 
 export const FIRMWARE_SENSOR_TO_POSE: Record<string, PoseKey> = {
@@ -74,6 +86,14 @@ export const FIRMWARE_SENSOR_TO_POSE: Record<string, PoseKey> = {
   left_shin: "l_leg_lower",
   right_shin: "r_leg_lower",
 };
+
+/** proximal + distal pairs for joint bend calculation */
+export const LIMB_PAIRS: [PoseKey, PoseKey][] = [
+  ["l_arm_upper", "l_arm_lower"],
+  ["r_arm_upper", "r_arm_lower"],
+  ["l_leg_upper", "l_leg_lower"],
+  ["r_leg_upper", "r_leg_lower"],
+];
 
 export function isUpperKey(key: PoseKey): key is UpperPoseKey {
   return (UPPER_KEYS as string[]).includes(key);

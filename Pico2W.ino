@@ -2,17 +2,16 @@
 #include <WiFi.h>
 #include <WebServer.h>
 #include <DNSServer.h>
-#include <Preferences.h>
+#include <LittleFS.h>
 #include <HTTPClient.h>
 #include <HTTPUpdate.h>
 #include <ArduinoJson.h>
 #include <WiFiClientSecure.h>
 #include <Wire.h>
 #include <math.h>
-#include <esp_system.h>
 
 // ---------------------------------------------------------
-// Configuration / การตั้งค่าระบบ
+// Configuration / การตั้งค่าระบบ  (Raspberry Pi Pico 2 W / RP2350 build)
 // ---------------------------------------------------------
 const String CURRENT_VERSION = "1.0.0";
 const String CLOUDFLARE_API_URL = "https://rxsmart-worker.sealseapep.workers.dev"; // URL ของ Cloudflare Workers
@@ -22,14 +21,15 @@ const byte DNS_PORT = 53;
 IPAddress apIP(192, 168, 4, 1);
 DNSServer dnsServer;
 WebServer server(80);
-Preferences preferences;
 
 // ตัวแปรสำหรับเช็คการเชื่อมต่อ
 unsigned long previousMillis = 0;
 const long watchdogInterval = 60000; // ตรวจสอบอินเทอร์เน็ตทุกๆ 1 นาที
 
-// BOOT button = GPIO0 (built-in on ESP32 DevKit)
-#define BOOT_BUTTON_PIN 0
+// External push-button used for "force AP mode / clear WiFi" — the Pico 2 W
+// has no exposed BOOT-style GPIO button like the ESP32 DevKit, so we wire one
+// ourselves. Button to GND, internal pull-up enabled, active LOW.
+#define MODE_BUTTON_PIN 16
 bool inAPMode = false; // ติดตามว่าอยู่ใน AP mode ไหม
 bool setupComplete = false;
 
@@ -52,12 +52,19 @@ const uint16_t POSTURE_FAULT_KNEE_RANGE = 1 << 3;
 const uint16_t ALERT_CODE_JOINT_ANGLE = 1 << 0;
 const uint16_t ALERT_CODE_SPEED = 1 << 1;
 
-const bool USE_MPU6050_TEST = true;
+const bool USE_MPU6050_TEST = true; // keep TRUE on Pico 2 W — direct-analog fallback below is NOT usable (see notes)
 const bool ENABLE_REALTIME_SERIAL_DEBUG = true;
 const unsigned long SERIAL_DEBUG_INTERVAL_MS = 500;
-const uint8_t I2C_SDA_PIN = 21;
-const uint8_t I2C_SDA_FALLBACK_PIN = 23;
-const uint8_t I2C_SCL_PIN = 22;
+
+// ---- I2C bus pins (Wire = I2C0 on RP2350) ----
+// Primary bus: GP4 (SDA) / GP5 (SCL) -> TCA9548A -> 8x MPU6050
+const uint8_t I2C_SDA_PIN = 4;
+const uint8_t I2C_SCL_PIN = 5;
+// Fallback bus if the mux isn't found on I2C0: use the second hardware I2C
+// peripheral (Wire1 = I2C1) on GP6 (SDA) / GP7 (SCL) instead of rewiring.
+const uint8_t I2C_SDA_FALLBACK_PIN = 6;
+const uint8_t I2C_SCL_FALLBACK_PIN = 7;
+
 const uint8_t TCA9548A_ADDR = 0x70;             // A0=A1=A2=GND
 const uint8_t MPU6050_ADDR = 0x68;              // AD0 -> GND (ทุกตัว)
 const uint8_t MPU6050_REG_PWR_MGMT_1 = 0x6B;
@@ -72,7 +79,7 @@ enum SessionState {
 
 struct SensorDataPoint {
   const char* key;
-  uint8_t pin;
+  uint8_t pin; // TCA9548A channel index (0-7), NOT a GPIO on this board
   float raw;
   float zeroOffset;
   float calibrated;
@@ -96,14 +103,14 @@ struct MotionMetrics {
 };
 
 SensorDataPoint sensors[SENSOR_COUNT] = {
-  {"left_upper_arm", 36, 0, 0, 0, 0},
-  {"right_upper_arm", 39, 0, 0, 0, 0},
-  {"left_forearm", 34, 0, 0, 0, 0},
-  {"right_forearm", 35, 0, 0, 0, 0},
-  {"left_thigh", 32, 0, 0, 0, 0},
-  {"right_thigh", 33, 0, 0, 0, 0},
-  {"left_shin", 27, 0, 0, 0, 0},
-  {"right_shin", 14, 0, 0, 0, 0}
+  {"left_upper_arm", 0, 0, 0, 0, 0},
+  {"right_upper_arm", 1, 0, 0, 0, 0},
+  {"left_forearm", 2, 0, 0, 0, 0},
+  {"right_forearm", 3, 0, 0, 0, 0},
+  {"left_thigh", 4, 0, 0, 0, 0},
+  {"right_thigh", 5, 0, 0, 0, 0},
+  {"left_shin", 6, 0, 0, 0, 0},
+  {"right_shin", 7, 0, 0, 0, 0}
 };
 
 MotionMetrics motion = {0, 0, 0, 0, 0, 0, true, 0, 0, 0, false, "none", 0};
@@ -122,8 +129,12 @@ bool sessionSummaryPending = false;
 unsigned long lastSerialDebugMs = 0;
 uint8_t activeI2CSdaPin = I2C_SDA_PIN;
 uint8_t activeI2CSclPin = I2C_SCL_PIN;
+TwoWire* activeWire = &Wire;
 bool mpuPresent[SENSOR_COUNT] = {};
 bool mpuReadOk[SENSOR_COUNT] = {};
+
+const char* WIFI_CONFIG_PATH = "/wifi.json";
+bool littleFsReady = false;
 
 // ---------------------------------------------------------
 // HTML สำหรับหน้า Captive Portal
@@ -137,34 +148,103 @@ const char index_html[] PROGMEM = R"rawliteral(
   <title>RxSmart WiFi Setup</title>
   <style>
     * { box-sizing: border-box; margin: 0; padding: 0; }
-    body { font-family: Arial, sans-serif; background: linear-gradient(135deg,#1a1a2e,#16213e); min-height: 100vh; display: flex; align-items: center; justify-content: center; }
-    .card { background: rgba(255,255,255,0.07); backdrop-filter: blur(12px); border: 1px solid rgba(255,255,255,0.15); border-radius: 16px; padding: 32px 28px; width: 340px; color: #fff; }
-    h2 { font-size: 1.4rem; margin-bottom: 6px; }
-    p.sub { font-size: 0.85rem; color: #aaa; margin-bottom: 22px; }
-    label { font-size: 0.82rem; color: #ccc; display: block; margin-bottom: 5px; }
-    input[type=text], input[type=password] { width: 100%; padding: 11px 14px; background: rgba(255,255,255,0.1); border: 1px solid rgba(255,255,255,0.2); border-radius: 8px; color: #fff; font-size: 0.95rem; margin-bottom: 16px; outline: none; }
-    input[type=text]:focus, input[type=password]:focus { border-color: #4ade80; }
-    button { width: 100%; padding: 13px; background: #22c55e; border: none; border-radius: 8px; color: #fff; font-size: 1rem; font-weight: 600; cursor: pointer; transition: background 0.2s; }
-    button:hover { background: #16a34a; }
-    button:disabled { background: #555; cursor: not-allowed; }
-    #status { margin-top: 16px; padding: 10px 14px; border-radius: 8px; font-size: 0.88rem; display: none; }
-    #status.checking { background: rgba(250,204,21,0.15); border: 1px solid #fbbf24; color: #fbbf24; display: block; }
-    #status.success { background: rgba(34,197,94,0.15); border: 1px solid #22c55e; color: #4ade80; display: block; }
-    #status.error { background: rgba(239,68,68,0.15); border: 1px solid #ef4444; color: #f87171; display: block; }
+    body {
+      font-family: 'Unica77 Cohere Web', Inter, Arial, ui-sans-serif, system-ui, sans-serif;
+      background: #eeece7;
+      min-height: 100vh;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 24px;
+      color: #212121;
+    }
+    .card {
+      background: #ffffff;
+      border: 1px solid #e5e7eb;
+      border-radius: 22px;
+      padding: 40px 32px;
+      width: 100%;
+      max-width: 380px;
+    }
+    .eyebrow {
+      font-family: 'CohereMono', Arial, ui-sans-serif, system-ui, monospace;
+      font-size: 12px;
+      letter-spacing: 0.28px;
+      text-transform: uppercase;
+      color: #93939f;
+      margin-bottom: 10px;
+    }
+    h2 {
+      font-size: 32px;
+      font-weight: 400;
+      letter-spacing: -0.32px;
+      line-height: 1.2;
+      color: #17171c;
+      margin-bottom: 10px;
+    }
+    p.sub {
+      font-size: 14px;
+      line-height: 1.4;
+      color: #75758a;
+      margin-bottom: 28px;
+    }
+    label {
+      font-size: 14px;
+      color: #212121;
+      display: block;
+      margin-bottom: 6px;
+      font-weight: 500;
+    }
+    input[type=text], input[type=password] {
+      width: 100%;
+      padding: 12px 14px;
+      background: #ffffff;
+      border: 1px solid #d9d9dd;
+      border-radius: 8px;
+      color: #17171c;
+      font-size: 16px;
+      font-family: inherit;
+      margin-bottom: 20px;
+      outline: none;
+      transition: border-color 0.15s;
+    }
+    input[type=text]:focus, input[type=password]:focus { border-color: #9b60aa; }
+    button {
+      width: 100%;
+      padding: 12px 24px;
+      background: #17171c;
+      border: none;
+      border-radius: 9999px;
+      color: #ffffff;
+      font-size: 14px;
+      font-weight: 500;
+      letter-spacing: 0;
+      cursor: pointer;
+      transition: background 0.15s;
+    }
+    button:hover { background: #2c2c34; }
+    button:disabled { background: #d9d9dd; color: #93939f; cursor: not-allowed; }
+    #status { margin-top: 20px; padding: 12px 16px; border-radius: 8px; font-size: 14px; line-height: 1.4; display: none; }
+    #status.checking { background: #f1f5ff; border: 1px solid #d9d9dd; color: #1863dc; display: block; }
+    #status.success { background: #edfce9; border: 1px solid #d9d9dd; color: #003c33; display: block; }
+    #status.error { background: #ffffff; border: 1px solid #ffad9b; color: #b30000; display: block; }
+    .footnote { margin-top: 24px; font-size: 12px; color: #93939f; text-align: center; letter-spacing: 0.28px; text-transform: uppercase; font-family: 'CohereMono', Arial, ui-sans-serif, system-ui, monospace; }
   </style>
 </head>
 <body>
   <div class="card">
-    <h2>&#x1F4F6; RxSmart Setup</h2>
+    <div class="eyebrow">Device Setup</div>
+    <h2>RxSmart Setup</h2>
     <p class="sub">Enter your WiFi credentials to connect the board to the internet.</p>
     <form id="wifiForm">
       <label for="ssid">WiFi Name (SSID)</label>
       <input type="text" id="ssid" name="ssid" placeholder="e.g. MyHomeWiFi" required autocomplete="off">
       <label for="pass">Password</label>
       <input type="password" id="pass" name="pass" placeholder="Leave blank if open network" autocomplete="off">
-      <button type="submit" id="btn">&#x2714; Test &amp; Save</button>
+      <button type="submit" id="btn">Save &amp; Connect</button>
     </form>
     <div id="status"></div>
+    <div class="footnote">RxSmart Rehab Device</div>
   </div>
   <script>
     const form = document.getElementById('wifiForm');
@@ -174,22 +254,22 @@ const char index_html[] PROGMEM = R"rawliteral(
       e.preventDefault();
       btn.disabled = true;
       st.className = 'checking';
-      st.textContent = '&#x23F3; Testing WiFi connection... please wait (up to 15s)';
+      st.textContent = 'Saving...';
       const data = new URLSearchParams({ ssid: document.getElementById('ssid').value, pass: document.getElementById('pass').value });
       try {
         const res = await fetch('/save', { method: 'POST', body: data });
         const json = await res.json();
         if (json.success) {
           st.className = 'success';
-          st.textContent = '\u2705 Connected! Board is restarting...';
+          st.textContent = 'Saved. Board is restarting and will try to connect. If the password or network was wrong, the "RxSmart-Setup" hotspot will reappear in about 30 seconds \u2014 reconnect and try again.';
         } else {
           st.className = 'error';
-          st.textContent = '\u274C ' + (json.error || 'Connection failed. Check SSID / password.');
+          st.textContent = (json.error || 'Could not save. Please retry.');
           btn.disabled = false;
         }
       } catch(err) {
         st.className = 'error';
-        st.textContent = '\u274C Could not reach board. Try reloading.';
+        st.textContent = 'Could not reach board. Try reloading.';
         btn.disabled = false;
       }
     });
@@ -231,9 +311,13 @@ bool readMPU6050Accel(uint8_t address, int16_t& ax, int16_t& ay, int16_t& az);
 float accelToPseudoRaw(int16_t ax, int16_t ay, int16_t az);
 void printRealtimeDebug(unsigned long nowMs);
 bool probeI2CAddress(uint8_t address);
-bool configureI2CForMPU(uint8_t sdaPin, uint8_t sclPin);
+bool configureI2CForMPU(TwoWire& bus, uint8_t sdaPin, uint8_t sclPin);
 void tcaSelect(uint8_t channel);
 void tcaDisableAll();
+bool loadWifiCredentials(String& ssidOut, String& passOut);
+bool saveWifiCredentials(const String& ssid, const String& pass);
+void clearWifiCredentials();
+const char* resetReasonToString(RP2040::resetReason_t reason);
 
 // ---------------------------------------------------------
 // Setup Function
@@ -242,40 +326,36 @@ void setup() {
   Serial.begin(115200);
   delay(1000);
 
-  esp_reset_reason_t bootReason = esp_reset_reason();
-  Serial.printf("Reset reason code: %d\n", (int)bootReason);
-  switch (bootReason) {
-    case ESP_RST_BROWNOUT: Serial.println("Reset reason: BROWNOUT (power supply dropped too low)"); break;
-    case ESP_RST_PANIC: Serial.println("Reset reason: PANIC (crash/exception)"); break;
-    case ESP_RST_INT_WDT: Serial.println("Reset reason: INT_WDT (interrupt watchdog)"); break;
-    case ESP_RST_TASK_WDT: Serial.println("Reset reason: TASK_WDT (task watchdog)"); break;
-    case ESP_RST_WDT: Serial.println("Reset reason: WDT (other watchdog)"); break;
-    case ESP_RST_POWERON: Serial.println("Reset reason: POWERON (first boot / power applied)"); break;
-    case ESP_RST_SW: Serial.println("Reset reason: SW (software restart)"); break;
-    default: Serial.printf("Reset reason: OTHER (%d)\n", (int)bootReason); break;
+  RP2040::resetReason_t bootReason = rp2040.getResetReason();
+  Serial.printf("Reset reason code: %d (%s)\n", (int)bootReason, resetReasonToString(bootReason));
+
+  // ระบบไฟล์ (LittleFS) ใช้เก็บ WiFi credentials แทน Preferences/NVS ของ ESP32
+  littleFsReady = LittleFS.begin();
+  if (!littleFsReady) {
+    Serial.println("!!! LittleFS mount FAILED. WiFi credentials cannot be saved. !!!");
+    Serial.println("!!! Fix: Arduino IDE -> Tools -> Flash Size -> pick an option");
+    Serial.println("!!! that reserves space for a filesystem (e.g. 'Sketch: 1MB, FS: 1MB'),");
+    Serial.println("!!! then re-upload. A 'no FS' flash layout cannot store settings.");
   }
 
-  // โหลดค่า WiFi จาก Preferences (NVS)
-  preferences.begin("wifi_config", false);
-  String savedSSID = preferences.getString("ssid", "");
-  String savedPass = preferences.getString("pass", "");
-  
-  Serial.println("\n--- ESP32 Booting ---");
+  String savedSSID, savedPass;
+  bool hasCreds = loadWifiCredentials(savedSSID, savedPass);
+
+  Serial.println("\n--- Pico 2 W Booting ---");
   Serial.println("Current Version: " + CURRENT_VERSION);
 
-  if (savedSSID == "") {
+  if (!hasCreds) {
     Serial.println("No WiFi credentials found. Starting Captive Portal.");
     inAPMode = true;
     setupAPMode();
     return;
   }
 
-  // ---- ตรวจ BOOT button: กดค้างตอน power-on เพื่อ force AP mode ----
-  pinMode(BOOT_BUTTON_PIN, INPUT_PULLUP);
-  if (digitalRead(BOOT_BUTTON_PIN) == LOW) {
-    Serial.println("BOOT button held – clearing WiFi and entering AP mode.");
-    preferences.putString("ssid", "");
-    preferences.putString("pass", "");
+  // ---- ตรวจปุ่ม Mode: กดค้างตอน power-on เพื่อ force AP mode ----
+  pinMode(MODE_BUTTON_PIN, INPUT_PULLUP);
+  if (digitalRead(MODE_BUTTON_PIN) == LOW) {
+    Serial.println("Mode button held – clearing WiFi and entering AP mode.");
+    clearWifiCredentials();
     inAPMode = true;
     setupAPMode();
     return;
@@ -294,31 +374,30 @@ void setup() {
     attempts++;
   }
 
+  if (WiFi.status() == WL_CONNECTED) {
+    Serial.println("\nWiFi Connected!");
+    Serial.print("IP Address: ");
+    Serial.println(WiFi.localIP());
 
-    if (WiFi.status() == WL_CONNECTED) {
-      Serial.println("\nWiFi Connected!");
-      Serial.print("IP Address: ");
-      Serial.println(WiFi.localIP());
-
-      // เมื่อต่อ WiFi ได้ ให้เช็ค Internet ทันที
-      if (checkInternetWatchdog()) {
-        initializeSensors();
-        sampleSensors(millis(), false);
-        registerDevice();
-        sendTelemetryData();
-        // เช็คอัปเดต Firmware จาก Cloudflare Worker
-        checkFirmwareUpdate();
-        checkDeviceCommand();
-      } else {
-        Serial.println("WiFi connected but NO INTERNET. Starting Captive Portal.");
-        inAPMode = true;
-        setupAPMode();
-      }
+    // เมื่อต่อ WiFi ได้ ให้เช็ค Internet ทันที
+    if (checkInternetWatchdog()) {
+      initializeSensors();
+      sampleSensors(millis(), false);
+      registerDevice();
+      sendTelemetryData();
+      // เช็คอัปเดต Firmware จาก Cloudflare Worker
+      checkFirmwareUpdate();
+      checkDeviceCommand();
     } else {
-      Serial.println("\nFailed to connect. Starting Captive Portal.");
+      Serial.println("WiFi connected but NO INTERNET. Starting Captive Portal.");
       inAPMode = true;
       setupAPMode();
     }
+  } else {
+    Serial.println("\nFailed to connect. Starting Captive Portal.");
+    inAPMode = true;
+    setupAPMode();
+  }
 }
 
 // ---------------------------------------------------------
@@ -329,7 +408,7 @@ void loop() {
     dnsServer.processNextRequest();
     server.handleClient();
 
-    // กด BOOT ค้าง 3 วินาทีขณะใช้งานปกติ (เมื่ออยู่ใน AP mode อยู่แล้วไม่ต้องทำอะไร)
+    // กดปุ่ม Mode ค้าง 3 วินาทีขณะใช้งานปกติ (เมื่ออยู่ใน AP mode อยู่แล้วไม่ต้องทำอะไร)
   } else {
     if (sessionState == SESSION_EXERCISE && millis() - lastMotionSampleMs >= MOTION_SAMPLE_INTERVAL_MS) {
       updateMotionModel();
@@ -339,16 +418,15 @@ void loop() {
       lastMotionSampleMs = millis();
     }
 
-    // ---- ตรวจ BOOT button ขณะใช้งานปกติ (ต่อ WiFi สำเร็จ) ----
+    // ---- ตรวจปุ่ม Mode ขณะใช้งานปกติ (ต่อ WiFi สำเร็จ) ----
     static unsigned long bootPressStart = 0;
-    if (digitalRead(BOOT_BUTTON_PIN) == LOW) {
+    if (digitalRead(MODE_BUTTON_PIN) == LOW) {
       if (bootPressStart == 0) bootPressStart = millis();
       if (millis() - bootPressStart >= 3000) {
-        Serial.println("BOOT held 3s – clearing WiFi and restarting into AP mode.");
-        preferences.putString("ssid", "");
-        preferences.putString("pass", "");
+        Serial.println("Mode button held 3s – clearing WiFi and restarting into AP mode.");
+        clearWifiCredentials();
         delay(200);
-        ESP.restart();
+        rp2040.restart();
       }
     } else {
       bootPressStart = 0; // รีเซ็ตถ้าปล่อยปุ่ม
@@ -357,13 +435,13 @@ void loop() {
     unsigned long currentMillis = millis();
     if (currentMillis - previousMillis >= watchdogInterval) {
       previousMillis = currentMillis;
-      
+
       // Internet Watchdog ทุกๆ 1 นาที
       if (!checkInternetWatchdog()) {
         Serial.println("Watchdog: No Internet detected! Rebooting into AP Mode...");
         // ล้างค่า WiFi เดิมทิ้งเพื่อให้เข้าโหมด AP ตอน Reboot (ตัวเลือกเสริม: หรือจะแค่ Restart ก็ได้)
-        // preferences.putString("ssid", ""); 
-        ESP.restart(); 
+        // clearWifiCredentials();
+        rp2040.restart();
       } else {
         if (sessionState == SESSION_COMPLETE && sessionSummaryPending) {
           sendTelemetryData();
@@ -388,9 +466,7 @@ void loop() {
 // ---------------------------------------------------------
 void setupAPMode() {
   WiFi.disconnect(true);
-  WiFi.setSleep(false);
   WiFi.mode(WIFI_AP);
-  WiFi.setTxPower(WIFI_POWER_8_5dBm); // lower RF inrush current to reduce brownout risk
   WiFi.softAPConfig(apIP, apIP, IPAddress(255, 255, 255, 0));
   WiFi.softAP("RxSmart-Setup-open-setup.local"); // setup WiFi name includes fallback URL
 
@@ -430,7 +506,7 @@ void handleRoot() {
 void sendCaptivePortal() {
   if (setupComplete) {
     server.sendHeader("Cache-Control", "no-store, no-cache, must-revalidate, max-age=0");
-    server.send(200, "text/html", "<!doctype html><html><head><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\"><title>RxSmart Connected</title><style>body{font-family:Arial,sans-serif;background:#0f172a;color:#e2e8f0;min-height:100vh;display:flex;align-items:center;justify-content:center;margin:0}.card{max-width:340px;background:rgba(255,255,255,.08);border:1px solid rgba(255,255,255,.15);border-radius:18px;padding:28px;text-align:center}h1{color:#4ade80;font-size:24px}p{color:#94a3b8;line-height:1.5}</style></head><body><div class=\"card\"><h1>Connected</h1><p>WiFi was saved successfully. This board is restarting and will register itself in the cloud dashboard automatically.</p></div></body></html>");
+    server.send(200, "text/html", "<!doctype html><html><head><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\"><title>RxSmart Connected</title><style>*{box-sizing:border-box;margin:0;padding:0}body{font-family:'Unica77 Cohere Web',Inter,Arial,ui-sans-serif,system-ui,sans-serif;background:#eeece7;color:#212121;min-height:100vh;display:flex;align-items:center;justify-content:center;padding:24px}.card{max-width:380px;width:100%;background:#ffffff;border:1px solid #e5e7eb;border-radius:22px;padding:40px 32px;text-align:center}.eyebrow{font-family:'CohereMono',Arial,ui-sans-serif,system-ui,monospace;font-size:12px;letter-spacing:.28px;text-transform:uppercase;color:#93939f;margin-bottom:14px}h1{color:#003c33;background:#edfce9;display:inline-block;padding:6px 18px;border-radius:9999px;font-size:24px;font-weight:400;margin-bottom:18px}p{color:#75758a;line-height:1.5;font-size:14px}</style></head><body><div class=\"card\"><div class=\"eyebrow\">Device Setup</div><h1>Connected</h1><p>WiFi was saved successfully. This board is restarting and will register itself in the cloud dashboard automatically.</p></div></body></html>");
     return;
   }
 
@@ -455,48 +531,77 @@ void handleSave() {
   String newSSID = server.arg("ssid");
   String newPass = server.hasArg("pass") ? server.arg("pass") : "";
 
-  Serial.println("[Setup] Testing WiFi: " + newSSID);
-
-  // ---- Test WiFi connection first (switch to STA mode temporarily) ----
-  WiFi.mode(WIFI_AP_STA);             // AP stays alive so phone stays connected
-  WiFi.begin(newSSID.c_str(), newPass.c_str());
-
-  unsigned long startTime = millis();
-  wl_status_t wifiStatus = WL_DISCONNECTED;
-  while (millis() - startTime < 15000) {   // wait up to 15 seconds
-    wifiStatus = WiFi.status();
-    if (wifiStatus == WL_CONNECTED || wifiStatus == WL_NO_SSID_AVAIL ||
-        wifiStatus == WL_CONNECT_FAILED || wifiStatus == WL_CONNECTION_LOST) break;
-    dnsServer.processNextRequest();          // keep DNS alive during wait
-    server.handleClient();                   // keep portal alive during wait
-    delay(300);
+  // NOTE: unlike the ESP32 build, we do NOT test-connect to the target WiFi
+  // while the setup hotspot is still running. On the Pico 2 W's CYW43 radio,
+  // concurrent AP+STA mode reliably tears down the AP's DHCP/network layer
+  // on older Arduino-Pico cores (<5.5.1), which disconnects the phone from
+  // the portal mid-test ("Could not reach board"). Instead we save and
+  // reboot; setup() already falls back to AP mode automatically if the
+  // saved credentials don't work.
+  Serial.println("[Setup] Saving WiFi: " + newSSID);
+  if (!saveWifiCredentials(newSSID, newPass)) {
+    String err = littleFsReady
+      ? "Failed to write settings to flash. Please retry."
+      : "Storage not available on this board (LittleFS not mounted). In Arduino IDE, set Tools > Flash Size to an option with a filesystem partition (e.g. Sketch 1MB / FS 1MB), then re-upload the firmware.";
+    Serial.println("[Setup] Save failed: " + err);
+    server.send(200, "application/json", "{\"success\":false,\"error\":\"" + err + "\"}");
+    return;
   }
 
-  if (wifiStatus == WL_CONNECTED) {
-    // WiFi works – save and restart
-    Serial.println("[Setup] WiFi OK – saving and restarting.");
-    preferences.putString("ssid", newSSID);
-    preferences.putString("pass", newPass);
-    setupComplete = true;
-    server.send(200, "application/json", "{\"success\":true}");
-    delay(1500);
-    ESP.restart();
-  } else {
-    // WiFi failed – report error and stay in AP mode
-    WiFi.disconnect(false);
-    WiFi.mode(WIFI_AP);   // switch back to pure AP mode
+  setupComplete = true;
+  server.send(200, "application/json", "{\"success\":true}");
+  delay(1500);
+  rp2040.restart();
+}
 
-    String reason;
-    if (wifiStatus == WL_NO_SSID_AVAIL) {
-      reason = "WiFi network '" + newSSID + "' not found. Check the name.";
-    } else if (wifiStatus == WL_CONNECT_FAILED) {
-      reason = "Wrong password for '" + newSSID + "'. Please retry.";
-    } else {
-      reason = "Could not connect to '" + newSSID + "'. Timed out (" + String(wifiStatus) + ").";
-    }
-    Serial.println("[Setup] Failed: " + reason);
-    String jsonResp = "{\"success\":false,\"error\":\"" + reason + "\"}";
-    server.send(200, "application/json", jsonResp);
+// ---------------------------------------------------------
+// WiFi Credential Storage (LittleFS replaces ESP32 Preferences/NVS)
+// ---------------------------------------------------------
+bool loadWifiCredentials(String& ssidOut, String& passOut) {
+  if (!LittleFS.exists(WIFI_CONFIG_PATH)) return false;
+
+  File f = LittleFS.open(WIFI_CONFIG_PATH, "r");
+  if (!f) return false;
+
+  JsonDocument doc;
+  DeserializationError err = deserializeJson(doc, f);
+  f.close();
+  if (err) return false;
+
+  ssidOut = String((const char*)(doc["ssid"] | ""));
+  passOut = String((const char*)(doc["pass"] | ""));
+  return ssidOut.length() > 0;
+}
+
+bool saveWifiCredentials(const String& ssid, const String& pass) {
+  if (!littleFsReady) {
+    Serial.println("Cannot save WiFi credentials: LittleFS is not mounted (see Tools -> Flash Size).");
+    return false;
+  }
+
+  File f = LittleFS.open(WIFI_CONFIG_PATH, "w");
+  if (!f) {
+    Serial.println("Failed to open LittleFS file for writing WiFi credentials.");
+    return false;
+  }
+  JsonDocument doc;
+  doc["ssid"] = ssid;
+  doc["pass"] = pass;
+  serializeJson(doc, f);
+  f.close();
+
+  // Verify the write actually landed on flash before trusting it.
+  String checkSsid, checkPass;
+  bool verified = loadWifiCredentials(checkSsid, checkPass) && checkSsid == ssid;
+  if (!verified) {
+    Serial.println("WiFi credentials failed verification after write.");
+  }
+  return verified;
+}
+
+void clearWifiCredentials() {
+  if (LittleFS.exists(WIFI_CONFIG_PATH)) {
+    LittleFS.remove(WIFI_CONFIG_PATH);
   }
 }
 
@@ -505,15 +610,15 @@ void handleSave() {
 // ---------------------------------------------------------
 bool checkInternetWatchdog() {
   if (WiFi.status() != WL_CONNECTED) return false;
-  
+
   HTTPClient http;
   // ยิง GET ไปที่ URL ที่เสถียร (ใช้ http แบบไม่เข้ารหัสเพื่อให้เร็วและลดโหลด)
-  http.begin("http://clients3.google.com/generate_204"); 
+  http.begin("http://clients3.google.com/generate_204");
   http.setTimeout(5000); // รอสูงสุด 5 วินาที
-  
+
   int httpCode = http.GET();
   http.end();
-  
+
   if (httpCode > 0) {
     Serial.println("Watchdog: Internet OK.");
     return true;
@@ -529,30 +634,30 @@ bool checkInternetWatchdog() {
 void checkFirmwareUpdate() {
   Serial.println("Checking for firmware updates...");
   HTTPClient http;
-  String url = CLOUDFLARE_API_URL + "/api/firmware-version?platform=esp32";
-  
+  String url = CLOUDFLARE_API_URL + "/api/firmware-version?platform=pico2w";
+
   http.begin(url);
   int httpCode = http.GET();
-  
+
   if (httpCode == 200) {
     String payload = http.getString();
-    
+
     // Parse JSON
-    StaticJsonDocument<256> doc;
+    JsonDocument doc;
     DeserializationError error = deserializeJson(doc, payload);
-    
+
     if (!error) {
       const char* latest_version = doc["latest_version"];
       const char* bin_url = doc["bin_url"];
-      
+
       if (String(latest_version) != CURRENT_VERSION) {
         Serial.printf("New version found! (%s). Updating...\n", latest_version);
-        
+
         // สั่งอัปเดตผ่าน OTA
         WiFiClientSecure client;
         client.setInsecure(); // ยอมรับทุก Certificate สำหรับ OTA
         t_httpUpdate_return ret = httpUpdate.update(client, bin_url);
-        
+
         switch (ret) {
           case HTTP_UPDATE_FAILED:
             Serial.printf("HTTP_UPDATE_FAILED Error (%d): %s\n", httpUpdate.getLastError(), httpUpdate.getLastErrorString().c_str());
@@ -583,16 +688,16 @@ void sendTelemetryData() {
   Serial.println("Sending telemetry data...");
   HTTPClient http;
   String url = CLOUDFLARE_API_URL + "/api/telemetry";
-  
+
   http.begin(url);
   http.addHeader("Content-Type", "application/json");
-  
+
   sampleSensors(millis(), calibrationDone);
 
-  StaticJsonDocument<3072> doc;
+  JsonDocument doc;
   doc["schema_version"] = 2;
   doc["firmware_version"] = CURRENT_VERSION;
-  doc["device_platform"] = "esp32";
+  doc["device_platform"] = "pico2w";
   doc["device_ts_ms"] = millis();
   doc["device_id"] = getDeviceId();
   doc["status"] = sessionState == SESSION_EXERCISE ? "Active" : "Idle";
@@ -606,9 +711,9 @@ void sendTelemetryData() {
   doc["rep_target"] = repTarget;
   doc["summary_pending"] = sessionSummaryPending;
 
-  JsonArray sensorArray = doc.createNestedArray("sensors");
+  JsonArray sensorArray = doc["sensors"].to<JsonArray>();
   for (size_t i = 0; i < SENSOR_COUNT; i++) {
-    JsonObject s = sensorArray.createNestedObject();
+    JsonObject s = sensorArray.add<JsonObject>();
     s["key"] = sensors[i].key;
     s["pin"] = sensors[i].pin;
     s["raw"] = sensors[i].raw;
@@ -617,7 +722,7 @@ void sendTelemetryData() {
     s["timestamp_ms"] = sensors[i].timestampMs;
   }
 
-  JsonObject angles = doc.createNestedObject("angles");
+  JsonObject angles = doc["angles"].to<JsonObject>();
   angles["elbow_left"] = motion.elbowLeft;
   angles["elbow_right"] = motion.elbowRight;
   angles["knee_left"] = motion.kneeLeft;
@@ -626,23 +731,23 @@ void sendTelemetryData() {
 
   doc["speed_dps"] = motion.speedDegPerSec;
   doc["rep_count"] = motion.repCount;
-  JsonObject posture = doc.createNestedObject("posture");
+  JsonObject posture = doc["posture"].to<JsonObject>();
   posture["state"] = motion.postureCorrect ? "correct" : "incorrect";
   posture["fault_mask"] = motion.postureFaultMask;
   posture["stability_score"] = motion.postureStabilityScore;
 
-  JsonArray alerts = doc.createNestedArray("alerts");
+  JsonArray alerts = doc["alerts"].to<JsonArray>();
   if (motion.injuryAlertActive) {
-    JsonObject alert = alerts.createNestedObject();
+    JsonObject alert = alerts.add<JsonObject>();
     alert["level"] = motion.injuryAlertLevel;
     alert["code"] = motion.injuryAlertCode;
   }
-  
+
   String jsonOutput;
   serializeJson(doc, jsonOutput);
-  
+
   int httpCode = http.POST(jsonOutput);
-  
+
   if (httpCode > 0) {
     Serial.printf("Telemetry Sent, Server responded with code: %d\n", httpCode);
     String response = http.getString();
@@ -650,7 +755,7 @@ void sendTelemetryData() {
   } else {
     Serial.printf("Telemetry Failed, Error: %s\n", http.errorToString(httpCode).c_str());
   }
-  
+
   http.end();
 }
 
@@ -664,9 +769,9 @@ void registerDevice() {
   http.begin(url);
   http.addHeader("Content-Type", "application/json");
 
-  StaticJsonDocument<256> doc;
+  JsonDocument doc;
   doc["device_id"] = getDeviceId();
-  doc["device_platform"] = "esp32";
+  doc["device_platform"] = "pico2w";
   doc["wifi_ssid"] = WiFi.SSID();
 
   String jsonOutput;
@@ -684,7 +789,7 @@ void registerDevice() {
 }
 
 String getDeviceId() {
-  return "ESP32_" + WiFi.macAddress();
+  return "PICO2W_" + WiFi.macAddress();
 }
 
 String urlEncode(const String& value) {
@@ -722,7 +827,7 @@ void checkDeviceCommand() {
   String payload = http.getString();
   http.end();
 
-  StaticJsonDocument<512> doc;
+  JsonDocument doc;
   DeserializationError error = deserializeJson(doc, payload);
   if (error) {
     Serial.println("Failed to parse command response.");
@@ -738,10 +843,9 @@ void checkDeviceCommand() {
   String command = commandNode["command"] | "";
   if (command == "CLEAR_WIFI") {
     Serial.println("Command received: clear WiFi and restart into setup mode.");
-    preferences.putString("ssid", "");
-    preferences.putString("pass", "");
+    clearWifiCredentials();
     delay(500);
-    ESP.restart();
+    rp2040.restart();
   }
 
   if (command == "SET_WIFI") {
@@ -753,10 +857,12 @@ void checkDeviceCommand() {
     }
 
     Serial.println("Command received: save new WiFi and restart.");
-    preferences.putString("ssid", newSSID);
-    preferences.putString("pass", newPass);
+    if (!saveWifiCredentials(newSSID, newPass)) {
+      Serial.println("SET_WIFI command failed: could not persist credentials (LittleFS not mounted?).");
+      return;
+    }
     delay(500);
-    ESP.restart();
+    rp2040.restart();
   }
 
   if (command == "START_SESSION") {
@@ -780,17 +886,17 @@ void checkDeviceCommand() {
 
 void initializeSensors() {
   if (USE_MPU6050_TEST) {
-    bool configured = configureI2CForMPU(I2C_SDA_PIN, I2C_SCL_PIN);
-    if (!configured && I2C_SDA_FALLBACK_PIN != I2C_SDA_PIN) {
-      configured = configureI2CForMPU(I2C_SDA_FALLBACK_PIN, I2C_SCL_PIN);
+    bool configured = configureI2CForMPU(Wire, I2C_SDA_PIN, I2C_SCL_PIN);
+    if (!configured) {
+      configured = configureI2CForMPU(Wire1, I2C_SDA_FALLBACK_PIN, I2C_SCL_FALLBACK_PIN);
     }
 
     if (!configured) {
-      Serial.println("TCA9548A not found on SDA21/SDA23 + SCL22. Check wiring.");
+      Serial.println("TCA9548A not found on I2C0 (GP4/GP5) or I2C1 (GP6/GP7). Check wiring.");
     } else {
       uint8_t count = 0;
       for (uint8_t i = 0; i < SENSOR_COUNT; i++) if (mpuPresent[i]) count++;
-      Serial.printf("TCA9548A ready on SDA=%u SCL=%u -> %u/8 MPU6050 found\n",
+      Serial.printf("TCA9548A ready on SDA=GP%u SCL=GP%u -> %u/8 MPU6050 found\n",
         activeI2CSdaPin, activeI2CSclPin, count);
       for (uint8_t i = 0; i < SENSOR_COUNT; i++) {
         Serial.printf("  CH%u [%-16s]: %s\n", i, sensors[i].key, mpuPresent[i] ? "OK" : "MISS");
@@ -799,11 +905,10 @@ void initializeSensors() {
     return;
   }
 
-  analogReadResolution(12);
-  analogSetAttenuation(ADC_11db);
-  for (size_t i = 0; i < SENSOR_COUNT; i++) {
-    pinMode(sensors[i].pin, INPUT);
-  }
+  // NOTE: direct-analog fallback is NOT viable on Pico 2 W — the board only
+  // exposes 3 true ADC-capable GPIOs (GP26, GP27, GP28), not 8. Keep
+  // USE_MPU6050_TEST = true and use the I2C mux + MPU6050 wiring instead.
+  Serial.println("USE_MPU6050_TEST is false, but direct-analog mode needs 8 ADC pins which this board does not have. No sensors will be read.");
 }
 
 void runCalibration() {
@@ -860,9 +965,10 @@ void sampleSensors(unsigned long nowMs, bool applyCalibration) {
     return;
   }
 
+  // Direct-analog fallback disabled on this board — see initializeSensors().
   for (size_t i = 0; i < SENSOR_COUNT; i++) {
-    sensors[i].raw = analogRead(sensors[i].pin);
-    sensors[i].calibrated = applyCalibration ? (sensors[i].raw - sensors[i].zeroOffset) : sensors[i].raw;
+    sensors[i].raw = 0;
+    sensors[i].calibrated = 0;
     sensors[i].timestampMs = nowMs;
   }
 }
@@ -1011,10 +1117,10 @@ float clampAngle(float value) {
 }
 
 bool initMPU6050(uint8_t address) {
-  Wire.beginTransmission(address);
-  Wire.write(MPU6050_REG_PWR_MGMT_1);
-  Wire.write(0x00); // wake up MPU6050
-  if (Wire.endTransmission() != 0) {
+  activeWire->beginTransmission(address);
+  activeWire->write(MPU6050_REG_PWR_MGMT_1);
+  activeWire->write(0x00); // wake up MPU6050
+  if (activeWire->endTransmission() != 0) {
     return false;
   }
   delay(10);
@@ -1022,20 +1128,20 @@ bool initMPU6050(uint8_t address) {
 }
 
 bool readMPU6050Accel(uint8_t address, int16_t& ax, int16_t& ay, int16_t& az) {
-  Wire.beginTransmission(address);
-  Wire.write(MPU6050_REG_ACCEL_XOUT_H);
-  if (Wire.endTransmission(false) != 0) {
+  activeWire->beginTransmission(address);
+  activeWire->write(MPU6050_REG_ACCEL_XOUT_H);
+  if (activeWire->endTransmission(false) != 0) {
     return false;
   }
 
-  int readBytes = Wire.requestFrom((int)address, 6);
+  int readBytes = activeWire->requestFrom((int)address, 6);
   if (readBytes != 6) {
     return false;
   }
 
-  ax = (Wire.read() << 8) | Wire.read();
-  ay = (Wire.read() << 8) | Wire.read();
-  az = (Wire.read() << 8) | Wire.read();
+  ax = (activeWire->read() << 8) | activeWire->read();
+  ay = (activeWire->read() << 8) | activeWire->read();
+  az = (activeWire->read() << 8) | activeWire->read();
   return true;
 }
 
@@ -1051,14 +1157,18 @@ float accelToPseudoRaw(int16_t ax, int16_t ay, int16_t az) {
 }
 
 bool probeI2CAddress(uint8_t address) {
-  Wire.beginTransmission(address);
-  return Wire.endTransmission() == 0;
+  activeWire->beginTransmission(address);
+  return activeWire->endTransmission() == 0;
 }
 
-bool configureI2CForMPU(uint8_t sdaPin, uint8_t sclPin) {
-  Wire.begin(sdaPin, sclPin);
-  Wire.setClock(400000);
+bool configureI2CForMPU(TwoWire& bus, uint8_t sdaPin, uint8_t sclPin) {
+  bus.setSDA(sdaPin);
+  bus.setSCL(sclPin);
+  bus.begin();
+  bus.setClock(400000);
   delay(10);
+
+  activeWire = &bus;
 
   if (!probeI2CAddress(TCA9548A_ADDR)) return false;
 
@@ -1081,20 +1191,32 @@ bool configureI2CForMPU(uint8_t sdaPin, uint8_t sclPin) {
 
 void tcaSelect(uint8_t channel) {
   if (channel > 7) return;
-  Wire.beginTransmission(TCA9548A_ADDR);
-  Wire.write(1 << channel);
-  Wire.endTransmission();
+  activeWire->beginTransmission(TCA9548A_ADDR);
+  activeWire->write(1 << channel);
+  activeWire->endTransmission();
 }
 
 void tcaDisableAll() {
-  Wire.beginTransmission(TCA9548A_ADDR);
-  Wire.write(0x00);
-  Wire.endTransmission();
+  activeWire->beginTransmission(TCA9548A_ADDR);
+  activeWire->write(0x00);
+  activeWire->endTransmission();
+}
+
+const char* resetReasonToString(RP2040::resetReason_t reason) {
+  switch (reason) {
+    case RP2040::UNKNOWN_RESET: return "UNKNOWN";
+    case RP2040::PWRON_RESET: return "POWERON (first boot / power applied)";
+    case RP2040::RUN_PIN_RESET: return "RUN_PIN (physical reset)";
+    case RP2040::SOFT_RESET: return "SOFT (rp2040.restart()/reboot())";
+    case RP2040::WDT_RESET: return "WATCHDOG";
+    case RP2040::DEBUG_RESET: return "DEBUG_PORT";
+    default: return "OTHER";
+  }
 }
 
 void printRealtimeDebug(unsigned long nowMs) {
   Serial.printf(
-    "[DBG] t=%lu state=%s cal=%d rep=%lu/%lu posture=%s speed=%.2f alert=%s code=%u i2c=%u/%u\n",
+    "[DBG] t=%lu state=%s cal=%d rep=%lu/%lu posture=%s speed=%.2f alert=%s code=%u i2c=GP%u/GP%u\n",
     nowMs,
     sessionStateToString(sessionState),
     calibrationDone ? 1 : 0,
@@ -1115,4 +1237,3 @@ void printRealtimeDebug(unsigned long nowMs) {
       mpuReadOk[i] ? "OK" : (mpuPresent[i] ? "ERR" : "NA"));
   }
 }
-

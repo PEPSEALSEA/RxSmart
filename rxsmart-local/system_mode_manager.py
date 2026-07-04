@@ -126,7 +126,16 @@ class SystemModeManager:
         if mode != self._mode:
             self._mode = mode
             self._stats.current_mode = mode
-            self._stats.add_log(f"Mode switched → {mode.value}")
+            self._stats.add_log(f"Mode switched -> {mode.value}")
+
+    def set_skeleton_debug(self, enabled: bool) -> None:
+        self._camera.set_skeleton_debug(enabled)
+        self._stats.skeleton_debug = enabled
+        self._stats.add_log("Skeleton debug ON" if enabled else "Skeleton debug OFF")
+
+    @property
+    def skeleton_debug(self) -> bool:
+        return self._camera.skeleton_debug
 
     def get_frame_and_data(self) -> Tuple[Optional[JointData], Optional[object]]:
         """
@@ -183,6 +192,8 @@ class SystemModeManager:
         self._stats.fusion_alpha = self._fusion.current_alpha
         self._stats.camera_status = cam_status
         self._stats.iot_status = iot_status
+        self._stats.skeleton_debug = self._camera.skeleton_debug
+        self._stats.pose_count = self._camera.pose_count
 
         # Log status transitions once (avoid repeating every frame)
         if self._prev_cam_status is not None and cam_status != self._prev_cam_status:

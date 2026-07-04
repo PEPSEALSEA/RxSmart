@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import FadeIn from "@/components/ui/FadeIn";
 import {
   bridgeFrameUrl,
@@ -10,15 +10,28 @@ import {
   LocalBridgeState,
   mapLocalJointsToFrame,
   pingBridge,
+  postSensorMappingAction,
   saveBridgeUrl,
   setBridgeMode,
+  setBridgeSkeletonDebug,
 } from "@/lib/local-bridge";
 import { SensorFrame } from "@/lib/pose-physics";
+import {
+  CALIBRATION_STEP_LABELS,
+  ChannelMap,
+  parseChannelMap,
+  saveStoredChannelMap,
+  SensorMappingState,
+} from "@/lib/sensor-mapping";
 
 interface LocalBridgePanelProps {
   onConnectChange: (connected: boolean) => void;
   onFrameUpdate: (frame: SensorFrame) => void;
   onStateUpdate: (state: LocalBridgeState | null) => void;
+  autoConnect?: boolean;
+  defaultMode?: LocalBridgeMode;
+  showPreview?: boolean;
+  variant?: "full" | "imu";
 }
 
 const MODES: { id: LocalBridgeMode; label: string }[] = [
@@ -31,6 +44,10 @@ export default function LocalBridgePanel({
   onConnectChange,
   onFrameUpdate,
   onStateUpdate,
+  autoConnect = false,
+  defaultMode,
+  showPreview = true,
+  variant = "full",
 }: LocalBridgePanelProps) {
   const [bridgeUrl, setBridgeUrl] = useState(loadBridgeUrl);
   const [connected, setConnected] = useState(false);
@@ -39,6 +56,13 @@ export default function LocalBridgePanel({
   const [state, setState] = useState<LocalBridgeState | null>(null);
   const [frameTick, setFrameTick] = useState(0);
   const [error, setError] = useState("");
+  const [mapping, setMapping] = useState<SensorMappingState | null>(null);
+  const [channelMap, setChannelMap] = useState<ChannelMap>(() => parseChannelMap(undefined));
+  const [mapBusy, setMapBusy] = useState("");
+  const [mapMessage, setMapMessage] = useState("");
+  const autoConnectAttempted = useRef(false);
+  const autoRecheckAt = useRef(0);
+  const imuStats = variant === "imu";
 
   const connect = useCallback(async () => {
     setChecking(true);
@@ -53,8 +77,21 @@ export default function LocalBridgePanel({
       onStateUpdate(null);
       return;
     }
+    if (defaultMode) {
+      try {
+        await setBridgeMode(bridgeUrl, defaultMode);
+      } catch (err) {
+        setError(err instanceof Error ? err.message : "สลับโหมด IMU ไม่สำเร็จ");
+      }
+    }
     setPolling(true);
-  }, [bridgeUrl, onConnectChange, onStateUpdate]);
+  }, [bridgeUrl, defaultMode, onConnectChange, onStateUpdate]);
+
+  useEffect(() => {
+    if (!autoConnect || autoConnectAttempted.current) return;
+    autoConnectAttempted.current = true;
+    void connect();
+  }, [autoConnect, connect]);
 
   useEffect(() => {
     if (!polling || !connected) return;
@@ -67,9 +104,30 @@ export default function LocalBridgePanel({
         if (cancelled) return;
         setState(next);
         onStateUpdate(next);
-        onFrameUpdate(
-          mapLocalJointsToFrame(next.joints),
-        );
+
+        let activeMap = channelMap;
+        if (next.sensor_mapping) {
+          setMapping(next.sensor_mapping);
+          activeMap = parseChannelMap(next.sensor_mapping.channel_map);
+          setChannelMap(activeMap);
+          saveStoredChannelMap(activeMap);
+        } else if (next.joints?.sensor_map) {
+          activeMap = parseChannelMap(next.joints.sensor_map);
+          setChannelMap(activeMap);
+        }
+
+        onFrameUpdate(mapLocalJointsToFrame(next.joints, activeMap));
+
+        // Passive auto-recheck every ~30 s when buffer has enough samples
+        if (
+          imuStats &&
+          next.sensor_mapping &&
+          next.sensor_mapping.buffer_samples >= 15 &&
+          Date.now() - autoRecheckAt.current > 30_000
+        ) {
+          autoRecheckAt.current = Date.now();
+          void postSensorMappingAction(bridgeUrl, "auto_recheck").catch(() => undefined);
+        }
         setFrameTick(Date.now());
         setError("");
       } catch (err) {
@@ -87,7 +145,44 @@ export default function LocalBridgePanel({
       cancelled = true;
       clearInterval(interval);
     };
-  }, [polling, connected, bridgeUrl, onConnectChange, onFrameUpdate, onStateUpdate]);
+  }, [polling, connected, bridgeUrl, onConnectChange, onFrameUpdate, onStateUpdate, channelMap, imuStats]);
+
+  const runMapAction = async (
+    action: "reset" | "auto_recheck" | "calibrate_start" | "calibrate_next",
+  ) => {
+    setMapBusy(action);
+    setMapMessage("");
+    try {
+      const data = await postSensorMappingAction(bridgeUrl, action);
+      if (data.channel_map) {
+        const parsed = parseChannelMap(data.channel_map as Record<string, string>);
+        setChannelMap(parsed);
+        saveStoredChannelMap(parsed);
+      }
+      setMapping(data as SensorMappingState);
+      if (action === "auto_recheck") {
+        setMapMessage(
+          data.updated
+            ? `อัปเดต mapping แล้ว (confidence ${Math.round((data.confidence as number) * 100)}%)`
+            : `mapping ปัจจุบันดีอยู่ (${Math.round((data.confidence as number) * 100)}%)`,
+        );
+      } else if (action === "calibrate_next") {
+        setMapMessage(
+          data.step === "complete"
+            ? "Auto-calibrate เสร็จแล้ว"
+            : `ขั้นตอนถัดไป: ${CALIBRATION_STEP_LABELS[data.step as string] ?? data.step}`,
+        );
+      } else if (action === "calibrate_start") {
+        setMapMessage(`เริ่ม calibrate — ${CALIBRATION_STEP_LABELS.neutral}`);
+      } else {
+        setMapMessage("รีเซ็ตเป็น firmware default แล้ว");
+      }
+    } catch (err) {
+      setMapMessage(err instanceof Error ? err.message : "sensor map ไม่สำเร็จ");
+    } finally {
+      setMapBusy("");
+    }
+  };
 
   const handleMode = async (mode: LocalBridgeMode) => {
     try {
@@ -100,6 +195,18 @@ export default function LocalBridgePanel({
     }
   };
 
+  const handleSkeletonDebug = async (enabled: boolean) => {
+    try {
+      await setBridgeSkeletonDebug(bridgeUrl, enabled);
+      const next = await fetchBridgeState(bridgeUrl);
+      setState(next);
+      onStateUpdate(next);
+      setFrameTick(Date.now());
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "สลับ skeleton debug ไม่สำเร็จ");
+    }
+  };
+
   return (
     <div className="space-y-6">
       <FadeIn>
@@ -107,7 +214,9 @@ export default function LocalBridgePanel({
           <div className="flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between">
             <div className="flex-1">
               <p className="text-xs font-medium uppercase tracking-wider text-neutral-400">
-                Local Bridge — เชื่อม Web กับ Python บนเครื่องนี้
+                {imuStats
+                  ? "Local USB — Python bridge (ไม่ผ่าน Cloudflare)"
+                  : "Local Bridge — เชื่อม Web กับ Python บนเครื่องนี้"}
               </p>
               <div className="mt-2 flex flex-col gap-2 sm:flex-row sm:items-center">
                 <input
@@ -126,8 +235,9 @@ export default function LocalBridgePanel({
                 </button>
               </div>
               <p className="mt-2 text-xs text-neutral-400">
-                GitHub Pages เรียก <code className="rounded bg-neutral-100 px-1">127.0.0.1:8766</code> ได้
-                เมื่อเปิดเว็บและรัน Python บน PC เครื่องเดียวกัน
+                {imuStats
+                  ? "เสียบ Pico 2 W / ESP32 ทาง USB → รัน python main.py → ข้อมูล IMU realtime ~400 ms"
+                  : "GitHub Pages เรียก 127.0.0.1:8766 ได้เมื่อเปิดเว็บและรัน Python บน PC เครื่องเดียวกัน"}
               </p>
             </div>
             <div className="flex items-center gap-2">
@@ -148,7 +258,7 @@ export default function LocalBridgePanel({
             </p>
           )}
 
-          {!connected && (
+          {!connected && !autoConnect && (
             <ol className="mt-4 space-y-1.5 border-t border-neutral-100 pt-4 text-sm text-neutral-600">
               <li>1. <code className="text-xs">cd rxsmart-local</code></li>
               <li>2. <code className="text-xs">pip install -r requirements.txt</code></li>
@@ -161,50 +271,160 @@ export default function LocalBridgePanel({
 
       {connected && state && (
         <FadeIn delay={80} className="space-y-4">
-          <div className="flex flex-wrap gap-2">
-            {MODES.map((mode) => (
+          {!imuStats && (
+            <div className="flex flex-wrap items-center gap-2">
+              {MODES.map((mode) => (
+                <button
+                  key={mode.id}
+                  type="button"
+                  onClick={() => void handleMode(mode.id)}
+                  className={`rounded-lg px-3 py-1.5 text-xs font-medium transition ${
+                    state.mode === mode.id
+                      ? "bg-neutral-900 text-white"
+                      : "border border-neutral-200 bg-white text-neutral-600 hover:bg-neutral-50"
+                  }`}
+                >
+                  {mode.label}
+                </button>
+              ))}
               <button
-                key={mode.id}
                 type="button"
-                onClick={() => void handleMode(mode.id)}
+                onClick={() => void handleSkeletonDebug(!(state.skeleton_debug ?? false))}
                 className={`rounded-lg px-3 py-1.5 text-xs font-medium transition ${
-                  state.mode === mode.id
+                  state.skeleton_debug
                     ? "bg-neutral-900 text-white"
                     : "border border-neutral-200 bg-white text-neutral-600 hover:bg-neutral-50"
                 }`}
               >
-                {mode.label}
+                Skeleton debug
               </button>
-            ))}
-          </div>
+            </div>
+          )}
 
           <div className="grid gap-4 lg:grid-cols-3">
-            {[
-              { label: "FPS", value: `${state.camera_fps}` },
-              { label: "Latency", value: `${state.camera_latency_ms} ms` },
-              { label: "Confidence", value: state.joints ? `${Math.round(state.joints.confidence * 100)}%` : "—" },
-              { label: "Camera", value: state.camera_status },
-              { label: "IoT", value: state.iot_status },
-              { label: "Source", value: state.joints?.source ?? "—" },
-            ].map((item) => (
-              <div
-                key={item.label}
-                className="rounded-xl border border-neutral-200 bg-white px-3 py-2.5"
-              >
-                <p className="text-[10px] uppercase tracking-wider text-neutral-400">{item.label}</p>
-                <p className="mt-0.5 font-mono text-sm font-semibold text-neutral-900">{item.value}</p>
-              </div>
-            ))}
+            {imuStats ? (
+              <>
+                {[
+                  { label: "IoT status", value: state.iot_status },
+                  { label: "Poll rate", value: `${state.iot_poll_rate_hz} Hz` },
+                  { label: "Latency", value: `${state.iot_latency_ms} ms` },
+                  { label: "Session", value: state.joints?.session_state ?? "—" },
+                  { label: "Reps", value: state.joints ? `${state.joints.rep_count ?? 0}/${state.joints.rep_target ?? 0}` : "—" },
+                  { label: "Confidence", value: state.joints ? `${Math.round(state.joints.confidence * 100)}%` : "—" },
+                ].map((item) => (
+                  <div
+                    key={item.label}
+                    className="rounded-xl border border-neutral-200 bg-white px-3 py-2.5"
+                  >
+                    <p className="text-[10px] uppercase tracking-wider text-neutral-400">{item.label}</p>
+                    <p className="mt-0.5 font-mono text-sm font-semibold text-neutral-900">{item.value}</p>
+                  </div>
+                ))}
+              </>
+            ) : (
+              <>
+                {[
+                  { label: "FPS", value: `${state.camera_fps}` },
+                  { label: "Latency", value: `${state.camera_latency_ms} ms` },
+                  { label: "Poses", value: `${state.pose_count ?? 0} / ${state.max_poses ?? 4}` },
+                  { label: "Confidence", value: state.joints ? `${Math.round(state.joints.confidence * 100)}%` : "—" },
+                  { label: "Camera", value: state.camera_status },
+                  { label: "Debug", value: state.skeleton_debug ? "ON" : "OFF" },
+                  {
+                    label: "Palm L/R",
+                    value: state.joints
+                      ? `${state.joints.palm_left_ok ? "OK" : "—"}/${state.joints.palm_right_ok ? "OK" : "—"}`
+                      : "—",
+                  },
+                ].map((item) => (
+                  <div
+                    key={item.label}
+                    className="rounded-xl border border-neutral-200 bg-white px-3 py-2.5"
+                  >
+                    <p className="text-[10px] uppercase tracking-wider text-neutral-400">{item.label}</p>
+                    <p className="mt-0.5 font-mono text-sm font-semibold text-neutral-900">{item.value}</p>
+                  </div>
+                ))}
+              </>
+            )}
           </div>
 
-          <div className="overflow-hidden rounded-2xl border border-neutral-200 bg-neutral-950 shadow-sm">
-            {/* eslint-disable-next-line @next/next/no-img-element */}
-            <img
-              src={bridgeFrameUrl(bridgeUrl, frameTick)}
-              alt="Camera feed from local Python bridge"
-              className="aspect-video w-full object-contain animate-fade-in-only"
-            />
-          </div>
+          {showPreview && (
+            <div className="overflow-hidden rounded-2xl border border-neutral-200 bg-black shadow-sm">
+              {/* eslint-disable-next-line @next/next/no-img-element */}
+              <img
+                src={bridgeFrameUrl(bridgeUrl, frameTick)}
+                alt="Camera feed from local Python bridge"
+                className={`aspect-video w-full object-contain animate-fade-in-only ${
+                  state.skeleton_debug ? "bg-black" : "bg-neutral-950"
+                }`}
+              />
+              {state.skeleton_debug && (
+                <p className="border-t border-neutral-800 bg-black px-3 py-2 text-center text-[10px] uppercase tracking-wider text-neutral-500">
+                  Skeleton debug — video hidden, joints only
+                </p>
+              )}
+            </div>
+          )}
+          {imuStats && connected && (
+            <div className="rounded-2xl border border-neutral-200/80 bg-white p-4 shadow-sm">
+              <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                <div>
+                  <p className="text-xs font-medium uppercase tracking-wider text-neutral-400">
+                    Sensor mapping · auto-calibrate
+                  </p>
+                  <p className="mt-1 text-xs text-neutral-500">
+                    confidence{" "}
+                    {mapping ? `${Math.round(mapping.confidence * 100)}%` : "—"}
+                    {mapping?.calibration_step && mapping.calibration_step !== "idle"
+                      ? ` · ขั้นตอน: ${CALIBRATION_STEP_LABELS[mapping.calibration_step] ?? mapping.calibration_step}`
+                      : ""}
+                  </p>
+                </div>
+                <div className="flex flex-wrap gap-2">
+                  <button
+                    type="button"
+                    disabled={Boolean(mapBusy)}
+                    onClick={() => void runMapAction("auto_recheck")}
+                    className="rounded-lg border border-neutral-200 px-3 py-1.5 text-xs font-medium text-neutral-700 hover:bg-neutral-50 disabled:opacity-50"
+                  >
+                    {mapBusy === "auto_recheck" ? "…" : "Auto recheck"}
+                  </button>
+                  <button
+                    type="button"
+                    disabled={Boolean(mapBusy)}
+                    onClick={() => void runMapAction("calibrate_start")}
+                    className="rounded-lg border border-neutral-200 px-3 py-1.5 text-xs font-medium text-neutral-700 hover:bg-neutral-50 disabled:opacity-50"
+                  >
+                    เริ่ม calibrate
+                  </button>
+                  <button
+                    type="button"
+                    disabled={
+                      Boolean(mapBusy) ||
+                      !mapping?.calibration_step ||
+                      mapping.calibration_step === "idle"
+                    }
+                    onClick={() => void runMapAction("calibrate_next")}
+                    className="rounded-lg bg-neutral-900 px-3 py-1.5 text-xs font-medium text-white hover:bg-neutral-800 disabled:opacity-50"
+                  >
+                    {mapBusy === "calibrate_next" ? "…" : "ขั้นถัดไป"}
+                  </button>
+                  <button
+                    type="button"
+                    disabled={Boolean(mapBusy)}
+                    onClick={() => void runMapAction("reset")}
+                    className="rounded-lg border border-dashed border-neutral-300 px-3 py-1.5 text-xs font-medium text-neutral-500 hover:bg-neutral-50 disabled:opacity-50"
+                  >
+                    Reset default
+                  </button>
+                </div>
+              </div>
+              {mapMessage && (
+                <p className="mt-3 rounded-lg bg-neutral-50 px-3 py-2 text-xs text-neutral-600">{mapMessage}</p>
+              )}
+            </div>
+          )}
         </FadeIn>
       )}
     </div>

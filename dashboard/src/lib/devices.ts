@@ -1,7 +1,10 @@
+export type DevicePlatform = "esp32" | "pico2w";
+
 export interface Device {
   device_id: string;
   wifi_ssid: string;
   last_online: string;
+  platform?: DevicePlatform;
 }
 
 export function getApiUrl() {
@@ -10,6 +13,21 @@ export function getApiUrl() {
 
 export function getErrorMessage(error: unknown) {
   return error instanceof Error ? error.message : "Unknown error";
+}
+
+export function inferDevicePlatform(deviceId: string, explicit?: string): DevicePlatform {
+  const raw = String(explicit || "").toLowerCase().trim();
+  if (raw === "pico2w" || raw === "pico_2w" || raw === "pico-2w") return "pico2w";
+  if (raw === "esp32") return "esp32";
+
+  const id = deviceId.toUpperCase();
+  if (id.startsWith("PICO2W_")) return "pico2w";
+  if (id.startsWith("ESP32_")) return "esp32";
+  return "esp32";
+}
+
+export function getDevicePlatformLabel(platform: DevicePlatform): string {
+  return platform === "pico2w" ? "Pico 2 W" : "ESP32";
 }
 
 export function isDeviceOnline(lastOnline: string, now = Date.now()) {

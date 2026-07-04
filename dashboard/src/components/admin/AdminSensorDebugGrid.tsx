@@ -3,12 +3,11 @@
 import FadeIn from "@/components/ui/FadeIn";
 import {
   FIRMWARE_SENSOR_TO_POSE,
-  LOWER_SENSOR_CHANNEL,
+  DEFAULT_CHANNEL_TO_POSE,
   LOWER_KEYS,
   POSE_LABELS,
   PoseKey,
   UPPER_KEYS,
-  UPPER_SENSOR_CHANNEL,
 } from "@/lib/pose";
 
 export type RawSensor = {
@@ -24,10 +23,7 @@ interface AdminSensorDebugGridProps {
   sensors?: RawSensor[];
 }
 
-const CHANNEL_TO_POSE: Record<number, PoseKey> = {
-  ...Object.fromEntries(UPPER_KEYS.map((key) => [UPPER_SENSOR_CHANNEL[key], key])),
-  ...Object.fromEntries(LOWER_KEYS.map((key) => [LOWER_SENSOR_CHANNEL[key], key])),
-};
+const CHANNEL_TO_POSE: Record<number, PoseKey> = { ...DEFAULT_CHANNEL_TO_POSE };
 
 function toAngle(calibrated: number | undefined): string {
   if (typeof calibrated !== "number" || Number.isNaN(calibrated)) return "—";

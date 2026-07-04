@@ -7,6 +7,12 @@ import sys
 
 
 def ensure_standard_python() -> None:
+    if hasattr(sys.stdout, "reconfigure"):
+        try:
+            sys.stdout.reconfigure(encoding="utf-8")
+        except Exception:
+            pass
+
     version = sys.version
     exe = sys.executable
 

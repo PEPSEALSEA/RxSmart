@@ -23,9 +23,9 @@ import config
 from data_models import ConnectionStatus, JointData
 
 # ---------------------------------------------------------------------------
-# Pre-compiled regex for the ESP32 Serial debug line
+# Pre-compiled regex for the ESP32 Serial debug block
 # ---------------------------------------------------------------------------
-_DBG_RE = re.compile(
+_DBG_HEADER_RE = re.compile(
     r"\[DBG\]\s+"
     r"t=(\d+)\s+"
     r"state=(\S+)\s+"
@@ -35,15 +35,22 @@ _DBG_RE = re.compile(
     r"speed=([\d.]+)\s+"
     r"alert=(\S+)\s+"
     r"code=(\d+)\s+"
-    r"i2c=(\d+)/(\d+)\s+"
-    r"mpu68=(\S+)\s+"
-    r"mpu69=(\S+)\s+"
-    r"rawA=([\d.]+)\s+"
-    r"rawB=([\d.]+)\s+"
+    r"i2c=(\d+)/(\d+)"
+)
+
+_DBG_ANGLES_RE = re.compile(
+    r"angles:\s+"
     r"elbowL=([\d.]+)\s+"
     r"elbowR=([\d.]+)\s+"
     r"kneeL=([\d.]+)\s+"
     r"kneeR=([\d.]+)"
+)
+
+_DBG_CH_RE = re.compile(
+    r"CH(\d+)\s+\[(\S+)\s*\]\s+"
+    r"raw=([\d.]+)\s+"
+    r"cal=([\d.]+)\s+"
+    r"(\S+)"
 )
 
 
@@ -64,14 +71,21 @@ class IoTReceiver:
         receiver.stop()
     """
 
-    def __init__(self, transport: str = config.IOT_TRANSPORT) -> None:
+    def __init__(
+        self,
+        transport: str = config.IOT_TRANSPORT,
+        serial_port: Optional[str] = None,
+    ) -> None:
         if transport not in ("serial", "http", "server"):
             raise ValueError(
                 f"Unknown IoT transport: {transport!r}. Use 'serial', 'http', or 'server'."
             )
         self._transport = transport
+        self._serial_port = serial_port or config.SERIAL_PORT_FALLBACK
 
         self._lock = threading.Lock()
+        self._port_lock = threading.Lock()
+        self._force_serial_reconnect = False
         self._thread: Optional[threading.Thread] = None
         self._running = False
         self._flask_server = None   # werkzeug server instance (server mode only)
@@ -82,6 +96,9 @@ class IoTReceiver:
         self._poll_times: list = []
         self._latency_ms: float = 0.0
         self._device_id: str = config.DEVICE_ID
+
+        # Multi-line [DBG] block accumulator (header + angles + 8× CH lines)
+        self._dbg_block: Optional[dict] = None
 
     # ------------------------------------------------------------------
     # Public interface
@@ -141,6 +158,33 @@ class IoTReceiver:
         with self._lock:
             return self._latest
 
+    def get_serial_port(self) -> str:
+        with self._port_lock:
+            return self._serial_port
+
+    def set_serial_port(self, port: str) -> None:
+        """Switch USB serial port; reconnect loop picks up the new port."""
+        port = port.strip()
+        if not port:
+            return
+        with self._port_lock:
+            if port == self._serial_port:
+                return
+            self._serial_port = port
+            self._force_serial_reconnect = True
+        print(f"[IoTReceiver] Serial port changed → {port}")
+
+    def _take_serial_reconnect(self) -> bool:
+        with self._port_lock:
+            if not self._force_serial_reconnect:
+                return False
+            self._force_serial_reconnect = False
+            return True
+
+    def _current_serial_port(self) -> str:
+        with self._port_lock:
+            return self._serial_port
+
     # ------------------------------------------------------------------
     # Serial transport
     # ------------------------------------------------------------------
@@ -155,18 +199,27 @@ class IoTReceiver:
 
         ser = None
         while self._running:
+            if self._take_serial_reconnect() and ser is not None:
+                try:
+                    ser.close()
+                except Exception:
+                    pass
+                ser = None
+                self._status = ConnectionStatus.DISCONNECTED
+
             # --- Establish / re-establish connection ---
             if ser is None or not ser.is_open:
+                port = self._current_serial_port()
                 try:
                     ser = serial.Serial(
-                        port=config.SERIAL_PORT,
+                        port=port,
                         baudrate=config.SERIAL_BAUDRATE,
                         timeout=config.SERIAL_TIMEOUT,
                     )
                     self._status = ConnectionStatus.CONNECTED
-                    print(f"[IoTReceiver] Serial connected on {config.SERIAL_PORT}")
+                    print(f"[IoTReceiver] Serial connected on {port}")
                 except Exception as exc:
-                    print(f"[IoTReceiver] Serial open failed: {exc}. Retrying in 2 s…")
+                    print(f"[IoTReceiver] Serial open failed ({port}): {exc}. Retrying in 2 s…")
                     self._status = ConnectionStatus.ERROR
                     time.sleep(2.0)
                     continue
@@ -201,50 +254,102 @@ class IoTReceiver:
             ser.close()
 
     def _parse_serial_line(self, line: str) -> Optional[JointData]:
-        """Parse the [DBG] formatted line emitted by printRealtimeDebug()."""
-        m = _DBG_RE.search(line)
-        if not m:
+        """Parse multi-line [DBG] block emitted by printRealtimeDebug()."""
+        if line.startswith("[DBG]"):
+            m = _DBG_HEADER_RE.search(line)
+            if not m:
+                return None
+            (
+                t_ms, state, cal,
+                rep_count, rep_target,
+                posture, speed,
+                alert_level, alert_code,
+                i2c_sda, i2c_scl,
+            ) = m.groups()
+            self._dbg_block = {
+                "t_ms": t_ms,
+                "state": state,
+                "cal": cal,
+                "rep_count": rep_count,
+                "rep_target": rep_target,
+                "posture": posture,
+                "speed": speed,
+                "alert_level": alert_level,
+                "alert_code": alert_code,
+                "i2c_sda": i2c_sda,
+                "i2c_scl": i2c_scl,
+                "channels": {},
+            }
             return None
-        (
-            t_ms, state, cal,
-            rep_count, rep_target,
-            posture, speed,
-            alert_level, alert_code,
-            i2c_sda, i2c_scl,
-            mpu68, mpu69,
-            raw_a, raw_b,
-            elbow_l, elbow_r,
-            knee_l, knee_r,
-        ) = m.groups()
 
-        calibrated = int(cal) == 1
+        if not self._dbg_block:
+            return None
+
+        angles_m = _DBG_ANGLES_RE.search(line)
+        if angles_m:
+            self._dbg_block["elbow_l"], self._dbg_block["elbow_r"], \
+                self._dbg_block["knee_l"], self._dbg_block["knee_r"] = angles_m.groups()
+            return None
+
+        ch_m = _DBG_CH_RE.search(line)
+        if ch_m:
+            ch_idx, key, raw, cal, status = ch_m.groups()
+            self._dbg_block["channels"][int(ch_idx)] = {
+                "channel": int(ch_idx),
+                "key": key,
+                "raw": float(raw),
+                "calibrated": float(cal),
+                "status": status,
+            }
+            if len(self._dbg_block["channels"]) >= 8:
+                return self._finalize_dbg_block()
+            return None
+
+        return None
+
+    def _finalize_dbg_block(self) -> Optional[JointData]:
+        block = self._dbg_block
+        self._dbg_block = None
+        if not block:
+            return None
+
+        channels = block.get("channels", {})
+        sensor_list = [channels[i] for i in sorted(channels.keys())]
+
+        calibrated = int(block.get("cal", 0)) == 1
+        elbow_l = float(block.get("elbow_l", 0))
+        elbow_r = float(block.get("elbow_r", 0))
+        knee_l = float(block.get("knee_l", 0))
+        knee_r = float(block.get("knee_r", 0))
 
         return JointData(
-            elbow_left=float(elbow_l),
-            elbow_right=float(elbow_r),
-            knee_left=float(knee_l),
-            knee_right=float(knee_r),
-            shoulder_left=0.0,   # not in Serial output
+            elbow_left=elbow_l,
+            elbow_right=elbow_r,
+            knee_left=knee_l,
+            knee_right=knee_r,
+            shoulder_left=0.0,
             shoulder_right=0.0,
             source="iot",
             confidence=1.0 if calibrated else 0.5,
-            timestamp_ms=float(t_ms),
+            timestamp_ms=float(block.get("t_ms", time.time() * 1000)),
             raw_sensors={
-                "raw_a": float(raw_a),
-                "raw_b": float(raw_b),
-                "mpu68": mpu68,
-                "mpu69": mpu69,
-                "i2c_sda": int(i2c_sda),
-                "i2c_scl": int(i2c_scl),
+                "sensors": sensor_list,
+                "angles": {
+                    "elbow_left": elbow_l,
+                    "elbow_right": elbow_r,
+                    "knee_left": knee_l,
+                    "knee_right": knee_r,
+                },
             },
-            posture_state="correct" if posture == "ok" else "incorrect",
+            sensor_channels=sensor_list,
+            posture_state="correct" if block.get("posture") == "ok" else "incorrect",
             posture_fault_mask=0,
-            rep_count=int(rep_count),
-            rep_target=int(rep_target),
-            speed_dps=float(speed),
-            session_state=state,
-            alert_level=alert_level,
-            alert_code=int(alert_code),
+            rep_count=int(block.get("rep_count", 0)),
+            rep_target=int(block.get("rep_target", 0)),
+            speed_dps=float(block.get("speed", 0)),
+            session_state=block.get("state", "idle"),
+            alert_level=block.get("alert_level", "none"),
+            alert_code=int(block.get("alert_code", 0)),
         )
 
     # ------------------------------------------------------------------
@@ -309,6 +414,16 @@ class IoTReceiver:
 
             calibrated = bool(payload.get("calibrated", False))
 
+            sensor_channels = [
+                {
+                    "channel": idx,
+                    "key": s.get("key", ""),
+                    "raw": float(s.get("raw", 0)),
+                    "calibrated": float(s.get("calibrated", 0)),
+                }
+                for idx, s in enumerate(sensors_raw)
+            ]
+
             return JointData(
                 elbow_left=float(angles.get("elbow_left", 0.0)),
                 elbow_right=float(angles.get("elbow_right", 0.0)),
@@ -320,6 +435,7 @@ class IoTReceiver:
                 confidence=1.0 if calibrated else 0.5,
                 timestamp_ms=float(payload.get("device_ts_ms", time.time() * 1000)),
                 raw_sensors={"sensors": sensors_raw},
+                sensor_channels=sensor_channels or None,
                 posture_state=posture.get("state", "unknown"),
                 posture_fault_mask=int(posture.get("fault_mask", 0)),
                 rep_count=int(payload.get("rep_count", 0)),
@@ -406,6 +522,20 @@ class IoTReceiver:
         self._flask_server = srv
         srv.serve_forever()
 
+    def _extract_sensor_channels(self, sensors_raw: list) -> Optional[list]:
+        if not sensors_raw:
+            return None
+        return [
+            {
+                "channel": idx,
+                "key": s.get("key", ""),
+                "raw": float(s.get("raw", 0)),
+                "calibrated": float(s.get("calibrated", 0)),
+            }
+            for idx, s in enumerate(sensors_raw)
+            if isinstance(s, dict)
+        ]
+
     def _parse_local_json(self, data: dict) -> Optional[JointData]:
         """
         Parse the compact JSON POSTed by the ESP32 firmware patch.
@@ -421,6 +551,8 @@ class IoTReceiver:
                 calibrated = bool(data.get("calibrated", False))
                 alert_level = alerts[0].get("level", "none") if alerts else "none"
                 alert_code = int(alerts[0].get("code", 0)) if alerts else 0
+                sensors_raw = data.get("sensors", [])
+                sensor_channels = self._extract_sensor_channels(sensors_raw)
                 return JointData(
                     elbow_left=float(angles.get("elbow_left", 0.0)),
                     elbow_right=float(angles.get("elbow_right", 0.0)),
@@ -432,6 +564,7 @@ class IoTReceiver:
                     confidence=1.0 if calibrated else 0.5,
                     timestamp_ms=float(data.get("device_ts_ms", time.time() * 1000)),
                     raw_sensors=data,
+                    sensor_channels=sensor_channels,
                     posture_state=posture.get("state", "unknown"),
                     posture_fault_mask=int(posture.get("fault_mask", 0)),
                     rep_count=int(data.get("rep_count", 0)),

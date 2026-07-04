@@ -33,6 +33,7 @@ export interface TelemetryAlertV2 {
 export interface TelemetryPayloadV2 {
   schema_version: number;
   firmware_version: string;
+  device_platform?: string;
   device_ts_ms: number;
   device_id: string;
   status: string;
@@ -102,6 +103,7 @@ export function parseTelemetryV2(input: unknown): TelemetryPayloadV2 | null {
   return {
     schema_version: asNumber(body.schema_version, 2),
     firmware_version: asString(body.firmware_version, ""),
+    device_platform: asString(body.device_platform, ""),
     device_ts_ms: asNumber(body.device_ts_ms),
     device_id: asString(body.device_id, ""),
     status: asString(body.status, "Unknown"),

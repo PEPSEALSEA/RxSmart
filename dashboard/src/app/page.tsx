@@ -7,9 +7,18 @@ import RehabPanel from "@/components/RehabPanel";
 import LocalBridgePanel from "@/components/LocalBridgePanel";
 import SensorReadout from "@/components/SensorReadout";
 import FadeIn from "@/components/ui/FadeIn";
-import { Device, formatLastSeen, getApiUrl, getErrorMessage, isDeviceOnline } from "@/lib/devices";
-import { LocalBridgeState, mapLocalJointsToFrame } from "@/lib/local-bridge";
+import {
+  BridgeLiveTelemetry,
+  LocalBridgeState,
+  mapBridgeToLiveTelemetry,
+  mapLocalJointsToFrame,
+} from "@/lib/local-bridge";
 import { FIRMWARE_SENSOR_TO_POSE, isUpperKey } from "@/lib/pose";
+import {
+  calibratedToDegrees,
+  mapSensorsToFrame,
+  parseChannelMap,
+} from "@/lib/sensor-mapping";
 import { REHAB_EXERCISES, RehabExercise } from "@/lib/rehab-exercises";
 import {
   RehabSessionEngine,
@@ -20,20 +29,7 @@ import {
   stepPhysics,
 } from "@/lib/pose-physics";
 
-type LiveTelemetry = {
-  session_state?: "idle" | "calibrate" | "exercise" | "complete";
-  rep_count?: number;
-  rep_target?: number;
-  speed_dps?: number;
-  posture?: { state?: "correct" | "incorrect" };
-  angles?: {
-    elbow_left?: number;
-    elbow_right?: number;
-    knee_left?: number;
-    knee_right?: number;
-  };
-  sensors?: Array<{ key?: string; calibrated?: number }>;
-};
+type LiveTelemetry = BridgeLiveTelemetry;
 
 type DataMode = "simulation" | "live" | "camera";
 
@@ -49,6 +45,18 @@ const PoseViewer = dynamic(() => import("@/components/PoseViewer"), {
   ),
 });
 
+const MediaPipeSkeletonViewer = dynamic(
+  () => import("@/components/MediaPipeSkeletonViewer"),
+  {
+    ssr: false,
+    loading: () => (
+      <div className="flex h-full min-h-[340px] items-center justify-center rounded-2xl border border-neutral-200 bg-neutral-50">
+        <p className="text-xs text-neutral-400">กำลังโหลด MediaPipe 3D…</p>
+      </div>
+    ),
+  },
+);
+
 function makeIdleFeedback(exercise: RehabExercise, frame: SensorFrame): SessionFeedback {
   const fb = buildSessionFeedback(
     frame,
@@ -62,6 +70,13 @@ function makeIdleFeedback(exercise: RehabExercise, frame: SensorFrame): SessionF
 }
 
 function mapTelemetryToFrame(payload: LiveTelemetry): SensorFrame {
+  if (payload.sensors?.length) {
+    return mapSensorsToFrame(
+      payload.sensors,
+      parseChannelMap(payload.sensor_map),
+    );
+  }
+
   const base = createNeutralFrame();
   if (payload.angles) {
     base.l_arm_lower.bend = payload.angles.elbow_left ?? base.l_arm_lower.bend;
@@ -74,7 +89,7 @@ function mapTelemetryToFrame(payload: LiveTelemetry): SensorFrame {
     for (const sensor of payload.sensors) {
       const poseKey = sensor.key ? FIRMWARE_SENSOR_TO_POSE[sensor.key] : undefined;
       if (!poseKey || typeof sensor.calibrated !== "number") continue;
-      const calibrated = Math.max(0, Math.min(180, Math.abs(sensor.calibrated) * (180 / 4095)));
+      const calibrated = calibratedToDegrees(sensor.calibrated);
       if (isUpperKey(poseKey)) {
         base[poseKey].elevation = calibrated;
       } else {
@@ -100,7 +115,7 @@ function makeLiveFeedback(exercise: RehabExercise, payload: LiveTelemetry): Sess
     rep: payload.rep_count ?? 0,
     totalReps: payload.rep_target ?? exercise.reps,
     messages: [
-      `ESP32 session: ${payload.session_state || "idle"}`,
+      `Board session: ${payload.session_state || "idle"}`,
       `ความเร็ว ${(payload.speed_dps ?? 0).toFixed(1)}°/s · posture ${payload.posture?.state || "—"}`,
     ],
   };
@@ -134,15 +149,8 @@ export default function UserHome() {
     makeIdleFeedback(REHAB_EXERCISES[0], createNeutralFrame()),
   );
   const [exercise, setExercise] = useState<RehabExercise>(REHAB_EXERCISES[0]);
-  const [devices, setDevices] = useState<Device[]>([]);
-  const [liveDeviceId, setLiveDeviceId] = useState("");
-  const [liveTelemetry, setLiveTelemetry] = useState<LiveTelemetry | null>(null);
   const [dataMode, setDataMode] = useState<DataMode>("simulation");
   const [sensorsOpen, setSensorsOpen] = useState(true);
-  const [devicesOpen, setDevicesOpen] = useState(false);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState("");
-  const [currentTime, setCurrentTime] = useState(0);
   const [bridgeConnected, setBridgeConnected] = useState(false);
   const [bridgeState, setBridgeState] = useState<LocalBridgeState | null>(null);
 
@@ -151,82 +159,10 @@ export default function UserHome() {
   const lastTickRef = useRef(0);
   const rafRef = useRef<number | null>(null);
 
-  const apiUrl = getApiUrl();
-  const isLive = dataMode === "live" && Boolean(liveDeviceId && liveTelemetry);
+  const isLive = dataMode === "live" && bridgeConnected;
   const isCameraBridge = dataMode === "camera" && bridgeConnected;
   const useExternalFrame = isLive || isCameraBridge;
-
-  const fetchDevices = useCallback(async () => {
-    setLoading(true);
-    setError("");
-    setCurrentTime(Date.now());
-    try {
-      const res = await fetch(`${apiUrl}/api/devices`);
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error || "โหลดข้อมูลไม่สำเร็จ");
-      const nextDevices = data.devices || [];
-      setDevices(nextDevices);
-      setLiveDeviceId((current) => {
-        if (current && nextDevices.some((device: Device) => device.device_id === current)) return current;
-        return nextDevices[0]?.device_id || "";
-      });
-    } catch (err) {
-      setError(getErrorMessage(err));
-    } finally {
-      setLoading(false);
-    }
-  }, [apiUrl]);
-
-  const fetchLiveTelemetry = useCallback(
-    async (deviceId: string) => {
-      if (!deviceId) return;
-      try {
-        const res = await fetch(
-          `${apiUrl}/api/debug/telemetry?device_id=${encodeURIComponent(deviceId)}&limit=1`,
-        );
-        const data = await res.json();
-        if (!res.ok) throw new Error(data.error || "โหลด telemetry ไม่สำเร็จ");
-        const payload = data.samples?.[0]?.payload_json as LiveTelemetry | undefined;
-        if (!payload) {
-          setLiveTelemetry(null);
-          return;
-        }
-        setLiveTelemetry(payload);
-        const mappedFrame = mapTelemetryToFrame(payload);
-        frameRef.current = mappedFrame;
-        setFrame(mappedFrame);
-        if (dataMode === "live") {
-          setFeedback(makeLiveFeedback(exercise, payload));
-        }
-      } catch (err) {
-        setError(getErrorMessage(err));
-      }
-    },
-    [apiUrl, dataMode, exercise],
-  );
-
-  useEffect(() => {
-    const initialLoad = setTimeout(() => void fetchDevices(), 0);
-    const interval = setInterval(() => void fetchDevices(), 30000);
-    return () => {
-      clearTimeout(initialLoad);
-      clearInterval(interval);
-    };
-  }, [fetchDevices]);
-
-  useEffect(() => {
-    if (!liveDeviceId || dataMode !== "live") return;
-    const bootstrap = setTimeout(() => {
-      void fetchLiveTelemetry(liveDeviceId);
-    }, 0);
-    const interval = setInterval(() => {
-      void fetchLiveTelemetry(liveDeviceId);
-    }, 3000);
-    return () => {
-      clearTimeout(bootstrap);
-      clearInterval(interval);
-    };
-  }, [fetchLiveTelemetry, liveDeviceId, dataMode]);
+  const liveTelemetry = bridgeState ? mapBridgeToLiveTelemetry(bridgeState) : null;
 
   useEffect(() => {
     const tick = (now: number) => {
@@ -289,19 +225,12 @@ export default function UserHome() {
 
   const handleModeChange = (mode: DataMode) => {
     setDataMode(mode);
-    if (mode !== "camera") {
+    if (mode === "simulation") {
       setBridgeConnected(false);
       setBridgeState(null);
-    }
-    if (mode === "simulation") {
       frameRef.current = createNeutralFrame();
       setFrame(createNeutralFrame());
       setFeedback(makeIdleFeedback(exercise, createNeutralFrame()));
-    } else if (mode === "live" && liveTelemetry) {
-      const mappedFrame = mapTelemetryToFrame(liveTelemetry);
-      frameRef.current = mappedFrame;
-      setFrame(mappedFrame);
-      setFeedback(makeLiveFeedback(exercise, liveTelemetry));
     }
   };
 
@@ -312,7 +241,13 @@ export default function UserHome() {
 
   const handleBridgeStateUpdate = (state: LocalBridgeState | null) => {
     setBridgeState(state);
-    if (state) {
+    if (!state) return;
+    if (dataMode === "live") {
+      const telemetry = mapBridgeToLiveTelemetry(state);
+      if (telemetry) {
+        setFeedback(makeLiveFeedback(exercise, telemetry));
+      }
+    } else if (dataMode === "camera") {
       setFeedback(makeCameraFeedback(exercise, state));
     }
   };
@@ -328,7 +263,6 @@ export default function UserHome() {
   };
 
   const activeJoints = feedback.activeJoints;
-  const onlineCount = devices.filter((d) => isDeviceOnline(d.last_online, currentTime)).length;
 
   return (
     <main className="min-h-screen bg-[#fafafa] text-neutral-900">
@@ -394,101 +328,15 @@ export default function UserHome() {
 
         {dataMode === "live" && (
           <FadeIn delay={80} className="mb-6">
-            <div className="rounded-2xl border border-neutral-200/80 bg-white p-4 shadow-sm">
-              <div className="flex flex-wrap items-center justify-between gap-3">
-                <div>
-                  <p className="text-xs font-medium uppercase tracking-wider text-neutral-400">อุปกรณ์ ESP32</p>
-                  <p className="mt-1 text-sm text-neutral-600">
-                    {onlineCount} ออนไลน์ · {devices.length} ทั้งหมด
-                    {isLive && (
-                      <span className="ml-2 inline-flex items-center gap-1.5 text-emerald-600">
-                        <span className="h-1.5 w-1.5 rounded-full bg-emerald-500 animate-pulse-soft" />
-                        รับข้อมูล live
-                      </span>
-                    )}
-                  </p>
-                </div>
-                <div className="flex items-center gap-2">
-                  <button
-                    type="button"
-                    onClick={() => setDevicesOpen((open) => !open)}
-                    className="rounded-lg border border-neutral-200 px-3 py-1.5 text-xs font-medium text-neutral-600 transition hover:bg-neutral-50"
-                  >
-                    {devicesOpen ? "ซ่อนรายการ" : "เลือกอุปกรณ์"}
-                  </button>
-                  <button
-                    type="button"
-                    onClick={fetchDevices}
-                    disabled={loading}
-                    className="rounded-lg bg-neutral-100 px-3 py-1.5 text-xs font-medium text-neutral-700 transition hover:bg-neutral-200 disabled:opacity-50"
-                  >
-                    {loading ? "…" : "รีเฟรช"}
-                  </button>
-                </div>
-              </div>
-
-              {error && (
-                <p className="mt-3 animate-fade-in-only rounded-lg bg-red-50 px-3 py-2 text-xs text-red-600">
-                  {error}
-                </p>
-              )}
-
-              <div
-                className={`overflow-hidden transition-all duration-500 ease-out ${
-                  devicesOpen ? "mt-4 max-h-48 opacity-100" : "max-h-0 opacity-0"
-                }`}
-              >
-                {devices.length === 0 ? (
-                  <p className="rounded-xl border border-dashed border-neutral-200 px-4 py-6 text-center text-sm text-neutral-400">
-                    ยังไม่มีบอร์ด — ตรวจสอบ WiFi และ telemetry จาก ESP32
-                  </p>
-                ) : (
-                  <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
-                    {devices.map((device, index) => {
-                      const online = isDeviceOnline(device.last_online, currentTime);
-                      const selected = liveDeviceId === device.device_id;
-                      return (
-                        <button
-                          key={device.device_id}
-                          type="button"
-                          onClick={() => setLiveDeviceId(device.device_id)}
-                          className={`animate-fade-in rounded-xl border px-3 py-2.5 text-left transition-all duration-300 ${
-                            selected
-                              ? "border-neutral-900 bg-neutral-900 text-white shadow-sm"
-                              : "border-neutral-200 bg-neutral-50 hover:border-neutral-300 hover:bg-white"
-                          }`}
-                          style={{ animationDelay: `${index * 40}ms` }}
-                        >
-                          <div className="flex items-center justify-between gap-2">
-                            <span className="truncate font-mono text-[11px]">{device.device_id}</span>
-                            <span
-                              className={`shrink-0 text-[10px] font-medium ${
-                                selected
-                                  ? online
-                                    ? "text-emerald-300"
-                                    : "text-neutral-400"
-                                  : online
-                                    ? "text-emerald-600"
-                                    : "text-neutral-400"
-                              }`}
-                            >
-                              {online ? "online" : "offline"}
-                            </span>
-                          </div>
-                          <p
-                            className={`mt-1 text-[10px] ${
-                              selected ? "text-neutral-400" : "text-neutral-400"
-                            }`}
-                          >
-                            {formatLastSeen(device.last_online)}
-                          </p>
-                        </button>
-                      );
-                    })}
-                  </div>
-                )}
-              </div>
-            </div>
+            <LocalBridgePanel
+              autoConnect
+              defaultMode="IOT_ONLY"
+              showPreview={false}
+              variant="imu"
+              onConnectChange={handleBridgeConnectChange}
+              onFrameUpdate={handleBridgeFrameUpdate}
+              onStateUpdate={handleBridgeStateUpdate}
+            />
           </FadeIn>
         )}
 
@@ -506,9 +354,9 @@ export default function UserHome() {
                   <div className="flex h-full flex-col rounded-2xl border border-neutral-200/80 bg-white p-4 shadow-sm sm:p-5">
                     <div className="mb-4 flex items-center justify-between">
                       <div>
-                        <h2 className="text-sm font-semibold text-neutral-900">3D จาก Camera Bridge</h2>
+                        <h2 className="text-sm font-semibold text-neutral-900">3D MediaPipe (ตรงกับกล้อง)</h2>
                         <p className="mt-0.5 text-xs text-neutral-400">
-                          {bridgeState?.mode.replace("_", " ") ?? "—"} · MediaPipe joints
+                          Landmarks 1:1 จาก Python · ไม่ใช่ mannequin จำลอง
                         </p>
                       </div>
                       <span className="animate-fade-in-only rounded-full border border-neutral-200 bg-neutral-50 px-2.5 py-1 text-[10px] font-medium uppercase tracking-wider text-neutral-500">
@@ -516,7 +364,11 @@ export default function UserHome() {
                       </span>
                     </div>
                     <div className="min-h-[min(52vh,480px)] flex-1">
-                      <PoseViewer frame={frame} activeJoints={activeJoints} />
+                      <MediaPipeSkeletonViewer
+                        landmarks={bridgeState?.pose_landmarks ?? null}
+                        hands={bridgeState?.hand_landmarks ?? null}
+                        skeletonDebug={bridgeState?.skeleton_debug}
+                      />
                     </div>
                   </div>
                 </FadeIn>
@@ -627,7 +479,7 @@ export default function UserHome() {
                   ? `Camera bridge · ${bridgeState?.mode ?? "—"}`
                   : "Camera — รัน python main.py แล้วกดเชื่อมต่อ"
                 : isLive
-                  ? `Device ${liveDeviceId}`
+                  ? `Local USB · ${bridgeState?.iot_status ?? "—"} · ${bridgeState?.iot_poll_rate_hz?.toFixed(1) ?? "0"} Hz`
                   : "Simulation mode — ไม่ต้องใช้อุปกรณ์"}
             </p>
           </footer>

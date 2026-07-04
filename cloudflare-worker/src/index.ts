@@ -13,9 +13,16 @@ let sheetsWriteBlockedUntilMs = 0;
 const MIN_SHEETS_WRITE_BACKOFF_MS = 15_000;
 const MAX_SHEETS_WRITE_BACKOFF_MS = 15 * 60_000;
 
+type DevicePlatform = "esp32" | "pico2w";
+
+const FIRMWARE_BY_PLATFORM: Record<DevicePlatform, { latest_version: string; bin_url: string }> = {
+  esp32: { latest_version: "1.0.0", bin_url: "" },
+  pico2w: { latest_version: "1.0.0", bin_url: "" },
+};
+
 const sheetHeaders: Record<string, string[]> = {
   Sheet1: ["Timestamp", "Device_ID", "Schema_Version", "Session_ID", "Session_State", "Exercise_ID", "Payload_JSON", "Status", "WiFi_SSID"],
-  Devices: ["Device_ID", "WiFi_SSID", "Last_Online"],
+  Devices: ["Device_ID", "WiFi_SSID", "Last_Online", "Platform"],
   Commands: ["Device_ID", "Command", "WiFi_SSID", "WiFi_Password", "Session_ID", "Exercise_ID", "Rep_Target", "Created_At", "Status"],
   DebugSamples: ["Timestamp", "Device_ID", "Pose_Name", "Test_Target", "Sensor_Map", "Packet_JSON", "Notes"],
   PoseLibrary: ["Created_At", "Pose_Name", "Test_Target", "Sensor_Map", "Reference_JSON", "Device_ID"],
@@ -107,6 +114,19 @@ type PoseTemplate = {
   reference_json: string;
   device_id: string;
 };
+
+function normalizeDevicePlatform(value: unknown, deviceId = ""): DevicePlatform {
+  const raw = String(value || "").toLowerCase().trim();
+  if (raw === "pico2w" || raw === "pico_2w" || raw === "pico-2w" || raw === "raspberry_pi_pico_2w") {
+    return "pico2w";
+  }
+  if (raw === "esp32") return "esp32";
+
+  const id = deviceId.toUpperCase();
+  if (id.startsWith("PICO2W_")) return "pico2w";
+  if (id.startsWith("ESP32_")) return "esp32";
+  return "esp32";
+}
 
 function parseMaybeJson(raw: string): unknown {
   if (!raw) return "";
@@ -284,14 +304,21 @@ async function appendSheetRow(env: Env, token: string, sheet: string, values: st
   });
 }
 
-async function upsertDevice(env: Env, token: string, deviceId: string, wifiSsid: string, timestamp: string) {
+async function upsertDevice(
+  env: Env,
+  token: string,
+  deviceId: string,
+  wifiSsid: string,
+  timestamp: string,
+  platform?: DevicePlatform,
+) {
   await ensureSheet(env, token, "Devices");
   const getUrl = `https://sheets.googleapis.com/v4/spreadsheets/${env.SPREADSHEET_ID}/values/Devices!A:A`;
   const getRes = await fetch(getUrl, { headers: { Authorization: `Bearer ${token}` } });
   const getData: any = await getRes.json();
   const rows = getData.values || [];
   const rowIndex = rows.findIndex((row: string[]) => row?.[0] === deviceId);
-  const rowData = [deviceId, wifiSsid, timestamp];
+  const rowData = [deviceId, wifiSsid, timestamp, platform || normalizeDevicePlatform("", deviceId)];
 
   if (rowIndex === -1) {
     const appendUrl = `https://sheets.googleapis.com/v4/spreadsheets/${env.SPREADSHEET_ID}/values/Devices:append?valueInputOption=USER_ENTERED`;
@@ -303,7 +330,7 @@ async function upsertDevice(env: Env, token: string, deviceId: string, wifiSsid:
     return;
   }
 
-  const updateUrl = `https://sheets.googleapis.com/v4/spreadsheets/${env.SPREADSHEET_ID}/values/Devices!A${rowIndex + 1}:C${rowIndex + 1}?valueInputOption=USER_ENTERED`;
+  const updateUrl = `https://sheets.googleapis.com/v4/spreadsheets/${env.SPREADSHEET_ID}/values/Devices!A${rowIndex + 1}:D${rowIndex + 1}?valueInputOption=USER_ENTERED`;
   await fetch(updateUrl, {
     method: "PUT",
     headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
@@ -530,9 +557,13 @@ export default {
     }
 
     if (request.method === "GET" && url.pathname === "/api/firmware-version") {
+      const deviceId = url.searchParams.get("device_id") || "";
+      const platform = normalizeDevicePlatform(url.searchParams.get("platform"), deviceId);
+      const firmware = FIRMWARE_BY_PLATFORM[platform];
       return jsonResponse({
-        latest_version: "1.0.0",
-        bin_url: "",
+        platform,
+        latest_version: firmware.latest_version,
+        bin_url: firmware.bin_url,
       });
     }
 
@@ -555,6 +586,7 @@ export default {
         const deviceId = telemetry.device_id;
         const status = telemetry.status || "Unknown";
         const wifiSsid = telemetry.wifi_ssid || "Unknown";
+        const platform = normalizeDevicePlatform(telemetry.device_platform, deviceId);
 
         const token = await getGoogleAuthToken(env.GOOGLE_CLIENT_EMAIL, env.GOOGLE_PRIVATE_KEY);
         const appendUrl = `https://sheets.googleapis.com/v4/spreadsheets/${env.SPREADSHEET_ID}/values/Sheet1:append?valueInputOption=USER_ENTERED`;
@@ -584,7 +616,7 @@ export default {
         await appendSessionSample(env, token, telemetry, timestamp);
         await upsertSession(env, token, telemetry, timestamp);
         await appendEvents(env, token, telemetry, timestamp);
-        await upsertDevice(env, token, deviceId, wifiSsid, timestamp);
+        await upsertDevice(env, token, deviceId, wifiSsid, timestamp, platform);
 
         handleSheetsWriteSuccess();
 
@@ -608,13 +640,14 @@ export default {
         const body: any = await request.json();
         const deviceId = body.device_id || "";
         const wifiSsid = body.wifi_ssid || "Unknown";
+        const platform = normalizeDevicePlatform(body.device_platform, deviceId);
 
         if (!deviceId) {
           return jsonResponse({ error: "device_id is required" }, { status: 400 });
         }
 
         const token = await getGoogleAuthToken(env.GOOGLE_CLIENT_EMAIL, env.GOOGLE_PRIVATE_KEY);
-        await upsertDevice(env, token, deviceId, wifiSsid, new Date().toISOString());
+        await upsertDevice(env, token, deviceId, wifiSsid, new Date().toISOString(), platform);
 
         return jsonResponse({ success: true, message: "Device registered." });
       } catch (e: any) {
@@ -648,7 +681,7 @@ export default {
         const token = await getGoogleAuthToken(env.GOOGLE_CLIENT_EMAIL, env.GOOGLE_PRIVATE_KEY);
         await ensureSheet(env, token, "Devices");
 
-        const getUrl = `https://sheets.googleapis.com/v4/spreadsheets/${env.SPREADSHEET_ID}/values/Devices!A:C`;
+        const getUrl = `https://sheets.googleapis.com/v4/spreadsheets/${env.SPREADSHEET_ID}/values/Devices!A:D`;
         const getRes = await fetch(getUrl, { headers: { Authorization: `Bearer ${token}` } });
         const data: any = await getRes.json();
 
@@ -662,6 +695,7 @@ export default {
             device_id: row[0] || "Unknown",
             wifi_ssid: row[1] || "Unknown",
             last_online: row[2] || "Unknown",
+            platform: normalizeDevicePlatform(row[3], row[0] || ""),
           }));
 
         return jsonResponse({ success: true, devices });

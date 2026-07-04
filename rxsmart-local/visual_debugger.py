@@ -110,10 +110,11 @@ class AdvancedVisualDebugger:
     PANEL_W: int = config.DEBUG_PANEL_WIDTH
     PAD: int = 14
 
-    def __init__(self) -> None:
-        self._show_panel: bool = True
-        self._panel_alpha: float = 1.0
-        self._target_panel_alpha: float = 1.0
+    def __init__(self, embed_mode: bool = False) -> None:
+        self._embed_mode = embed_mode
+        self._show_panel: bool = not embed_mode
+        self._panel_alpha: float = 0.0 if embed_mode else 1.0
+        self._target_panel_alpha: float = 0.0 if embed_mode else 1.0
         self._mode_flash: float = 0.0
         self._last_mode: SystemMode = SystemMode.CAMERA_ONLY
         self._no_cam_frame: Optional[np.ndarray] = None
@@ -171,6 +172,8 @@ class AdvancedVisualDebugger:
         return np.hstack([cam_display, blended_panel])
 
     def toggle_panel(self) -> None:
+        if self._embed_mode:
+            return
         self._show_panel = not self._show_panel
         self._target_panel_alpha = 1.0 if self._show_panel else 0.0
 

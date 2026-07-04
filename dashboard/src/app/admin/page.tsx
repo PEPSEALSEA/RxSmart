@@ -7,7 +7,7 @@ import AdminDeviceModal from "@/components/admin/AdminDeviceModal";
 import AdminSensorDebugGrid from "@/components/admin/AdminSensorDebugGrid";
 import SensorReadout from "@/components/SensorReadout";
 import FadeIn from "@/components/ui/FadeIn";
-import { Device, formatLastSeen, getApiUrl, getErrorMessage, isDeviceOnline } from "@/lib/devices";
+import { Device, DevicePlatform, formatLastSeen, getApiUrl, getDevicePlatformLabel, getErrorMessage, inferDevicePlatform, isDeviceOnline } from "@/lib/devices";
 import { FIRMWARE_SENSOR_TO_POSE, isUpperKey, POSE_KEYS, POSE_LABELS, PoseKey } from "@/lib/pose";
 import { REHAB_EXERCISES } from "@/lib/rehab-exercises";
 import {
@@ -79,6 +79,7 @@ type LatestSession = {
 };
 
 type FirmwareInfo = {
+  platform: DevicePlatform;
   latest_version: string;
   bin_url: string;
 };
@@ -281,16 +282,17 @@ export default function AdminPage() {
     }
   }, [apiUrl]);
 
-  const fetchFirmware = useCallback(async () => {
+  const fetchFirmware = useCallback(async (deviceId?: string) => {
     try {
-      const res = await fetch(`${apiUrl}/api/firmware-version`);
+      const platform = inferDevicePlatform(deviceId || activeDeviceId);
+      const res = await fetch(`${apiUrl}/api/firmware-version?platform=${platform}`);
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || "โหลด firmware ไม่สำเร็จ");
       setFirmwareInfo(data as FirmwareInfo);
     } catch {
       setFirmwareInfo(null);
     }
-  }, [apiUrl]);
+  }, [apiUrl, activeDeviceId]);
 
   const refreshAllDebug = useCallback(async (deviceId: string) => {
     if (!deviceId) return;
@@ -329,6 +331,11 @@ export default function AdminPage() {
       clearInterval(interval);
     };
   }, [activeDeviceId, livePoll, refreshAllDebug, fetchDebugTelemetry, fetchPendingCommand]);
+
+  useEffect(() => {
+    if (!activeDeviceId) return;
+    void fetchFirmware(activeDeviceId);
+  }, [activeDeviceId, fetchFirmware]);
 
   const openDevice = (device: Device) => {
     setSelectedDeviceId(device.device_id);
@@ -493,7 +500,7 @@ export default function AdminPage() {
               <p className="text-xs font-medium uppercase tracking-[0.2em] text-neutral-400">RxSmart Admin</p>
               <h1 className="mt-2 text-2xl font-semibold tracking-tight sm:text-3xl">Therapist Debug Console</h1>
               <p className="mt-2 max-w-2xl text-sm text-neutral-500">
-                ดู telemetry v2 ครบ 8 sensor · ส่งคำสั่ง ESP32 · บันทึก debug sample & pose library
+                ดู telemetry v2 ครบ 8 sensor · ส่งคำสั่งไปบอร์ด (ESP32 / Pico 2 W) · บันทึก debug sample & pose library
               </p>
             </div>
             <div className="flex flex-wrap items-center gap-2">
@@ -615,13 +622,14 @@ export default function AdminPage() {
               </div>
             ) : devices.length === 0 ? (
               <p className="rounded-2xl border border-dashed border-neutral-200 bg-white px-6 py-12 text-center text-sm text-neutral-400">
-                ยังไม่มีบอร์ดในระบบ — flash ESP32 แล้วให้ register ผ่าน WiFi captive portal
+                ยังไม่มีบอร์ดในระบบ — flash ESP32 หรือ Pico 2 W แล้วให้ register ผ่าน WiFi captive portal
               </p>
             ) : (
               <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
                 {devices.map((device, index) => {
                   const online = isDeviceOnline(device.last_online, currentTime);
                   const selected = activeDeviceId === device.device_id;
+                  const platform = inferDevicePlatform(device.device_id, device.platform);
                   return (
                     <button
                       key={device.device_id}
@@ -638,7 +646,12 @@ export default function AdminPage() {
                       style={{ animationDelay: `${index * 40}ms` }}
                     >
                       <div className="flex items-start justify-between gap-2">
-                        <p className="break-all font-mono text-xs">{device.device_id}</p>
+                        <div className="min-w-0">
+                          <p className="break-all font-mono text-xs">{device.device_id}</p>
+                          <p className={`mt-1 text-[10px] font-medium ${selected ? "text-neutral-400" : "text-neutral-500"}`}>
+                            {getDevicePlatformLabel(platform)}
+                          </p>
+                        </div>
                         <span
                           className={`shrink-0 text-[10px] font-medium ${
                             selected
@@ -771,7 +784,7 @@ export default function AdminPage() {
         {tab === "commands" && (
           <FadeIn delay={140} className="grid gap-6 lg:grid-cols-2">
             <div className="rounded-2xl border border-neutral-200 bg-white p-5 shadow-sm">
-              <h3 className="text-sm font-semibold">ส่งคำสั่งไป ESP32</h3>
+              <h3 className="text-sm font-semibold">ส่งคำสั่งไปบอร์ด</h3>
               <p className="mt-1 text-xs text-neutral-500">คำสั่งจะเข้าคิวใน Google Sheets — บอร์ด poll จาก cloud</p>
 
               {!activeDeviceId ? (
@@ -1021,6 +1034,10 @@ export default function AdminPage() {
               <h3 className="text-sm font-semibold">Firmware OTA</h3>
               {firmwareInfo ? (
                 <dl className="mt-3 space-y-2 text-xs">
+                  <div className="flex justify-between">
+                    <dt className="text-neutral-400">platform</dt>
+                    <dd className="font-mono">{getDevicePlatformLabel(firmwareInfo.platform)}</dd>
+                  </div>
                   <div className="flex justify-between">
                     <dt className="text-neutral-400">latest_version</dt>
                     <dd className="font-mono">{firmwareInfo.latest_version}</dd>

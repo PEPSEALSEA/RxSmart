@@ -116,7 +116,7 @@ export default function AdminDeviceModal({
         </form>
 
         <div className="mt-6 rounded-xl border border-neutral-200 p-4">
-          <p className="text-xs font-medium uppercase tracking-wider text-neutral-400">Session บน ESP32</p>
+          <p className="text-xs font-medium uppercase tracking-wider text-neutral-400">Session บนบอร์ด</p>
           <div className="mt-3 grid gap-3 sm:grid-cols-2">
             <div>
               <label className="text-xs text-neutral-500">โปรแกรมฝึก (exercise_id)</label>

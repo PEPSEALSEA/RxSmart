@@ -1,0 +1,142 @@
+================================================================================
+  RxSmart — Hardware Wiring Guide (Production Setup)
+  TCA9548A I2C Multiplexer x 1  +  MPU6050 (GY-521) x 8
+  Raspberry Pi Pico 2 W (RP2350, Arduino-Pico core by Earle Philhower)
+================================================================================
+
+--------------------------------------------------------------------------------
+What changed vs. the old ESP32 DevKit V1 wiring
+--------------------------------------------------------------------------------
+
+  Your old ESP32 board only ever needed 4 real signal connections from the
+  MCU itself (the rest — A0/A1/A2/GND/RESET on the TCA9548A — are just GND or
+  3V3 branches, not separate MCU pins):
+
+      ESP32 GPIO21 (SDA)  -> TCA9548A SDA
+      ESP32 GPIO22 (SCL)  -> TCA9548A SCL
+      ESP32 3V3           -> TCA9548A VCC + RESET
+      ESP32 GND           -> TCA9548A GND + A0 + A1 + A2
+
+  The Pico 2 W uses the exact same design (I2C bus -> TCA9548A -> 8x MPU6050),
+  just on different GPIO numbers, because GPIO21/22 don't exist as an I2C bus
+  on the RP2350. Everything else (the TCA9548A and all 8 MPU6050 modules) is
+  wired IDENTICALLY to before — only the 2 wires that plug into the
+  microcontroller board itself change pin numbers.
+
+--------------------------------------------------------------------------------
+Pico 2 W pins used (what your "7 wires" become)
+--------------------------------------------------------------------------------
+
+  ┌──────────────┬──────────┬──────────────────────────────────────────────┐
+  │ Pico 2 W Pin │ Function │ ต่อไปที่ (same as before, just new MCU pin) │
+  ├──────────────┼──────────┼──────────────────────────────────────────────┤
+  │ 3V3(OUT)     │ Power    │ TCA9548A VCC + RESET + MPU6050 VCC (ทุกตัว) │
+  │ GND          │ Ground   │ TCA9548A GND + A0,A1,A2 + MPU6050 GND ทุกตัว│
+  │ GP4          │ SDA (I2C0)│ TCA9548A SDA (I2C master data)              │
+  │ GP5          │ SCL (I2C0)│ TCA9548A SCL (I2C master clock)             │
+  │ GP16         │ Mode btn │ NEW: external push-button (other leg -> GND) │
+  └──────────────┴──────────┴──────────────────────────────────────────────┘
+
+  ⚠ GP4/GP5 are the DEFAULT I2C0 (Wire) pins on Arduino-Pico. No pin renumber
+    needed in software beyond what's already set in Pico2W.ino.
+  ⚠ GP6/GP7 (I2C1 / Wire1) are wired in firmware as an automatic FALLBACK bus
+    — if the TCA9548A isn't detected on GP4/GP5, the firmware retries on
+    GP6/GP7. You do not need to wire these unless GP4/GP5 fails.
+  ⚠ The Pico 2 W has NO built-in "BOOT" button exposed as a normal GPIO like
+    the ESP32 DevKit's GPIO0. To keep the same "hold button to reset WiFi"
+    feature, wire a simple momentary push-button between GP16 and GND
+    (internal pull-up is enabled in firmware, so no external resistor needed).
+    This is optional — if you skip it, you can still clear WiFi remotely via
+    the CLEAR_WIFI/SET_WIFI dashboard command.
+
+--------------------------------------------------------------------------------
+TCA9548A -- wiring (UNCHANGED from the ESP32 setup)
+--------------------------------------------------------------------------------
+
+  ┌──────────┬──────────────────────────────────────────────────────────────┐
+  │ ขา TCA  │ ต่อไปที่                                                     │
+  ├──────────┼──────────────────────────────────────────────────────────────┤
+  │ VCC      │ Pico 2 W 3V3(OUT)                                            │
+  │ GND      │ Pico 2 W GND                                                 │
+  │ SDA      │ Pico 2 W GP4  (I2C0 master bus)                             │
+  │ SCL      │ Pico 2 W GP5  (I2C0 master bus)                             │
+  │ RESET    │ 3V3  (active LOW — ต้องดึงสูงเพื่อ enable)                  │
+  │ A0       │ GND  ┐                                                       │
+  │ A1       │ GND  ├─ กำหนด I2C address = 0x70                           │
+  │ A2       │ GND  ┘                                                       │
+  │ SD0/SC0  │ MPU6050 #0  (left_upper_arm)   SDA/SCL                      │
+  │ SD1/SC1  │ MPU6050 #1  (right_upper_arm)  SDA/SCL                      │
+  │ SD2/SC2  │ MPU6050 #2  (left_forearm)     SDA/SCL                      │
+  │ SD3/SC3  │ MPU6050 #3  (right_forearm)    SDA/SCL                      │
+  │ SD4/SC4  │ MPU6050 #4  (left_thigh)       SDA/SCL                      │
+  │ SD5/SC5  │ MPU6050 #5  (right_thigh)      SDA/SCL                      │
+  │ SD6/SC6  │ MPU6050 #6  (left_shin)        SDA/SCL                      │
+  │ SD7/SC7  │ MPU6050 #7  (right_shin)       SDA/SCL                      │
+  └──────────┴──────────────────────────────────────────────────────────────┘
+
+--------------------------------------------------------------------------------
+MPU6050 (GY-521) -- wiring (UNCHANGED, identical for all 8 units)
+--------------------------------------------------------------------------------
+
+  VCC  -> 3.3V (from Pico 2 W 3V3(OUT), shared rail)
+  GND  -> GND (shared rail)
+  SDA  -> TCA9548A SDx (channel matching the body position)
+  SCL  -> TCA9548A SCx (channel matching the body position)
+  AD0  -> GND   (I2C address = 0x68 for all — separated by TCA channel)
+  INT, XDA, XCL -> not connected
+
+--------------------------------------------------------------------------------
+Firmware Channel Map (sensor key -> TCA channel) -- UNCHANGED
+--------------------------------------------------------------------------------
+
+  CH0 = left_upper_arm   (ต้นแขนซ้าย)
+  CH1 = right_upper_arm  (ต้นแขนขวา)
+  CH2 = left_forearm     (แขนท่อนล่างซ้าย)
+  CH3 = right_forearm    (แขนท่อนล่างขวา)
+  CH4 = left_thigh       (ต้นขาซ้าย)
+  CH5 = right_thigh      (ต้นขาขวา)
+  CH6 = left_shin        (หน้าแข้งซ้าย)
+  CH7 = right_shin       (หน้าแข้งขวา)
+
+  I2C Addresses:
+    TCA9548A    = 0x70
+    MPU6050 x8  = 0x68  (all — separated by TCA channel)
+
+--------------------------------------------------------------------------------
+Pull-up Resistors
+--------------------------------------------------------------------------------
+
+  - GY-521 boards already have 4.7k pull-ups on SDA/SCL — sufficient for the
+    TCA9548A <-> MPU6050 side.
+  - Pico 2 W <-> TCA9548A: the RP2350 has weak internal pull-ups, but for a
+    reliable bus with a mux + 8 downstream devices, add external 4.7k
+    pull-ups from GP4 -> 3V3 and GP5 -> 3V3 (same recommendation as before).
+
+--------------------------------------------------------------------------------
+Software/Library differences you should know about (Pico 2 W vs ESP32)
+--------------------------------------------------------------------------------
+
+  - Board package: install "Raspberry Pi Pico/RP2040/RP2350" by Earle F.
+    Philhower, III via Boards Manager, then select "Raspberry Pi Pico 2 W".
+  - WiFi credentials are now stored in LittleFS (/wifi.json) instead of the
+    ESP32 Preferences/NVS API — no action needed, it's automatic.
+  - Reboot uses rp2040.restart() instead of ESP.restart().
+  - No onboard BOOT-style button GPIO — wire your own to GP16 (see above).
+
+--------------------------------------------------------------------------------
+Serial Debug — example output you should see
+--------------------------------------------------------------------------------
+
+  TCA9548A ready on SDA=GP4 SCL=GP5 -> 8/8 MPU6050 found
+    CH0 [left_upper_arm  ]: OK
+    CH1 [right_upper_arm ]: OK
+    CH2 [left_forearm    ]: OK
+    CH3 [right_forearm   ]: OK
+    CH4 [left_thigh      ]: OK
+    CH5 [right_thigh     ]: OK
+    CH6 [left_shin       ]: OK
+    CH7 [right_shin      ]: OK
+
+  If you see MISS -> check: wrong wiring, AD0 not tied to GND, VCC not
+  reaching the sensor.
+================================================================================
