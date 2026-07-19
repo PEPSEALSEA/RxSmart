@@ -205,7 +205,9 @@ class CameraPoseEngine:
             self.start()
 
     @staticmethod
-    def _open_capture(camera_index: int) -> cv2.VideoCapture:
+    def _open_capture(camera_index: int) -> Optional[cv2.VideoCapture]:
+        if camera_index < 0:
+            return None
         if sys.platform == "win32":
             return cv2.VideoCapture(camera_index, cv2.CAP_DSHOW)
         return cv2.VideoCapture(camera_index)
@@ -254,10 +256,28 @@ class CameraPoseEngine:
             self._status = ConnectionStatus.ERROR
             return
 
+        if self._camera_index < 0:
+            self._status = ConnectionStatus.DISCONNECTED
+            print("[CameraPoseEngine] No camera selected (index=-1)")
+            while self._running:
+                time.sleep(0.25)
+                if self._camera_index >= 0:
+                    break
+            if not self._running:
+                return
+
         self._cap = self._open_capture(self._camera_index)
-        if not self._cap.isOpened():
-            self._status = ConnectionStatus.ERROR
-            return
+        if self._cap is None or not self._cap.isOpened():
+            self._status = ConnectionStatus.DISCONNECTED if self._camera_index < 0 else ConnectionStatus.ERROR
+            if self._camera_index < 0:
+                while self._running and self._camera_index < 0:
+                    time.sleep(0.25)
+                if not self._running:
+                    return
+                self._cap = self._open_capture(self._camera_index)
+            if self._cap is None or not self._cap.isOpened():
+                self._status = ConnectionStatus.ERROR
+                return
 
         self._cap.set(cv2.CAP_PROP_FRAME_WIDTH, config.CAMERA_WIDTH)
         self._cap.set(cv2.CAP_PROP_FRAME_HEIGHT, config.CAMERA_HEIGHT)
@@ -268,15 +288,38 @@ class CameraPoseEngine:
         self._video_ts_ms = 0
 
         while self._running:
+            if self._camera_index < 0:
+                self._status = ConnectionStatus.DISCONNECTED
+                if self._cap is not None:
+                    try:
+                        self._cap.release()
+                    except Exception:
+                        pass
+                    self._cap = None
+                with self._lock:
+                    self._latest_joint_data = None
+                    self._latest_annotated_frame = None
+                time.sleep(0.25)
+                continue
+
             t_frame_start = time.perf_counter()
+
+            if self._cap is None or not self._cap.isOpened():
+                self._cap = self._open_capture(self._camera_index)
+                if self._cap is None or not self._cap.isOpened():
+                    self._status = ConnectionStatus.ERROR
+                    time.sleep(0.5)
+                    continue
+                self._status = ConnectionStatus.CONNECTED
 
             ret, frame = self._cap.read()
             if not ret or frame is None:
                 self._status = ConnectionStatus.DISCONNECTED
                 time.sleep(0.15)
-                self._cap.release()
+                if self._cap is not None:
+                    self._cap.release()
                 self._cap = self._open_capture(self._camera_index)
-                if self._cap.isOpened():
+                if self._cap is not None and self._cap.isOpened():
                     self._status = ConnectionStatus.CONNECTED
                 continue
 

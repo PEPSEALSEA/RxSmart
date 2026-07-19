@@ -81,14 +81,51 @@ class RxSmartTkApp:
         left = tk.Frame(main, bg="#fafafa")
         left.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
 
-        self._video_label = tk.Label(left, bg="#171717", text="Starting camera…")
+        self._video_label = tk.Label(left, bg="#171717", text="No camera (select one or use IMU)")
         self._video_label.pack(fill=tk.BOTH, expand=True)
 
-        right = tk.Frame(main, bg="#fafafa", width=config.DEBUG_PANEL_WIDTH)
-        right.pack(side=tk.RIGHT, fill=tk.Y, padx=(10, 0))
-        right.pack_propagate(False)
-        self._right_panel = right
+        outer = tk.Frame(main, bg="#fafafa", width=config.DEBUG_PANEL_WIDTH)
+        outer.pack(side=tk.RIGHT, fill=tk.Y, padx=(10, 0))
+        outer.pack_propagate(False)
+        self._right_panel = outer
         self._panel_visible = True
+
+        scroll_bar = ttk.Scrollbar(outer, orient=tk.VERTICAL)
+        scroll_bar.pack(side=tk.RIGHT, fill=tk.Y)
+
+        canvas = tk.Canvas(
+            outer,
+            bg="#fafafa",
+            highlightthickness=0,
+            yscrollcommand=scroll_bar.set,
+            width=config.DEBUG_PANEL_WIDTH - 18,
+        )
+        canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        scroll_bar.configure(command=canvas.yview)
+
+        right = tk.Frame(canvas, bg="#fafafa")
+        self._right_inner = right
+        inner_window = canvas.create_window((0, 0), window=right, anchor=tk.NW)
+
+        def _sync_scroll(_event=None) -> None:
+            canvas.configure(scrollregion=canvas.bbox("all"))
+            canvas.itemconfigure(inner_window, width=canvas.winfo_width())
+
+        right.bind("<Configure>", _sync_scroll)
+        canvas.bind("<Configure>", _sync_scroll)
+
+        def _on_mousewheel(event: tk.Event) -> None:
+            delta = -1 if event.delta > 0 else 1
+            if getattr(event, "num", None) == 4:
+                delta = -1
+            elif getattr(event, "num", None) == 5:
+                delta = 1
+            canvas.yview_scroll(delta, "units")
+
+        canvas.bind_all("<MouseWheel>", _on_mousewheel)
+        canvas.bind_all("<Button-4>", _on_mousewheel)
+        canvas.bind_all("<Button-5>", _on_mousewheel)
+        self._panel_canvas = canvas
 
         tk.Label(
             right,
@@ -106,33 +143,20 @@ class RxSmartTkApp:
             anchor=tk.W
         )
 
-        if len(self._cameras) <= 1:
-            single = self._cameras[0][1] if self._cameras else "No camera detected"
-            self._cam_status = tk.Label(
-                cam_row,
-                text=single,
-                bg="#fafafa",
-                fg="#171717",
-                font=("Segoe UI", 10),
-            )
-            self._cam_status.pack(anchor=tk.W, pady=4)
-            self._cam_var = tk.StringVar()
-            self._cam_combo = None
-        else:
-            values = [label for _, label in self._cameras]
-            self._cam_var = tk.StringVar()
-            self._cam_combo = ttk.Combobox(
-                cam_row,
-                textvariable=self._cam_var,
-                values=values,
-                state="readonly",
-                width=28,
-            )
-            self._cam_combo.pack(fill=tk.X, pady=4)
-            self._cam_combo.bind("<<ComboboxSelected>>", lambda _e: self._apply_camera())
-            self._set_combo_to_index(default_camera)
-            self._set_combo_to_index(default_camera)
-            self._cam_status = None
+        self._none_camera_label = "None (no camera)"
+        cam_values = [self._none_camera_label] + [label for _, label in self._cameras]
+        self._cam_var = tk.StringVar()
+        self._cam_combo = ttk.Combobox(
+            cam_row,
+            textvariable=self._cam_var,
+            values=cam_values,
+            state="readonly",
+            width=28,
+        )
+        self._cam_combo.pack(fill=tk.X, pady=4)
+        self._cam_combo.bind("<<ComboboxSelected>>", lambda _e: self._apply_camera())
+        self._set_combo_to_index(default_camera)
+        self._cam_status = None
 
         port_row = tk.Frame(right, bg="#fafafa")
         port_row.pack(fill=tk.X, pady=(0, 10))
@@ -228,7 +252,7 @@ class RxSmartTkApp:
             bg="#fafafa",
             fg="#171717",
             font=("Consolas", 9),
-            wraplength=config.DEBUG_PANEL_WIDTH - 20,
+            wraplength=config.DEBUG_PANEL_WIDTH - 28,
         ).pack(anchor=tk.W, pady=(0, 8))
 
         angles_box = tk.Frame(right, bg="#ffffff", highlightbackground="#e5e5e5", highlightthickness=1)
@@ -284,7 +308,7 @@ class RxSmartTkApp:
         ).pack(fill=tk.X, padx=10, pady=(0, 4))
 
         self._ch_var = tk.StringVar(value="")
-        self._ch_label = tk.Label(
+        tk.Label(
             angles_box,
             textvariable=self._ch_var,
             justify=tk.LEFT,
@@ -292,8 +316,7 @@ class RxSmartTkApp:
             fg="#525252",
             font=("Consolas", 8),
             anchor=tk.W,
-        )
-        self._ch_label.pack(fill=tk.X, padx=10, pady=(0, 8))
+        ).pack(fill=tk.X, padx=10, pady=(0, 8))
 
         self._log_text = tk.Text(
             right,
@@ -305,11 +328,11 @@ class RxSmartTkApp:
             borderwidth=1,
             wrap=tk.WORD,
         )
-        self._log_text.pack(fill=tk.BOTH, expand=True, pady=(0, 8))
+        self._log_text.pack(fill=tk.X, expand=False, pady=(0, 8))
         self._log_text.configure(state=tk.DISABLED)
 
         actions = tk.Frame(right, bg="#fafafa")
-        actions.pack(fill=tk.X)
+        actions.pack(fill=tk.X, pady=(0, 12))
 
         tk.Button(
             actions,
@@ -337,12 +360,14 @@ class RxSmartTkApp:
         self._refresh_mode_buttons(self._manager.mode)
 
     def _set_combo_to_index(self, index: int) -> None:
+        if index < 0:
+            self._cam_var.set(self._none_camera_label)
+            return
         for idx, label in self._cameras:
             if idx == index:
                 self._cam_var.set(label)
                 return
-        if self._cameras:
-            self._cam_var.set(self._cameras[0][1])
+        self._cam_var.set(self._none_camera_label)
 
     def _populate_serial_ports(self, selected_port: str) -> None:
         if not self._serial_ports:
@@ -383,18 +408,21 @@ class RxSmartTkApp:
 
     def _selected_camera_index(self) -> Optional[int]:
         label = self._cam_var.get()
+        if label == getattr(self, "_none_camera_label", "None (no camera)") or not label:
+            return -1
         for idx, cam_label in self._cameras:
             if cam_label == label:
                 return idx
-        return None
+        return -1
 
     def _apply_camera(self) -> None:
         idx = self._selected_camera_index()
         if idx is None:
-            self._manager.stats.add_log("No camera selected")
-            return
+            idx = -1
         self._camera.switch_camera(idx)
-        self._manager.stats.add_log(f"Camera switched → index {idx}")
+        self._manager.stats.add_log(
+            "Camera off" if idx < 0 else f"Camera switched -> index {idx}"
+        )
 
     def _set_mode(self, mode: SystemMode) -> None:
         self._manager.set_mode(mode)
@@ -423,6 +451,12 @@ class RxSmartTkApp:
         if not self._running:
             return
         self._running = False
+        try:
+            self._panel_canvas.unbind_all("<MouseWheel>")
+            self._panel_canvas.unbind_all("<Button-4>")
+            self._panel_canvas.unbind_all("<Button-5>")
+        except Exception:
+            pass
         self._on_close()
         self.root.destroy()
 

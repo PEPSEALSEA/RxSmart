@@ -6,7 +6,7 @@
 # ---------------------------------------------------------------------------
 # Camera
 # ---------------------------------------------------------------------------
-CAMERA_INDEX: int = 0           # 0 = default webcam; try 1, 2 … if multiple cameras
+CAMERA_INDEX: int = -1          # -1 = no camera (IMU-only friendly); 0,1,2… = webcam index
 CAMERA_WIDTH: int = 1280        # requested resolution (camera may fall back to lower)
 CAMERA_HEIGHT: int = 720
 CAMERA_TARGET_FPS: int = 30

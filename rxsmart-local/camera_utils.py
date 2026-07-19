@@ -54,9 +54,11 @@ def detect_cameras(max_probe: int = 8) -> List[Tuple[int, str]]:
 
 def pick_default_index(
     cameras: List[Tuple[int, str]],
-    preferred: int = 0,
+    preferred: int = -1,
 ) -> int:
-    """Use preferred index if available; else first detected; else 0."""
+    """Use preferred index if available; -1 means no camera."""
+    if preferred < 0:
+        return -1
     indices = [idx for idx, _ in cameras]
     if preferred in indices:
         return preferred
@@ -64,4 +66,4 @@ def pick_default_index(
         return indices[0]
     if indices:
         return indices[0]
-    return preferred
+    return -1

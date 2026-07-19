@@ -48,7 +48,7 @@ _DBG_ANGLES_RE = re.compile(
 )
 
 _DBG_CH_RE = re.compile(
-    r"CH(\d+)\s+\[(\S+)\s*\]\s+"
+    r"CH(\d+)\s+\[([^\]]+)\]\s+"
     r"raw=([\d.]+)\s+"
     r"cal=([\d.]+)\s+"
     r"(\S+)"
@@ -224,17 +224,19 @@ class IoTReceiver:
             print(f"[IoTReceiver] Auto-repick ({reason}): no other board port - staying on {current}")
 
     def _open_serial(self, serial_mod, port: str):
-        """Open COM without hard-resetting the MCU via DTR when possible."""
+        """Open COM. Pico USB CDC needs DTR asserted (like Arduino Serial Monitor)."""
         ser = serial_mod.Serial()
         ser.port = port
         ser.baudrate = config.SERIAL_BAUDRATE
         ser.timeout = config.SERIAL_TIMEOUT
+        ser.open()
+        # Assert DTR/RTS so Pico CDC streams (Serial Monitor does this).
         try:
-            ser.dtr = False
-            ser.rts = False
+            ser.dtr = True
+            ser.rts = True
         except Exception:
             pass
-        ser.open()
+        time.sleep(0.15)
         try:
             ser.reset_input_buffer()
         except Exception:
@@ -251,6 +253,7 @@ class IoTReceiver:
 
         ser = None
         no_packet_grace_s = max(8.0, config.IOT_WATCHDOG_TIMEOUT_S * 2)
+        raw_log_left = 12
         while self._running:
             if self._take_serial_reconnect() and ser is not None:
                 try:
@@ -260,6 +263,7 @@ class IoTReceiver:
                 ser = None
                 self._status = ConnectionStatus.DISCONNECTED
                 self._dbg_block = None
+                raw_log_left = 12
 
             # --- Establish / re-establish connection ---
             if ser is None or not ser.is_open:
@@ -270,10 +274,11 @@ class IoTReceiver:
                     self._serial_opened_at = time.time()
                     self._open_fail_streak = 0
                     self._dbg_block = None
+                    raw_log_left = 12
                     print(f"[IoTReceiver] Serial connected on {port}")
                 except Exception as exc:
                     self._open_fail_streak += 1
-                    print(f"[IoTReceiver] Serial open failed ({port}): {exc}. Retrying in 2 s…")
+                    print(f"[IoTReceiver] Serial open failed ({port}): {exc}. Retrying in 2 s...")
                     self._status = ConnectionStatus.ERROR
                     if self._open_fail_streak >= 3:
                         self._try_auto_repick_port("open_failed")
@@ -281,7 +286,7 @@ class IoTReceiver:
                     time.sleep(2.0)
                     continue
 
-            # Opened but never got a valid [DBG] block → wrong COM or firmware silent
+            # Opened but never got a valid [DBG] block -> wrong COM or firmware silent
             if (
                 self._last_received_ts == 0
                 and self._serial_opened_at > 0
@@ -289,7 +294,7 @@ class IoTReceiver:
             ):
                 print(
                     f"[IoTReceiver] No [DBG] telemetry on {self._current_serial_port()} "
-                    f"for {no_packet_grace_s:.0f}s — reconnecting…"
+                    f"for {no_packet_grace_s:.0f}s - reconnecting..."
                 )
                 try:
                     ser.close()
@@ -312,6 +317,10 @@ class IoTReceiver:
                     continue
 
                 line = raw_bytes.decode("utf-8", errors="replace").strip()
+                if raw_log_left > 0 and self._last_received_ts == 0 and line:
+                    print(f"[IoTReceiver] serial: {line[:160]}")
+                    raw_log_left -= 1
+
                 jd = self._parse_serial_line(line)
                 if jd is not None:
                     self._record_packet()
@@ -320,7 +329,7 @@ class IoTReceiver:
                         self._latest = jd
 
             except Exception as exc:
-                print(f"[IoTReceiver] Serial read error: {exc}. Reconnecting…")
+                print(f"[IoTReceiver] Serial read error: {exc}. Reconnecting...")
                 self._status = ConnectionStatus.ERROR
                 try:
                     ser.close()
@@ -372,32 +381,34 @@ class IoTReceiver:
         if angles_m:
             self._dbg_block["elbow_l"], self._dbg_block["elbow_r"], \
                 self._dbg_block["knee_l"], self._dbg_block["knee_r"] = angles_m.groups()
-            return None
+            # Publish angles immediately so UI updates even if CH lines are delayed.
+            return self._joint_from_dbg_block(clear=False)
 
         ch_m = _DBG_CH_RE.search(line)
         if ch_m:
             ch_idx, key, raw, cal, status = ch_m.groups()
             self._dbg_block["channels"][int(ch_idx)] = {
                 "channel": int(ch_idx),
-                "key": key,
+                "key": key.strip(),
                 "raw": float(raw),
                 "calibrated": float(cal),
                 "status": status,
             }
             if len(self._dbg_block["channels"]) >= 8:
-                return self._finalize_dbg_block()
+                return self._joint_from_dbg_block(clear=True)
             return None
 
         return None
 
-    def _finalize_dbg_block(self) -> Optional[JointData]:
+    def _joint_from_dbg_block(self, *, clear: bool) -> Optional[JointData]:
         block = self._dbg_block
-        self._dbg_block = None
         if not block:
             return None
+        if clear:
+            self._dbg_block = None
 
         channels = block.get("channels", {})
-        sensor_list = [channels[i] for i in sorted(channels.keys())]
+        sensor_list = [channels[i] for i in sorted(channels.keys())] if channels else []
 
         calibrated = int(block.get("cal", 0)) == 1
         elbow_l = float(block.get("elbow_l", 0))
@@ -424,7 +435,7 @@ class IoTReceiver:
                     "knee_right": knee_r,
                 },
             },
-            sensor_channels=sensor_list,
+            sensor_channels=sensor_list or None,
             posture_state="correct" if block.get("posture") == "ok" else "incorrect",
             posture_fault_mask=0,
             rep_count=int(block.get("rep_count", 0)),
@@ -434,6 +445,9 @@ class IoTReceiver:
             alert_level=block.get("alert_level", "none"),
             alert_code=int(block.get("alert_code", 0)),
         )
+
+    def _finalize_dbg_block(self) -> Optional[JointData]:
+        return self._joint_from_dbg_block(clear=True)
 
     # ------------------------------------------------------------------
     # HTTP transport

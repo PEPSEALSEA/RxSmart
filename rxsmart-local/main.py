@@ -34,10 +34,12 @@ def main() -> None:
     print("[main] Detecting cameras…")
     cameras = detect_cameras()
     default_idx = pick_default_index(cameras, config.CAMERA_INDEX)
-    if cameras:
+    if default_idx < 0:
+        print("[main] Camera: None (IMU-only until you pick a webcam)")
+    elif cameras:
         print(f"[main] Found {len(cameras)} camera(s), using index {default_idx}")
     else:
-        print("[main] No camera detected — you can retry from the dropdown after connecting one")
+        print("[main] No camera detected — you can pick one from the dropdown later")
 
     serial_ports = list_serial_ports()
     if config.SERIAL_PORT == "auto":
