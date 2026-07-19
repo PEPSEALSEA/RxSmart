@@ -54,11 +54,11 @@ export const CALIBRATION_STEP_LABELS: Record<string, string> = {
 
 /** What the wizard is collecting / when it writes disk for each guided step. */
 export const CALIBRATION_STEP_SAVE_HINTS: Record<string, string> = {
-  neutral: "กำลังเก็บตัวอย่างท่านิ่งในหน่วยความจำ — ยังไม่เขียนไฟล์",
-  move_forearms: "กำลังเก็บ top 2 CH ที่ขยับตอนงอศอก (Δ≥10°) — ยังไม่เขียนไฟล์",
-  move_shoulders: "กำลังเก็บ top 2 CH ที่ขยับตอนยกไหล่ — ยังไม่เขียนไฟล์",
-  move_shins: "กำลังเก็บ top 2 CH ที่ขยับตอนงอเข่า — ยังไม่เขียนไฟล์",
-  move_thighs: "หลังกดถัดไปจะเขียน channel_map ลง sensor_map.json",
+  neutral: "ยืนนิ่ง — ค่านี้จะเป็น baseline ให้ขั้นถัดไปทั้งหมด (ยังไม่เขียนไฟล์)",
+  move_forearms: "เทียบ baseline ขั้น 1 · ล็อก top 2 CH ที่ขยับ (Δ≥10°) ตอนกดถัดไป",
+  move_shoulders: "ตัด CH ที่ล็อกจากขั้น 2 ออก · เลือก top 2 จากที่เหลือ",
+  move_shins: "ตัด CH ที่ล็อกแล้วออก · เลือก top 2 จากที่เหลือ",
+  move_thighs: "ตัด CH จากขั้น 4 ออก · ล็อกที่เหลือ แล้วเขียน channel_map",
   arms_down: "กำลังเก็บมุม baseline แขนห้อย — ยังไม่เขียน pose_defaults",
   arms_up_down: "หลังกดถัดไปจะเขียน pose_defaults (standing) ลง sensor_map.json",
 };

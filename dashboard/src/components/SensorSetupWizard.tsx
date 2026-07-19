@@ -36,6 +36,29 @@ const GUIDED_ORDER = [
   "arms_up_down",
 ] as const;
 
+type GuidedStep = (typeof GUIDED_ORDER)[number];
+
+/** Steps that claim top-2 free channels when advancing. */
+const LOCK_ON_ADVANCE = new Set<string>([
+  "move_forearms",
+  "move_shoulders",
+  "move_shins",
+  "move_thighs",
+]);
+
+const LOCK_LABELS: Record<string, string> = {
+  move_forearms: "ปลายแขน / ศอก",
+  move_shoulders: "ต้นแขน / ไหล่",
+  move_shins: "ปลายขา / เข่า",
+  move_thighs: "ต้นขา",
+};
+
+const ACTIVE_DELTA_DEG = 10;
+const BAR_FULL_SCALE_DEG = 20;
+const TOP_N = 2;
+
+type LockedInfo = { step: string; label: string };
+
 function degreesFromSources(
   sensors: SensorChannelReading[] | null | undefined,
   channelDegrees: number[] | null | undefined,
@@ -55,94 +78,87 @@ function degreesFromSources(
   return out;
 }
 
-/** Real motion for forearm/leg steps is ~10–20°; ignore smaller jitter. */
-const ACTIVE_DELTA_DEG = 10;
-/** Bar fills fully around a solid bilateral move (~20°). */
-const BAR_FULL_SCALE_DEG = 20;
-/** Bilateral steps (ทั้งสองข้าง) ไฮไลต์ top-2 */
-const TOP_N = 2;
+function pickTopFree(
+  peakDeltas: number[],
+  locked: Record<number, LockedInfo>,
+  topN = TOP_N,
+): number[] {
+  return peakDeltas
+    .map((d, i) => ({ i, d }))
+    .filter((r) => !locked[r.i] && r.d >= ACTIVE_DELTA_DEG)
+    .sort((a, b) => b.d - a.d)
+    .slice(0, topN)
+    .map((r) => r.i);
+}
 
 function ChannelActivityBars({
   degrees,
   baseline,
   map,
-  topN = TOP_N,
+  locked,
+  peakDeltas,
+  topCandidates,
 }: {
   degrees: number[];
   baseline: number[] | null;
   map: ChannelMap;
-  topN?: number;
+  locked: Record<number, LockedInfo>;
+  peakDeltas: number[];
+  topCandidates: number[];
 }) {
-  const [peakDeltas, setPeakDeltas] = useState(() => Array.from({ length: 8 }, () => 0));
-  const baselineKey = baseline?.join(",") ?? "none";
-
-  useEffect(() => {
-    setPeakDeltas(Array.from({ length: 8 }, () => 0));
-  }, [baselineKey]);
-
-  useEffect(() => {
-    const instant = degrees.map((d, i) => Math.abs(d - (baseline?.[i] ?? d)));
-    setPeakDeltas((prev) =>
-      prev.map((peak, i) => {
-        const now = instant[i] ?? 0;
-        // Hold peaks; decay slowly so small jitter doesn't refill the bar
-        if (now >= peak) return now;
-        return Math.max(0, peak - 0.8);
-      }),
-    );
-  }, [degrees, baseline]);
-
-  const ranked = [...peakDeltas]
-    .map((d, i) => ({ i, d }))
-    .sort((a, b) => b.d - a.d);
-  const topSet = new Set(
-    ranked
-      .filter((r) => r.d >= ACTIVE_DELTA_DEG)
-      .slice(0, topN)
-      .map((r) => r.i),
-  );
+  const topSet = new Set(topCandidates);
 
   return (
     <div className="space-y-2">
       <p className="cohere-mono-label text-[10px]">
-        Live CH0–CH7 · ไฮไลต์ top {topN} ที่ Δ≥{ACTIVE_DELTA_DEG}° (ขยับจริง ~{ACTIVE_DELTA_DEG}–
-        {BAR_FULL_SCALE_DEG}°)
+        Live CH0–CH7 · top {TOP_N} จากช่องที่ยังไม่ล็อก (Δ≥{ACTIVE_DELTA_DEG}°) · ล็อกแล้ว =
+        ใช้ไปแล้ว
       </p>
       {degrees.map((deg, ch) => {
+        const lock = locked[ch];
         const delta = peakDeltas[ch] ?? 0;
-        const isTop = topSet.has(ch);
-        const active = delta >= ACTIVE_DELTA_DEG;
-        const width = Math.min(100, (delta / BAR_FULL_SCALE_DEG) * 100);
+        const isTop = !lock && topSet.has(ch);
+        const active = !lock && delta >= ACTIVE_DELTA_DEG;
+        const width = lock ? 0 : Math.min(100, (delta / BAR_FULL_SCALE_DEG) * 100);
         const label = POSE_LABELS[map[ch]] ?? map[ch] ?? "—";
+
         return (
           <div
             key={ch}
-            className={`rounded-cohere-sm border px-3 py-2 ${
-              isTop
-                ? "border-cohere-primary bg-cohere-pale-green"
-                : active
-                  ? "border-cohere-hairline bg-cohere-primary/5"
-                  : "border-cohere-hairline bg-white"
+            className={`rounded-cohere-sm border px-3 py-2.5 ${
+              lock
+                ? "border-neutral-300 bg-neutral-200/90 opacity-90"
+                : isTop
+                  ? "border-cohere-primary bg-cohere-pale-green"
+                  : active
+                    ? "border-cohere-hairline bg-cohere-primary/5"
+                    : "border-cohere-hairline bg-white"
             }`}
           >
             <div className="flex items-center justify-between gap-2 text-xs">
-              <span className="font-mono-label text-cohere-ink">
+              <span className={`font-mono-label ${lock ? "text-neutral-500" : "text-cohere-ink"}`}>
                 CH{ch}
-                {isTop ? " · top mover" : active ? " · กำลังขยับ" : ""}
+                {lock ? " · LOCKED" : isTop ? " · top mover" : active ? " · กำลังขยับ" : ""}
               </span>
-              <span className="text-cohere-body-muted">
-                {deg.toFixed(1)}° · Δ{delta.toFixed(1)}°
+              <span className={lock ? "text-neutral-500" : "text-cohere-body-muted"}>
+                {lock
+                  ? lock.label
+                  : `${deg.toFixed(1)}° · Δ${delta.toFixed(1)}°`}
               </span>
             </div>
-            <p className="mt-0.5 truncate text-[11px] text-cohere-muted">{label}</p>
-            <div className="mt-1.5 h-1.5 overflow-hidden rounded-full bg-neutral-100">
-              <div
-                className={`h-full rounded-full transition-[width] duration-150 ${
-                  isTop ? "bg-cohere-primary" : active ? "bg-neutral-500" : "bg-neutral-300"
-                }`}
-                style={{ width: `${width}%` }}
-              />
-            </div>
+            <p className={`mt-0.5 truncate text-[11px] ${lock ? "text-neutral-500" : "text-cohere-muted"}`}>
+              {lock ? `ล็อกจากขั้น: ${lock.label}` : label}
+            </p>
+            {!lock && (
+              <div className="mt-1.5 h-1.5 overflow-hidden rounded-full bg-neutral-100">
+                <div
+                  className={`h-full rounded-full transition-[width] duration-150 ${
+                    isTop ? "bg-cohere-primary" : active ? "bg-neutral-500" : "bg-neutral-300"
+                  }`}
+                  style={{ width: `${width}%` }}
+                />
+              </div>
+            )}
           </div>
         );
       })}
@@ -163,28 +179,45 @@ export default function SensorSetupWizard({
   const [busy, setBusy] = useState("");
   const [message, setMessage] = useState("");
   const [editMap, setEditMap] = useState<ChannelMap>(() => parseChannelMap(mapping?.channel_map));
-  const [baseline, setBaseline] = useState<number[] | null>(null);
-  const stepEnteredAt = useRef(0);
+  /** Baseline from step 1 (neutral) — all later steps compare against this. */
+  const [neutralBaseline, setNeutralBaseline] = useState<number[] | null>(null);
+  const [locked, setLocked] = useState<Record<number, LockedInfo>>({});
+  const [peakDeltas, setPeakDeltas] = useState(() => Array.from({ length: 8 }, () => 0));
+  const peakRef = useRef(peakDeltas);
+  peakRef.current = peakDeltas;
+  const lockedRef = useRef(locked);
+  lockedRef.current = locked;
 
   const degrees = useMemo(
     () => degreesFromSources(sensors, channelDegrees ?? mapping?.channel_degrees),
     [sensors, channelDegrees, mapping?.channel_degrees],
   );
 
-  const step = mapping?.calibration_step && mapping.calibration_step !== "idle"
-    ? mapping.calibration_step
-    : null;
+  const step =
+    mapping?.calibration_step && mapping.calibration_step !== "idle"
+      ? mapping.calibration_step
+      : null;
+  const stepIndex = step ? GUIDED_ORDER.indexOf(step as GuidedStep) : -1;
 
-  const stepIndex = step ? GUIDED_ORDER.indexOf(step as (typeof GUIDED_ORDER)[number]) : -1;
+  const topCandidates = useMemo(
+    () => pickTopFree(peakDeltas, locked),
+    [peakDeltas, locked],
+  );
+
+  const resetWizardLocal = useCallback(() => {
+    setNeutralBaseline(null);
+    setLocked({});
+    setPeakDeltas(Array.from({ length: 8 }, () => 0));
+  }, []);
 
   useEffect(() => {
     if (!open) return;
     setPhase("intro");
     setMessage("");
     setBusy("");
-    setBaseline(null);
+    resetWizardLocal();
     setEditMap(parseChannelMap(mapping?.channel_map));
-  }, [open]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [open, resetWizardLocal]); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
     if (mapping?.channel_map) {
@@ -192,11 +225,31 @@ export default function SensorSetupWizard({
     }
   }, [mapping?.channel_map]);
 
+  // Peak-hold vs neutral baseline; locked channels stay at 0 for ranking
+  useEffect(() => {
+    if (phase !== "guided" && phase !== "review") return;
+    const base = neutralBaseline;
+    if (!base) return;
+
+    const instant = degrees.map((d, i) => Math.abs(d - (base[i] ?? d)));
+    setPeakDeltas((prev) =>
+      prev.map((peak, i) => {
+        if (lockedRef.current[i]) return 0;
+        const now = instant[i] ?? 0;
+        if (now >= peak) return now;
+        return Math.max(0, peak - 0.8);
+      }),
+    );
+  }, [degrees, neutralBaseline, phase, locked]);
+
+  // Reset peaks when entering a new motion step (keep locked; keep neutral baseline)
   useEffect(() => {
     if (phase !== "guided" || !step) return;
-    setBaseline([...degrees]);
-    stepEnteredAt.current = Date.now();
-  }, [phase, step]); // eslint-disable-line react-hooks/exhaustive-deps
+    if (step === "neutral") return;
+    setPeakDeltas((prev) =>
+      prev.map((_, i) => (lockedRef.current[i] ? 0 : 0)),
+    );
+  }, [phase, step]);
 
   const applyMappingResult = useCallback(
     (data: Record<string, unknown>) => {
@@ -213,6 +266,7 @@ export default function SensorSetupWizard({
   const startGuided = async () => {
     setBusy("start");
     setMessage("");
+    resetWizardLocal();
     try {
       const data = await postSensorMappingAction(bridgeUrl, "calibrate_start");
       applyMappingResult(data);
@@ -229,6 +283,46 @@ export default function SensorSetupWizard({
     setBusy("next");
     setMessage("");
     try {
+      const current = step;
+
+      // Step 1 → capture neutral baseline for all later steps
+      if (current === "neutral") {
+        setNeutralBaseline([...degrees]);
+        setPeakDeltas(Array.from({ length: 8 }, () => 0));
+      }
+
+      // Steps 2–5 → lock top-2 free channels before advancing
+      if (current && LOCK_ON_ADVANCE.has(current)) {
+        const free = Array.from({ length: 8 }, (_, i) => i).filter((i) => !lockedRef.current[i]);
+        let picks = pickTopFree(peakRef.current, lockedRef.current);
+
+        // Last mapping step: assign whatever free channels remain (หลังตัดขั้น 4)
+        if (current === "move_thighs" && free.length <= TOP_N) {
+          picks = free;
+        }
+
+        if (picks.length < Math.min(TOP_N, free.length) || picks.length === 0) {
+          setMessage(
+            `ยังไม่พอ — ต้องมีอย่างน้อย ${Math.min(TOP_N, free.length)} ช่องที่ Δ≥${ACTIVE_DELTA_DEG}° จาก ${free.length} ช่องที่ยังไม่ล็อก`,
+          );
+          setBusy("");
+          return;
+        }
+        setLocked((prev) => {
+          const next = { ...prev };
+          for (const ch of picks) {
+            next[ch] = {
+              step: current,
+              label: LOCK_LABELS[current] ?? current,
+            };
+          }
+          return next;
+        });
+        setMessage(
+          `ล็อก CH${picks.join(", CH")} เป็น ${LOCK_LABELS[current] ?? current}`,
+        );
+      }
+
       const data = await postSensorMappingAction(bridgeUrl, "calibrate_next");
       applyMappingResult(data);
       if (data.step === "complete") {
@@ -236,8 +330,14 @@ export default function SensorSetupWizard({
         setMessage("บันทึก channel_map + pose_defaults ลง sensor_map.json แล้ว — ตรวจแมปด้านล่าง");
       } else {
         const label = CALIBRATION_STEP_LABELS[data.step as string] ?? String(data.step);
-        const idx = GUIDED_ORDER.indexOf(data.step as (typeof GUIDED_ORDER)[number]);
-        setMessage(`ขั้น ${idx + 1}/${GUIDED_ORDER.length}: ${label}`);
+        const idx = GUIDED_ORDER.indexOf(data.step as GuidedStep);
+        setMessage((prev) => {
+          const lockNote =
+            current && LOCK_ON_ADVANCE.has(current) && prev.startsWith("ล็อก")
+              ? `${prev} · `
+              : "";
+          return `${lockNote}ขั้น ${idx + 1}/${GUIDED_ORDER.length}: ${label}`;
+        });
       }
     } catch (err) {
       setMessage(err instanceof Error ? err.message : "ขั้นถัดไปไม่สำเร็จ");
@@ -303,318 +403,325 @@ export default function SensorSetupWizard({
   if (!open) return null;
 
   const mapForBars = phase === "review" ? editMap : parseChannelMap(mapping?.channel_map);
+  const lockedCount = Object.keys(locked).length;
+  const freeCount = 8 - lockedCount;
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
-      <button
-        type="button"
-        className="absolute inset-0 bg-black/40"
-        aria-label="ปิด"
-        onClick={onClose}
-      />
-      <div
-        role="dialog"
-        aria-modal="true"
-        aria-labelledby="sensor-setup-title"
-        className="relative z-10 flex max-h-[90vh] w-full max-w-2xl flex-col overflow-hidden rounded-2xl border border-cohere-hairline bg-white shadow-xl"
-      >
-        <header className="flex items-start justify-between gap-3 border-b border-cohere-hairline px-5 py-4">
-          <div>
-            <p className="cohere-mono-label text-[11px]">IMU · Local Python</p>
-            <h2 id="sensor-setup-title" className="mt-1 text-lg text-cohere-ink">
-              Setup Wizard
-            </h2>
-            <p className="mt-1 text-xs text-cohere-muted">
-              บันทึกลงไฟล์ <span className="font-mono-label">rxsmart-local/sensor_map.json</span>{" "}
-              บนเครื่องนี้ — ไม่ผ่าน Cloudflare
+    <div
+      className="fixed inset-0 z-50 flex flex-col bg-white"
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="sensor-setup-title"
+    >
+      <header className="flex shrink-0 items-start justify-between gap-3 border-b border-cohere-hairline px-5 py-4 sm:px-8">
+        <div>
+          <p className="cohere-mono-label text-[11px]">IMU · Local Python · Setup Wizard</p>
+          <h2 id="sensor-setup-title" className="mt-1 text-xl text-cohere-ink">
+            Setup Wizard
+          </h2>
+          <p className="mt-1 text-xs text-cohere-muted">
+            บันทึก <span className="font-mono-label">rxsmart-local/sensor_map.json</span> · ขั้น 2+
+            อิง baseline จากขั้น 1 · CH ที่ล็อกแล้วไม่เลือกซ้ำ
+          </p>
+        </div>
+        <button
+          type="button"
+          onClick={onClose}
+          className="cohere-btn-pill-outline px-3 py-1.5 text-xs"
+        >
+          ปิด
+        </button>
+      </header>
+
+      <div className="min-h-0 flex-1 overflow-y-auto px-5 py-5 sm:px-8">
+        {phase === "intro" && (
+          <div className="mx-auto max-w-2xl space-y-4 text-sm text-cohere-body-muted">
+            <p>
+              จับว่า board CH ไหนคือแขน/ขา โดยดูการขยับ — ขั้น 1 ยืนนิ่งเป็น baseline แล้วขั้นต่อๆ
+              ไปเทียบจากค่านั้น
+            </p>
+            <ul className="list-disc space-y-2 pl-5">
+              <li>ขั้น 2 (งอศอก): เลือก top 2 CH → ล็อก</li>
+              <li>ขั้น 3 (ยกไหล่): เลือก top 2 จาก CH ที่ยังไม่ล็อก</li>
+              <li>ขั้น 4 (งอเข่า): เลือก top 2 จากที่เหลือ</li>
+              <li>ขั้น 5 (ต้นขา): เลือกจากที่เหลือหลังขั้น 4</li>
+            </ul>
+            <p className="rounded-cohere-sm bg-cohere-primary/5 px-3 py-2 text-xs">
+              บล็อกสีเทา = LOCKED ใช้ไปแล้ว ระบบจะไม่เลือกซ้ำ · บันทึกลง sensor_map.json บนเครื่องนี้
             </p>
           </div>
-          <button
-            type="button"
-            onClick={onClose}
-            className="cohere-btn-pill-outline px-3 py-1.5 text-xs"
-          >
-            ปิด
-          </button>
-        </header>
+        )}
 
-        <div className="flex-1 overflow-y-auto px-5 py-4">
-          {phase === "intro" && (
-            <div className="space-y-4 text-sm text-cohere-body-muted">
-              <p>
-                Wizard นี้จับว่า <strong className="font-medium text-cohere-ink">board CH ไหน</strong>{" "}
-                คือแขน/ขาข้อไหน โดยดูว่าตอนคุณขยับ ส่วนไหนของร่างกาย CH ไหนเปลี่ยนมุมมากสุด
+        {phase === "guided" && (
+          <div className="mx-auto grid max-w-5xl gap-6 lg:grid-cols-2">
+            <div className="space-y-3">
+              <p className="cohere-mono-label text-[11px]">
+                ขั้น {Math.max(1, stepIndex + 1)}/{GUIDED_ORDER.length}
+                {lockedCount > 0 ? ` · ล็อกแล้ว ${lockedCount} · เหลือ ${freeCount}` : ""}
               </p>
-              <ul className="list-disc space-y-2 pl-5">
-                <li>
-                  <strong className="font-medium text-cohere-ink">channel_map</strong> — CH0–7 →
-                  ข้อต่อ (แก้เคสยกแขนแล้วขาตาม)
-                </li>
-                <li>
-                  <strong className="font-medium text-cohere-ink">pose_defaults</strong> — มุม
-                  baseline ท่ายืนหลัง setup
-                </li>
-                <li>
-                  <strong className="font-medium text-cohere-ink">pose_profiles</strong> — ท่ายืน/นั่ง
-                  ที่บันทึกทีหลัง
-                </li>
-              </ul>
-              <p className="rounded-cohere-sm bg-cohere-primary/5 px-3 py-2 text-xs">
-                บอร์ดส่งมุมแกนเดียวต่อ CH — ยังแยก “ยกไปข้างหน้า vs ข้างๆ” ใน firmware ไม่ได้
-                (plane ของขาใน 3D ถูกเดาจากท่ายืน/นั่ง)
+              <p className="text-lg text-cohere-ink">
+                {step ? CALIBRATION_STEP_LABELS[step] ?? step : "กำลังเริ่ม…"}
               </p>
               <p className="text-xs text-cohere-muted">
-                ขยับทั้งสองข้างตามคำสั่ง · ดูแถบ CH ว่าตัวไหนกระพริบ · ถ้าแมปผิดแก้ในขั้น Review ได้
+                {step === "neutral"
+                  ? "ยืนนิ่ง — ค่านี้จะเป็น baseline ให้ขั้น 2 เป็นต้นไป"
+                  : neutralBaseline
+                    ? "กำลังเทียบกับ baseline ขั้น 1 (ยืนนิ่ง) · CH ที่ล็อกแล้วถูกตัดออก"
+                    : "รอ baseline จากขั้น 1"}
+              </p>
+              <p className="text-xs text-cohere-muted">
+                {step
+                  ? CALIBRATION_STEP_SAVE_HINTS[step] ?? "กำลังเก็บตัวอย่างในหน่วยความจำ"
+                  : ""}
+              </p>
+              <p className="rounded-cohere-sm border border-dashed border-cohere-hairline px-3 py-2 text-xs text-cohere-body-muted">
+                ขยับทั้งสองข้างให้ Δ ≥ {ACTIVE_DELTA_DEG}° บนช่องที่ยังไม่ล็อก แล้วกดขั้นถัดไป —
+                ระบบจะล็อก top {TOP_N} ของขั้นนี้
+              </p>
+              {lockedCount > 0 && (
+                <div className="rounded-cohere-sm bg-neutral-100 px-3 py-2 text-xs text-neutral-600">
+                  ล็อกแล้ว:{" "}
+                  {Object.entries(locked)
+                    .map(([ch, info]) => `CH${ch} (${info.label})`)
+                    .join(" · ")}
+                </div>
+              )}
+            </div>
+            <ChannelActivityBars
+              degrees={degrees}
+              baseline={neutralBaseline}
+              map={mapForBars}
+              locked={locked}
+              peakDeltas={peakDeltas}
+              topCandidates={topCandidates}
+            />
+          </div>
+        )}
+
+        {phase === "review" && (
+          <div className="mx-auto max-w-5xl space-y-4">
+            <div>
+              <p className="text-sm text-cohere-ink">ตรวจ / แก้แมป CH → ข้อต่อ</p>
+              <p className="mt-1 text-xs text-cohere-muted">
+                ถ้ายกแขนแล้วขาตาม ให้เปลี่ยน dropdown แล้วกดบันทึกแมป
               </p>
             </div>
-          )}
-
-          {phase === "guided" && (
-            <div className="grid gap-5 sm:grid-cols-2">
-              <div className="space-y-3">
-                <p className="cohere-mono-label text-[11px]">
-                  ขั้น {Math.max(1, stepIndex + 1)}/{GUIDED_ORDER.length}
-                </p>
-                <p className="text-base text-cohere-ink">
-                  {step
-                    ? CALIBRATION_STEP_LABELS[step] ?? step
-                    : "กำลังเริ่ม…"}
-                </p>
-                <p className="text-xs text-cohere-muted">
-                  {step
-                    ? CALIBRATION_STEP_SAVE_HINTS[step] ?? "กำลังเก็บตัวอย่างในหน่วยความจำ"
-                    : ""}
-                </p>
-                <p className="rounded-cohere-sm border border-dashed border-cohere-hairline px-3 py-2 text-xs text-cohere-body-muted">
-                  ทำตามคำสั่งประมาณ 3–5 วินาที แล้วกดขั้นถัดไป — ดูขวาว่าระบบเห็น CH ไหนขยับ
-                </p>
-              </div>
-              <ChannelActivityBars degrees={degrees} baseline={baseline} map={mapForBars} />
-            </div>
-          )}
-
-          {phase === "review" && (
-            <div className="space-y-4">
-              <div>
-                <p className="text-sm text-cohere-ink">ตรวจ / แก้แมป CH → ข้อต่อ</p>
-                <p className="mt-1 text-xs text-cohere-muted">
-                  ถ้ายกแขนแล้วขาตาม ให้เปลี่ยน dropdown ให้ถูก แล้วกดบันทึกแมป · หรือลอง Verify
-                  โดยยกแขนซ้ายแล้วดู CH ที่ไฮไลต์
-                </p>
-                <p className="mt-1 text-xs text-cohere-muted">
-                  กดบันทึกจะเขียน <span className="font-mono-label">channel_map</span> ทับใน{" "}
-                  <span className="font-mono-label">sensor_map.json</span>
-                </p>
-              </div>
-
-              <div className="grid gap-5 sm:grid-cols-2">
-                <div className="space-y-2">
-                  {Array.from({ length: 8 }, (_, ch) => (
-                    <label key={ch} className="flex items-center gap-2 text-xs">
-                      <span className="w-10 font-mono-label text-cohere-ink">CH{ch}</span>
-                      <select
-                        className="cohere-input flex-1 py-1.5 text-xs"
-                        value={editMap[ch]}
-                        onChange={(e) =>
-                          setEditMap((prev) => ({
-                            ...prev,
-                            [ch]: e.target.value as PoseKey,
-                          }))
-                        }
-                      >
-                        {POSE_KEYS.map((key) => (
-                          <option key={key} value={key}>
-                            {POSE_LABELS[key]}
-                          </option>
-                        ))}
-                      </select>
-                    </label>
-                  ))}
-                  <div className="flex flex-wrap gap-2 pt-2">
-                    <button
-                      type="button"
-                      disabled={Boolean(busy)}
-                      onClick={() => void saveManualMap()}
-                      className="cohere-btn-primary px-4 py-2 text-xs disabled:opacity-50"
+            <div className="grid gap-6 lg:grid-cols-2">
+              <div className="space-y-2">
+                {Array.from({ length: 8 }, (_, ch) => (
+                  <label key={ch} className="flex items-center gap-2 text-xs">
+                    <span className="w-10 font-mono-label text-cohere-ink">CH{ch}</span>
+                    <select
+                      className="cohere-input flex-1 py-1.5 text-xs"
+                      value={editMap[ch]}
+                      onChange={(e) =>
+                        setEditMap((prev) => ({
+                          ...prev,
+                          [ch]: e.target.value as PoseKey,
+                        }))
+                      }
                     >
-                      {busy === "set" ? "…" : "บันทึกแมป"}
-                    </button>
-                    <button
-                      type="button"
-                      disabled={Boolean(busy)}
-                      onClick={() => void resetDefault()}
-                      className="cohere-btn-pill-outline text-xs disabled:opacity-50"
-                    >
-                      Reset default
-                    </button>
-                  </div>
-                </div>
-                <div>
-                  <p className="mb-2 text-xs text-cohere-muted">
-                    Verify — ยกแขน/ขาทีละข้าง แล้วดู CH ที่ขยับ
-                  </p>
-                  <ChannelActivityBars
-                    degrees={degrees}
-                    baseline={baseline ?? degrees}
-                    map={editMap}
-                  />
+                      {POSE_KEYS.map((key) => (
+                        <option key={key} value={key}>
+                          {POSE_LABELS[key]}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                ))}
+                <div className="flex flex-wrap gap-2 pt-2">
                   <button
                     type="button"
-                    className="cohere-btn-pill-outline mt-2 text-xs"
-                    onClick={() => setBaseline([...degrees])}
+                    disabled={Boolean(busy)}
+                    onClick={() => void saveManualMap()}
+                    className="cohere-btn-primary px-4 py-2 text-xs disabled:opacity-50"
                   >
-                    ตั้ง baseline ใหม่ (ยืนนิ่งแล้วกด)
+                    {busy === "set" ? "…" : "บันทึกแมป"}
+                  </button>
+                  <button
+                    type="button"
+                    disabled={Boolean(busy)}
+                    onClick={() => void resetDefault()}
+                    className="cohere-btn-pill-outline text-xs disabled:opacity-50"
+                  >
+                    Reset default
                   </button>
                 </div>
               </div>
-            </div>
-          )}
-
-          {phase === "poses" && (
-            <div className="space-y-4 text-sm text-cohere-body-muted">
-              <p>
-                บันทึกท่ายืน/นั่งปกติ → เขียน{" "}
-                <span className="font-mono-label text-cohere-ink">pose_profiles</span> ใน{" "}
-                <span className="font-mono-label">sensor_map.json</span>
-              </p>
-              <p className="text-xs">
-                ท่าที่ใช้อยู่:{" "}
-                {mapping?.active_pose
-                  ? POSE_PROFILE_LABELS[mapping.active_pose] ?? mapping.active_pose
-                  : "ยังไม่ตั้ง"}
-              </p>
-              <div className="flex flex-wrap gap-2">
+              <div>
+                <p className="mb-2 text-xs text-cohere-muted">
+                  Verify — เทียบกับ baseline ขั้น 1 (หรือตั้งใหม่)
+                </p>
+                <ChannelActivityBars
+                  degrees={degrees}
+                  baseline={neutralBaseline}
+                  map={editMap}
+                  locked={{}}
+                  peakDeltas={peakDeltas}
+                  topCandidates={pickTopFree(peakDeltas, {})}
+                />
                 <button
                   type="button"
-                  disabled={Boolean(busy)}
-                  onClick={() => void runPose("capture_pose", "standing")}
-                  className="cohere-btn-primary px-4 py-2 text-xs disabled:opacity-50"
+                  className="cohere-btn-pill-outline mt-2 text-xs"
+                  onClick={() => {
+                    setNeutralBaseline([...degrees]);
+                    setPeakDeltas(Array.from({ length: 8 }, () => 0));
+                  }}
                 >
-                  {busy === "capture_pose:standing" ? "…" : "บันทึกท่ายืนปกติ"}
-                </button>
-                <button
-                  type="button"
-                  disabled={Boolean(busy)}
-                  onClick={() => void runPose("capture_pose", "sitting")}
-                  className="cohere-btn-primary px-4 py-2 text-xs disabled:opacity-50"
-                >
-                  {busy === "capture_pose:sitting" ? "…" : "บันทึกท่านั่งปกติ"}
-                </button>
-                <button
-                  type="button"
-                  disabled={Boolean(busy) || !mapping?.pose_profiles?.standing}
-                  onClick={() => void runPose("activate_pose", "standing")}
-                  className="cohere-btn-pill-outline text-xs disabled:opacity-50"
-                >
-                  ใช้ท่ายืน
-                </button>
-                <button
-                  type="button"
-                  disabled={Boolean(busy) || !mapping?.pose_profiles?.sitting}
-                  onClick={() => void runPose("activate_pose", "sitting")}
-                  className="cohere-btn-pill-outline text-xs disabled:opacity-50"
-                >
-                  ใช้ท่านั่ง
+                  ตั้ง baseline ใหม่ (ยืนนิ่งแล้วกด)
                 </button>
               </div>
             </div>
-          )}
-
-          {phase === "done" && (
-            <div className="space-y-3 text-sm text-cohere-body-muted">
-              <p className="text-cohere-ink">Setup เสร็จ</p>
-              <p>
-                confidence{" "}
-                {mapping ? `${Math.round(mapping.confidence * 100)}%` : "—"} · ไฟล์{" "}
-                <span className="font-mono-label">sensor_map.json</span> อัปเดตแล้ว
-              </p>
-              <p className="text-xs">
-                ลองยกแขนข้างเดียวใน 3D — ถ้าขายังตาม กลับมาแก้แมปใน Setup Wizard → Review
-              </p>
-            </div>
-          )}
-
-          {message && (
-            <p className="mt-4 rounded-cohere-sm bg-cohere-pale-green px-4 py-2.5 text-xs text-cohere-ink">
-              {message}
-            </p>
-          )}
-        </div>
-
-        <footer className="flex flex-wrap items-center justify-between gap-2 border-t border-cohere-hairline px-5 py-4">
-          <div className="text-[11px] text-cohere-muted">
-            {phase === "intro" && "ยังไม่เซฟ"}
-            {phase === "guided" && (step ? CALIBRATION_STEP_SAVE_HINTS[step] : "")}
-            {phase === "review" && "แก้แมปแล้วกดบันทึก หรือไปขั้นท่ายืน/นั่ง"}
-            {phase === "poses" && "บันทึกท่าจะเขียน pose_profiles"}
-            {phase === "done" && "ปิดได้เมื่อพร้อม"}
           </div>
-          <div className="flex flex-wrap gap-2">
-            {phase === "intro" && (
+        )}
+
+        {phase === "poses" && (
+          <div className="mx-auto max-w-2xl space-y-4 text-sm text-cohere-body-muted">
+            <p>
+              บันทึกท่ายืน/นั่ง →{" "}
+              <span className="font-mono-label text-cohere-ink">pose_profiles</span> ใน{" "}
+              <span className="font-mono-label">sensor_map.json</span>
+            </p>
+            <p className="text-xs">
+              ท่าที่ใช้อยู่:{" "}
+              {mapping?.active_pose
+                ? POSE_PROFILE_LABELS[mapping.active_pose] ?? mapping.active_pose
+                : "ยังไม่ตั้ง"}
+            </p>
+            <div className="flex flex-wrap gap-2">
+              <button
+                type="button"
+                disabled={Boolean(busy)}
+                onClick={() => void runPose("capture_pose", "standing")}
+                className="cohere-btn-primary px-4 py-2 text-xs disabled:opacity-50"
+              >
+                {busy === "capture_pose:standing" ? "…" : "บันทึกท่ายืนปกติ"}
+              </button>
+              <button
+                type="button"
+                disabled={Boolean(busy)}
+                onClick={() => void runPose("capture_pose", "sitting")}
+                className="cohere-btn-primary px-4 py-2 text-xs disabled:opacity-50"
+              >
+                {busy === "capture_pose:sitting" ? "…" : "บันทึกท่านั่งปกติ"}
+              </button>
+              <button
+                type="button"
+                disabled={Boolean(busy) || !mapping?.pose_profiles?.standing}
+                onClick={() => void runPose("activate_pose", "standing")}
+                className="cohere-btn-pill-outline text-xs disabled:opacity-50"
+              >
+                ใช้ท่ายืน
+              </button>
+              <button
+                type="button"
+                disabled={Boolean(busy) || !mapping?.pose_profiles?.sitting}
+                onClick={() => void runPose("activate_pose", "sitting")}
+                className="cohere-btn-pill-outline text-xs disabled:opacity-50"
+              >
+                ใช้ท่านั่ง
+              </button>
+            </div>
+          </div>
+        )}
+
+        {phase === "done" && (
+          <div className="mx-auto max-w-2xl space-y-3 text-sm text-cohere-body-muted">
+            <p className="text-cohere-ink">Setup เสร็จ</p>
+            <p>
+              confidence {mapping ? `${Math.round(mapping.confidence * 100)}%` : "—"} ·{" "}
+              <span className="font-mono-label">sensor_map.json</span> อัปเดตแล้ว
+            </p>
+          </div>
+        )}
+
+        {message && (
+          <p className="mx-auto mt-5 max-w-5xl rounded-cohere-sm bg-cohere-pale-green px-4 py-2.5 text-xs text-cohere-ink">
+            {message}
+          </p>
+        )}
+      </div>
+
+      <footer className="flex shrink-0 flex-wrap items-center justify-between gap-2 border-t border-cohere-hairline px-5 py-4 sm:px-8">
+        <div className="text-[11px] text-cohere-muted">
+          {phase === "intro" && "ยังไม่เซฟ"}
+          {phase === "guided" &&
+            (step === "neutral"
+              ? "กดถัดไปเพื่อล็อก baseline ขั้น 1"
+              : step && LOCK_ON_ADVANCE.has(step)
+                ? `กดถัดไปจะล็อก top ${TOP_N} ช่องที่ยังไม่ล็อก`
+                : step
+                  ? CALIBRATION_STEP_SAVE_HINTS[step]
+                  : "")}
+          {phase === "review" && "แก้แมปแล้วกดบันทึก หรือไปขั้นท่ายืน/นั่ง"}
+          {phase === "poses" && "บันทึกท่าจะเขียน pose_profiles"}
+          {phase === "done" && "ปิดได้เมื่อพร้อม"}
+        </div>
+        <div className="flex flex-wrap gap-2">
+          {phase === "intro" && (
+            <button
+              type="button"
+              disabled={Boolean(busy)}
+              onClick={() => void startGuided()}
+              className="cohere-btn-primary px-5 py-2 text-xs disabled:opacity-50"
+            >
+              {busy === "start" ? "…" : "เริ่ม Setup"}
+            </button>
+          )}
+          {phase === "guided" && (
+            <button
+              type="button"
+              disabled={Boolean(busy)}
+              onClick={() => void nextGuided()}
+              className="cohere-btn-primary px-5 py-2 text-xs disabled:opacity-50"
+            >
+              {busy === "next" ? "…" : "ขั้นถัดไป"}
+            </button>
+          )}
+          {phase === "review" && (
+            <>
               <button
                 type="button"
                 disabled={Boolean(busy)}
                 onClick={() => void startGuided()}
-                className="cohere-btn-primary px-5 py-2 text-xs disabled:opacity-50"
+                className="cohere-btn-pill-outline text-xs disabled:opacity-50"
               >
-                {busy === "start" ? "…" : "เริ่ม Setup"}
+                เริ่ม guided ใหม่
               </button>
-            )}
-            {phase === "guided" && (
               <button
                 type="button"
-                disabled={Boolean(busy)}
-                onClick={() => void nextGuided()}
-                className="cohere-btn-primary px-5 py-2 text-xs disabled:opacity-50"
+                onClick={() => setPhase("poses")}
+                className="cohere-btn-primary px-5 py-2 text-xs"
               >
-                {busy === "next" ? "…" : "ขั้นถัดไป"}
+                ถัดไป · ท่ายืน/นั่ง
               </button>
-            )}
-            {phase === "review" && (
-              <>
-                <button
-                  type="button"
-                  disabled={Boolean(busy)}
-                  onClick={() => void startGuided()}
-                  className="cohere-btn-pill-outline text-xs disabled:opacity-50"
-                >
-                  เริ่ม guided ใหม่
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setPhase("poses")}
-                  className="cohere-btn-primary px-5 py-2 text-xs"
-                >
-                  ถัดไป · ท่ายืน/นั่ง
-                </button>
-              </>
-            )}
-            {phase === "poses" && (
-              <>
-                <button
-                  type="button"
-                  onClick={() => setPhase("review")}
-                  className="cohere-btn-pill-outline text-xs"
-                >
-                  กลับแก้แมป
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setPhase("done")}
-                  className="cohere-btn-primary px-5 py-2 text-xs"
-                >
-                  เสร็จสิ้น
-                </button>
-              </>
-            )}
-            {phase === "done" && (
-              <button type="button" onClick={onClose} className="cohere-btn-primary px-5 py-2 text-xs">
-                ปิด
+            </>
+          )}
+          {phase === "poses" && (
+            <>
+              <button
+                type="button"
+                onClick={() => setPhase("review")}
+                className="cohere-btn-pill-outline text-xs"
+              >
+                กลับแก้แมป
               </button>
-            )}
-          </div>
-        </footer>
-      </div>
+              <button
+                type="button"
+                onClick={() => setPhase("done")}
+                className="cohere-btn-primary px-5 py-2 text-xs"
+              >
+                เสร็จสิ้น
+              </button>
+            </>
+          )}
+          {phase === "done" && (
+            <button type="button" onClick={onClose} className="cohere-btn-primary px-5 py-2 text-xs">
+              ปิด
+            </button>
+          )}
+        </div>
+      </footer>
     </div>
   );
 }
