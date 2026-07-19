@@ -7,6 +7,7 @@ import RehabPanel from "@/components/RehabPanel";
 import LocalBridgePanel from "@/components/LocalBridgePanel";
 import SensorReadout from "@/components/SensorReadout";
 import FadeIn from "@/components/ui/FadeIn";
+import GameStage from "@/components/game/GameStage";
 import {
   LocalBridgeState,
   loadBridgeUrl,
@@ -343,34 +344,17 @@ export default function UserHome() {
             />
 
             {bridgeConnected && (
-              <section className="grid gap-8 lg:grid-cols-12">
-                <FadeIn delay={120} className="lg:col-span-7">
-                  <div className="cohere-card flex h-full min-h-[480px] flex-col p-5 sm:p-6">
-                    <RehabPanel
-                      exercise={exercise}
-                      feedback={feedback}
-                      onSelectExercise={handleSelectExercise}
-                      onStart={handleStart}
-                      onStop={handleStop}
-                      onReset={handleReset}
-                    />
-                  </div>
-                </FadeIn>
-
-                <FadeIn delay={180} className="lg:col-span-5">
-                  <section className="cohere-card h-full overflow-hidden">
-                    <div className="border-b border-cohere-hairline px-6 py-5">
-                      <h2 className="text-base font-normal text-cohere-ink">Joint readout</h2>
-                      <p className="mt-1 text-sm text-cohere-body-muted">
-                        มุมจาก IMU · คะแนน elevation / bend (ไม่มี plane)
-                      </p>
-                    </div>
-                    <div className="px-6 py-5">
-                      <SensorReadout jointFeedback={feedback.jointFeedback} />
-                    </div>
-                  </section>
-                </FadeIn>
-              </section>
+              <FadeIn delay={120}>
+                <GameStage
+                  frame={frame}
+                  feedback={feedback}
+                  exercise={exercise}
+                  onSelectExercise={handleSelectExercise}
+                  onStart={handleStart}
+                  onStop={handleStop}
+                  onReset={handleReset}
+                />
+              </FadeIn>
             )}
           </FadeIn>
         )}
