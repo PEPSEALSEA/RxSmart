@@ -55,35 +55,70 @@ function degreesFromSources(
   return out;
 }
 
+/** Real motion for forearm/leg steps is ~10–20°; ignore smaller jitter. */
+const ACTIVE_DELTA_DEG = 10;
+/** Bar fills fully around a solid bilateral move (~20°). */
+const BAR_FULL_SCALE_DEG = 20;
+/** Bilateral steps (ทั้งสองข้าง) ไฮไลต์ top-2 */
+const TOP_N = 2;
+
 function ChannelActivityBars({
   degrees,
   baseline,
   map,
+  topN = TOP_N,
 }: {
   degrees: number[];
   baseline: number[] | null;
   map: ChannelMap;
+  topN?: number;
 }) {
-  const deltas = degrees.map((d, i) => Math.abs(d - (baseline?.[i] ?? d)));
-  const maxDelta = Math.max(1, ...deltas);
-  const ranked = [...deltas]
+  const [peakDeltas, setPeakDeltas] = useState(() => Array.from({ length: 8 }, () => 0));
+  const baselineKey = baseline?.join(",") ?? "none";
+
+  useEffect(() => {
+    setPeakDeltas(Array.from({ length: 8 }, () => 0));
+  }, [baselineKey]);
+
+  useEffect(() => {
+    const instant = degrees.map((d, i) => Math.abs(d - (baseline?.[i] ?? d)));
+    setPeakDeltas((prev) =>
+      prev.map((peak, i) => {
+        const now = instant[i] ?? 0;
+        // Hold peaks; decay slowly so small jitter doesn't refill the bar
+        if (now >= peak) return now;
+        return Math.max(0, peak - 0.8);
+      }),
+    );
+  }, [degrees, baseline]);
+
+  const ranked = [...peakDeltas]
     .map((d, i) => ({ i, d }))
     .sort((a, b) => b.d - a.d);
+  const topSet = new Set(
+    ranked
+      .filter((r) => r.d >= ACTIVE_DELTA_DEG)
+      .slice(0, topN)
+      .map((r) => r.i),
+  );
 
   return (
     <div className="space-y-2">
-      <p className="cohere-mono-label text-[10px]">Live CH0–CH7 · ไฮไลต์ = ขยับมากสุด</p>
+      <p className="cohere-mono-label text-[10px]">
+        Live CH0–CH7 · ไฮไลต์ top {topN} ที่ Δ≥{ACTIVE_DELTA_DEG}° (ขยับจริง ~{ACTIVE_DELTA_DEG}–
+        {BAR_FULL_SCALE_DEG}°)
+      </p>
       {degrees.map((deg, ch) => {
-        const delta = deltas[ch];
-        const active = delta > 4;
-        const top = ranked[0]?.i === ch && delta > 4;
-        const width = Math.min(100, (delta / maxDelta) * 100);
+        const delta = peakDeltas[ch] ?? 0;
+        const isTop = topSet.has(ch);
+        const active = delta >= ACTIVE_DELTA_DEG;
+        const width = Math.min(100, (delta / BAR_FULL_SCALE_DEG) * 100);
         const label = POSE_LABELS[map[ch]] ?? map[ch] ?? "—";
         return (
           <div
             key={ch}
             className={`rounded-cohere-sm border px-3 py-2 ${
-              top
+              isTop
                 ? "border-cohere-primary bg-cohere-pale-green"
                 : active
                   ? "border-cohere-hairline bg-cohere-primary/5"
@@ -93,15 +128,17 @@ function ChannelActivityBars({
             <div className="flex items-center justify-between gap-2 text-xs">
               <span className="font-mono-label text-cohere-ink">
                 CH{ch}
-                {top ? " · ขยับมากสุด" : active ? " · กำลังขยับ" : ""}
+                {isTop ? " · top mover" : active ? " · กำลังขยับ" : ""}
               </span>
-              <span className="text-cohere-body-muted">{deg.toFixed(1)}°</span>
+              <span className="text-cohere-body-muted">
+                {deg.toFixed(1)}° · Δ{delta.toFixed(1)}°
+              </span>
             </div>
             <p className="mt-0.5 truncate text-[11px] text-cohere-muted">{label}</p>
             <div className="mt-1.5 h-1.5 overflow-hidden rounded-full bg-neutral-100">
               <div
-                className={`h-full rounded-full transition-[width] ${
-                  top ? "bg-cohere-primary" : "bg-neutral-400"
+                className={`h-full rounded-full transition-[width] duration-150 ${
+                  isTop ? "bg-cohere-primary" : active ? "bg-neutral-500" : "bg-neutral-300"
                 }`}
                 style={{ width: `${width}%` }}
               />

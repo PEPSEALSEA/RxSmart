@@ -44,7 +44,7 @@ export const POSE_PROFILE_LABELS: Record<string, string> = {
 
 export const CALIBRATION_STEP_LABELS: Record<string, string> = {
   neutral: "ยืนนิ่ง — แขนขาห้อยธรรมชาติ",
-  move_forearms: "งอข้อศอกทั้งสองข้าง (ปลายแขนขยับ ไหล่นิ่ง)",
+  move_forearms: "งอข้อศอกทั้งสองข้าง (ปลายแขนขยับ ไหล่นิ่ง) — ดู top 2 CH ที่ Δ≥10°",
   move_shoulders: "ยกไหล่ / ยกแขนทั้งสองข้าง",
   move_shins: "งอเข่าทั้งสองข้าง (ปลายขาขยับ)",
   move_thighs: "ยกขา / ขยับต้นขาทั้งสองข้าง",
@@ -55,9 +55,9 @@ export const CALIBRATION_STEP_LABELS: Record<string, string> = {
 /** What the wizard is collecting / when it writes disk for each guided step. */
 export const CALIBRATION_STEP_SAVE_HINTS: Record<string, string> = {
   neutral: "กำลังเก็บตัวอย่างท่านิ่งในหน่วยความจำ — ยังไม่เขียนไฟล์",
-  move_forearms: "กำลังเก็บว่า CH ไหนขยับตอนงอศอก — ยังไม่เขียนไฟล์",
-  move_shoulders: "กำลังเก็บว่า CH ไหนขยับตอนยกไหล่ — ยังไม่เขียนไฟล์",
-  move_shins: "กำลังเก็บว่า CH ไหนขยับตอนงอเข่า — ยังไม่เขียนไฟล์",
+  move_forearms: "กำลังเก็บ top 2 CH ที่ขยับตอนงอศอก (Δ≥10°) — ยังไม่เขียนไฟล์",
+  move_shoulders: "กำลังเก็บ top 2 CH ที่ขยับตอนยกไหล่ — ยังไม่เขียนไฟล์",
+  move_shins: "กำลังเก็บ top 2 CH ที่ขยับตอนงอเข่า — ยังไม่เขียนไฟล์",
   move_thighs: "หลังกดถัดไปจะเขียน channel_map ลง sensor_map.json",
   arms_down: "กำลังเก็บมุม baseline แขนห้อย — ยังไม่เขียน pose_defaults",
   arms_up_down: "หลังกดถัดไปจะเขียน pose_defaults (standing) ลง sensor_map.json",
