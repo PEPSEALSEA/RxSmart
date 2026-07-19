@@ -93,6 +93,7 @@ export type LocalBridgeState = {
   pose_count: number;
   max_poses: number;
   pose_landmarks: MediaPipeLandmark[] | null;
+  pose_world_landmarks?: MediaPipeLandmark[] | null;
   hand_landmarks: MediaPipeHandSet[];
   joints: LocalJointData | null;
   sensor_mapping?: SensorMappingState;

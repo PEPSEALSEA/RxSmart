@@ -54,6 +54,14 @@ def _pose_landmarks_payload(joint_data: Optional[JointData]) -> Optional[list[di
     return [_lm_dict(lm) for lm in joint_data.raw_landmarks]
 
 
+def _pose_world_landmarks_payload(
+    joint_data: Optional[JointData],
+) -> Optional[list[dict[str, float]]]:
+    if joint_data is None or not joint_data.raw_world_landmarks:
+        return None
+    return [_lm_dict(lm) for lm in joint_data.raw_world_landmarks]
+
+
 def _hands_payload(joint_data: Optional[JointData]) -> list[dict[str, Any]]:
     if joint_data is None or not joint_data.raw_hands:
         return []
@@ -110,6 +118,7 @@ def _apply_sensor_mapping(
         confidence=joint_data.confidence,
         timestamp_ms=joint_data.timestamp_ms,
         raw_landmarks=joint_data.raw_landmarks,
+        raw_world_landmarks=joint_data.raw_world_landmarks,
         raw_hands=joint_data.raw_hands,
         raw_sensors=joint_data.raw_sensors,
         sensor_channels=joint_data.sensor_channels,
@@ -290,6 +299,7 @@ class WebBridgeServer:
                 "pose_count": stats.pose_count,
                 "max_poses": max(1, min(4, config.MEDIAPIPE_MAX_POSES)),
                 "pose_landmarks": _pose_landmarks_payload(joint_data),
+                "pose_world_landmarks": _pose_world_landmarks_payload(joint_data),
                 "hand_landmarks": _hands_payload(joint_data),
                 "joints": _joint_to_dict(mapped_joints, bridge._mapper.channel_map)
                 if mapped_joints

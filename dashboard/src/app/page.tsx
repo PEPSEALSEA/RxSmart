@@ -54,17 +54,14 @@ const PoseViewer = dynamic(() => import("@/components/PoseViewer"), {
   ),
 });
 
-const MediaPipeSkeletonViewer = dynamic(
-  () => import("@/components/MediaPipeSkeletonViewer"),
-  {
-    ssr: false,
-    loading: () => (
-      <div className="flex h-full min-h-[340px] items-center justify-center rounded-cohere-sm bg-cohere-primary/5">
-        <p className="cohere-mono-label text-[11px]">กำลังโหลด MediaPipe 3D…</p>
-      </div>
-    ),
-  },
-);
+const SkeletonViewer = dynamic(() => import("@/components/SkeletonViewer"), {
+  ssr: false,
+  loading: () => (
+    <div className="flex h-full min-h-[340px] items-center justify-center rounded-cohere-sm bg-cohere-primary/5">
+      <p className="cohere-mono-label text-[11px]">กำลังโหลด 3D skeleton…</p>
+    </div>
+  ),
+});
 
 function makeIdleFeedback(exercise: RehabExercise, frame: SensorFrame): SessionFeedback {
   const fb = buildSessionFeedback(
@@ -435,13 +432,14 @@ export default function UserHome() {
               <section className="grid gap-8 lg:grid-cols-12">
                 <FadeIn delay={120} className="lg:col-span-7">
                   <PanelCard
-                    title="3D MediaPipe"
-                    subtitle="Landmarks 1:1 จาก Python · ไม่ใช่ mannequin จำลอง"
+                    title="3D Skeleton"
+                    subtitle="World landmarks · เท้าติดพื้น · ไม่บินตอนยืนนิ่ง"
                     badge="Camera Live"
                     variant="agent"
                   >
-                    <MediaPipeSkeletonViewer
+                    <SkeletonViewer
                       landmarks={bridgeState?.pose_landmarks ?? null}
+                      worldLandmarks={bridgeState?.pose_world_landmarks ?? null}
                       hands={bridgeState?.hand_landmarks ?? null}
                       skeletonDebug={bridgeState?.skeleton_debug}
                     />

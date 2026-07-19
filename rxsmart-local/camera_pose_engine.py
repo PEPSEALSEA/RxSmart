@@ -358,12 +358,18 @@ class CameraPoseEngine:
                         joint_color=joint_color,
                     )
                     if person_idx == primary_idx:
+                        world_lms = None
+                        if result.pose_world_landmarks and person_idx < len(
+                            result.pose_world_landmarks
+                        ):
+                            world_lms = result.pose_world_landmarks[person_idx]
                         joint_data = self._compute_joints(
                             landmarks,
                             w,
                             h,
                             annotated,
                             draw_angles=not skeleton_debug,
+                            world_landmarks=world_lms,
                         )
 
                 if pose_count > 1 or skeleton_debug:
@@ -456,6 +462,7 @@ class CameraPoseEngine:
         h: int,
         frame: np.ndarray,
         draw_angles: bool = True,
+        world_landmarks: Optional[List] = None,
     ) -> JointData:
         L = _P
 
@@ -508,6 +515,7 @@ class CameraPoseEngine:
             confidence=confidence,
             timestamp_ms=time.time() * 1000,
             raw_landmarks=landmarks,
+            raw_world_landmarks=world_landmarks,
             pose_frame=pose_frame,
         )
 

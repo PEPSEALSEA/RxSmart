@@ -66,6 +66,8 @@ class FusionEngine:
             confidence=fused_confidence,
             timestamp_ms=time.time() * 1000,
             raw_landmarks=camera.raw_landmarks,
+            raw_world_landmarks=camera.raw_world_landmarks,
+            raw_hands=camera.raw_hands,
             raw_sensors=iot.raw_sensors,
             pose_frame=camera.pose_frame,
             # Carry all IoT metadata through to the display

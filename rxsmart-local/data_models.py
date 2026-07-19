@@ -33,6 +33,8 @@ class JointData:
     timestamp_ms: float = field(default_factory=lambda: time.time() * 1000)
 
     raw_landmarks: Any = field(default=None, repr=False)
+    # Metric world-space landmarks (meters, hip origin) — preferred for 3D viewer.
+    raw_world_landmarks: Any = field(default=None, repr=False)
     raw_hands: Optional[list] = field(default=None, repr=False)
     raw_sensors: Optional[dict] = field(default=None, repr=False)
     sensor_channels: Optional[list] = field(default=None, repr=False)
