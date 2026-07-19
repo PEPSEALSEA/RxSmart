@@ -5,6 +5,7 @@ import {
   ChannelMap,
   mapJointsAndSensorsToFrame,
   parseChannelMap,
+  PoseDefaultProfile,
   SensorChannelReading,
   SensorMappingState,
 } from "@/lib/sensor-mapping";
@@ -178,9 +179,10 @@ export function mapLocalJointsToFrame(
   joints: LocalJointData | null,
   channelMap?: ChannelMap,
   activePose?: string,
+  poseDefaults?: PoseDefaultProfile,
 ): SensorFrame {
   const map = channelMap ?? parseChannelMap(joints?.sensor_map);
-  return mapJointsAndSensorsToFrame(joints, map, activePose);
+  return mapJointsAndSensorsToFrame(joints, map, activePose, poseDefaults);
 }
 
 export type BridgeLiveTelemetry = {

@@ -73,6 +73,8 @@ POSE_DEFAULT_ANGLE_KEYS: list[str] = [
     "elbow_right",
     "knee_left",
     "knee_right",
+    "hip_left",
+    "hip_right",
 ]
 
 POSE_PROFILE_NAMES: tuple[str, ...] = ("standing", "sitting")
@@ -400,7 +402,7 @@ def sensors_to_angles(
     channel_map: dict[int, str],
     pose_defaults: Optional[dict[str, dict[str, float]]] = None,
 ) -> dict[str, float]:
-    """Compute elbow/knee + shoulder elevation from 8 segment angles."""
+    """Compute elbow/knee + shoulder/hip elevation from 8 segment angles."""
     by_pose = {channel_map[ch]: degrees[ch] for ch in range(8) if ch in channel_map}
 
     def bend(prox: str, dist: str) -> float:
@@ -413,6 +415,8 @@ def sensors_to_angles(
         "knee_right": bend("r_leg_upper", "r_leg_lower"),
         "shoulder_left": by_pose.get("l_arm_upper", 0.0),
         "shoulder_right": by_pose.get("r_arm_upper", 0.0),
+        "hip_left": by_pose.get("l_leg_upper", 0.0),
+        "hip_right": by_pose.get("r_leg_upper", 0.0),
     }
     return apply_pose_defaults(angles, pose_defaults)
 
@@ -430,8 +434,8 @@ def apply_pose_defaults(
         if not d:
             continue
         neutral = float(d.get("neutral", 0.0))
-        # Shoulders: elevation above hang/default. Others: absolute deviation.
-        if key.startswith("shoulder_"):
+        # Shoulders/hips: elevation above hang/default. Others: absolute deviation.
+        if key.startswith("shoulder_") or key.startswith("hip_"):
             out[key] = max(0.0, min(180.0, float(angles.get(key, 0.0)) - neutral))
         else:
             out[key] = max(0.0, min(180.0, abs(float(angles.get(key, 0.0)) - neutral)))

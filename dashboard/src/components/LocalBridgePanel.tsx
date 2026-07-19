@@ -149,7 +149,14 @@ export default function LocalBridgePanel({
           setChannelMap(activeMap);
         }
 
-        onFrameUpdate(mapLocalJointsToFrame(next.joints, activeMap, next.sensor_mapping?.active_pose));
+        onFrameUpdate(
+          mapLocalJointsToFrame(
+            next.joints,
+            activeMap,
+            next.sensor_mapping?.active_pose,
+            next.sensor_mapping?.pose_defaults,
+          ),
+        );
 
         setFrameTick(Date.now());
         setError("");

@@ -167,6 +167,75 @@ export function mapSensorsToFrame(
   return mapChannelsToFrame(degrees, channelMap);
 }
 
+const ARM_REST_ELEV = 8;
+const LEG_ELEV_PLANE_THRESHOLD = 8;
+
+function clampDeg(v: number, max = 180): number {
+  return Math.min(max, Math.max(0, v));
+}
+
+function upperNeutral(
+  poseDefaults: PoseDefaultProfile | undefined,
+  armOrLeg: "arm" | "leg",
+  side: "left" | "right",
+): number | undefined {
+  if (!poseDefaults) return undefined;
+  if (armOrLeg === "arm") {
+    const n = poseDefaults[`shoulder_${side}`]?.neutral;
+    return typeof n === "number" ? n : undefined;
+  }
+  const hip = poseDefaults[`hip_${side}`]?.neutral;
+  if (typeof hip === "number") return hip;
+  const seg = poseDefaults[`${side === "left" ? "l" : "r"}_leg_upper`]?.neutral;
+  return typeof seg === "number" ? seg : undefined;
+}
+
+function relativeElevation(raw: number, neutral: number | undefined, restBias = 0): number {
+  if (typeof neutral !== "number") {
+    // No baseline → rest pose only (avoid star-jump from absolute MPU degrees)
+    return restBias;
+  }
+  return clampDeg(Math.abs(raw - neutral) + restBias);
+}
+
+function applyLegPlanesAndSquat(
+  frame: SensorFrame,
+  mode: "sitting" | "standing" | undefined,
+): SensorFrame {
+  let elevL = frame.l_leg_upper.elevation;
+  let elevR = frame.r_leg_upper.elevation;
+  let kneeL = frame.l_leg_lower.bend;
+  let kneeR = frame.r_leg_lower.bend;
+
+  if (mode === "sitting") {
+    elevL = Math.max(elevL, 50);
+    elevR = Math.max(elevR, 50);
+    kneeL = Math.max(kneeL, 70);
+    kneeR = Math.max(kneeR, 70);
+    frame.l_leg_lower.bend = kneeL;
+    frame.r_leg_lower.bend = kneeR;
+  }
+
+  const planeL = mode === "sitting" || elevL > LEG_ELEV_PLANE_THRESHOLD ? 90 : 0;
+  const planeR = mode === "sitting" || elevR > LEG_ELEV_PLANE_THRESHOLD ? 90 : 0;
+  frame.l_leg_upper.elevation = elevL;
+  frame.l_leg_upper.plane = planeL;
+  frame.r_leg_upper.elevation = elevR;
+  frame.r_leg_upper.plane = planeR;
+
+  const squat = computeSquatTransform(
+    { elevation: elevL, plane: planeL, bend: kneeL },
+    { elevation: elevR, plane: planeR, bend: kneeR },
+    { mode },
+  );
+  frame.body = {
+    rootY: squat.rootY,
+    rootZ: squat.rootZ,
+    mode: mode ?? "standing",
+  };
+  return frame;
+}
+
 export function mapJointsAndSensorsToFrame(
   joints: {
     elbow_left: number;
@@ -183,77 +252,66 @@ export function mapJointsAndSensorsToFrame(
       knee_right?: number;
       shoulder_left?: number;
       shoulder_right?: number;
+      hip_left?: number;
+      hip_right?: number;
     };
   } | null,
   channelMap: ChannelMap,
   activePose?: string,
+  poseDefaults?: PoseDefaultProfile,
 ): SensorFrame {
-  // Mannequin uses joint bends — never raw MPU channel degrees as elevation
-  // (that produced star-jump poses).
-  const frame = createNeutralFrame();
-  if (!joints) return frame;
-
   const mode = activePose === "sitting" || activePose === "standing" ? activePose : undefined;
-  const rel = joints.angles_relative;
-  // Shoulders: prefer deviation-from-default so "at default pose" ≈ arms rest.
-  const shL = rel
-    ? Math.min(180, Math.max(0, (rel.shoulder_left ?? 0) + 8))
-    : Math.min(180, Math.max(0, joints.shoulder_left ?? 0));
-  const shR = rel
-    ? Math.min(180, Math.max(0, (rel.shoulder_right ?? 0) + 8))
-    : Math.min(180, Math.max(0, joints.shoulder_right ?? 0));
 
-  frame.l_arm_upper.elevation = shL;
-  frame.r_arm_upper.elevation = shR;
+  if (!joints) return createNeutralFrame();
+
+  const degrees = joints.sensors ? sensorsToDegreesByChannel(joints.sensors) : null;
+
+  if (degrees) {
+    const frame = mapChannelsToFrame(degrees, channelMap);
+    const byPose: Partial<Record<PoseKey, number>> = {};
+    for (let ch = 0; ch < 8; ch++) {
+      const key = channelMap[ch];
+      if (key) byPose[key] = degrees[ch];
+    }
+
+    const rel = joints.angles_relative;
+    const shNeutralL = upperNeutral(poseDefaults, "arm", "left");
+    const shNeutralR = upperNeutral(poseDefaults, "arm", "right");
+
+    frame.l_arm_upper.elevation = rel?.shoulder_left !== undefined
+      ? clampDeg((rel.shoulder_left ?? 0) + ARM_REST_ELEV)
+      : relativeElevation(byPose.l_arm_upper ?? 0, shNeutralL, ARM_REST_ELEV);
+    frame.r_arm_upper.elevation = rel?.shoulder_right !== undefined
+      ? clampDeg((rel.shoulder_right ?? 0) + ARM_REST_ELEV)
+      : relativeElevation(byPose.r_arm_upper ?? 0, shNeutralR, ARM_REST_ELEV);
+
+    frame.l_leg_upper.elevation = rel?.hip_left !== undefined
+      ? clampDeg(Math.abs(rel.hip_left))
+      : relativeElevation(byPose.l_leg_upper ?? 0, upperNeutral(poseDefaults, "leg", "left"));
+    frame.r_leg_upper.elevation = rel?.hip_right !== undefined
+      ? clampDeg(Math.abs(rel.hip_right))
+      : relativeElevation(byPose.r_leg_upper ?? 0, upperNeutral(poseDefaults, "leg", "right"));
+
+    return applyLegPlanesAndSquat(frame, mode);
+  }
+
+  // Fallback: joint payload only (no per-channel sensors)
+  const frame = createNeutralFrame();
+  const rel = joints.angles_relative;
+  frame.l_arm_upper.elevation = rel
+    ? clampDeg((rel.shoulder_left ?? 0) + ARM_REST_ELEV)
+    : clampDeg(joints.shoulder_left ?? 0);
+  frame.r_arm_upper.elevation = rel
+    ? clampDeg((rel.shoulder_right ?? 0) + ARM_REST_ELEV)
+    : clampDeg(joints.shoulder_right ?? 0);
   frame.l_arm_lower.bend = joints.elbow_left;
   frame.r_arm_lower.bend = joints.elbow_right;
-
-  // Live knees drive height; sitting mode raises a chair-sit floor so pelvis drops.
-  let kneeL = Math.min(140, Math.max(0, joints.knee_left));
-  let kneeR = Math.min(140, Math.max(0, joints.knee_right));
-  if (mode === "sitting") {
-    const relKnee =
-      ((rel?.knee_left ?? 0) + (rel?.knee_right ?? 0)) * 0.5;
-    // Near sitting default (rel≈0) → force chair sit; standing up raises rel → blend to live knees.
-    const nearSitDefault = 1 - Math.min(1, relKnee / 55);
-    const SIT_KNEE = 90;
-    kneeL = kneeL * (1 - nearSitDefault) + Math.max(kneeL, SIT_KNEE) * nearSitDefault;
-    kneeR = kneeR * (1 - nearSitDefault) + Math.max(kneeR, SIT_KNEE) * nearSitDefault;
-  }
-
-  frame.l_leg_lower.bend = kneeL;
-  frame.r_leg_lower.bend = kneeR;
-
-  // Thigh elevation from knee bend → sitting reads as seated, not a V-split.
-  const elevScale = mode === "sitting" ? 0.78 : 0.65;
-  const elevCap = mode === "sitting" ? 78 : 70;
-  let elevL = Math.min(elevCap, kneeL * elevScale);
-  let elevR = Math.min(elevCap, kneeR * elevScale);
-  if (mode === "sitting") {
-    elevL = Math.max(elevL, 58);
-    elevR = Math.max(elevR, 58);
-  }
-  // plane 0 = lateral (V-spread); plane 90 = forward (chair sit / squat).
-  const planeL = elevL > 5 || mode === "sitting" ? 90 : 0;
-  const planeR = elevR > 5 || mode === "sitting" ? 90 : 0;
-  frame.l_leg_upper.elevation = elevL;
-  frame.l_leg_upper.plane = planeL;
-  frame.r_leg_upper.elevation = elevR;
-  frame.r_leg_upper.plane = planeR;
-
-  const squat = computeSquatTransform(
-    { elevation: elevL, plane: planeL, bend: kneeL },
-    { elevation: elevR, plane: planeR, bend: kneeR },
-    { mode },
-  );
-  frame.body = {
-    rootY: squat.rootY,
-    rootZ: squat.rootZ,
-    mode: mode ?? "standing",
-  };
-
-  void channelMap;
-  return frame;
+  frame.l_leg_lower.bend = Math.min(140, Math.max(0, joints.knee_left));
+  frame.r_leg_lower.bend = Math.min(140, Math.max(0, joints.knee_right));
+  // No thigh IMU → leave elevation near 0 (standing); sitting mode floors applied below
+  frame.l_leg_upper.elevation = 0;
+  frame.r_leg_upper.elevation = 0;
+  return applyLegPlanesAndSquat(frame, mode);
 }
 
 // Re-export limb pairs for UI

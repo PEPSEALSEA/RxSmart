@@ -3,16 +3,17 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { postSensorMappingAction } from "@/lib/local-bridge";
 import type { SensorChannelReading } from "@/lib/sensor-mapping";
+import { POSE_KEYS, POSE_LABELS, PoseKey, DEFAULT_CHANNEL_TO_POSE } from "@/lib/pose";
 import {
   CALIBRATION_STEP_LABELS,
   CALIBRATION_STEP_SAVE_HINTS,
   ChannelMap,
+  channelMapToRecord,
   parseChannelMap,
   POSE_PROFILE_LABELS,
   saveStoredChannelMap,
   SensorMappingState,
 } from "@/lib/sensor-mapping";
-import { POSE_KEYS, POSE_LABELS, PoseKey } from "@/lib/pose";
 
 type WizardPhase = "intro" | "guided" | "review" | "poses" | "done";
 
@@ -38,6 +39,8 @@ const GUIDED_ORDER = [
 
 type GuidedStep = (typeof GUIDED_ORDER)[number];
 
+type LockedInfo = { step: string; label: string };
+
 /** Steps that claim top-2 free channels when advancing. */
 const LOCK_ON_ADVANCE = new Set<string>([
   "move_forearms",
@@ -53,11 +56,51 @@ const LOCK_LABELS: Record<string, string> = {
   move_thighs: "ต้นขา",
 };
 
+/** Wizard lock step → body-segment role (L/R assigned from baseline). */
+const STEP_TO_PAIR: Record<
+  string,
+  { left: PoseKey; right: PoseKey }
+> = {
+  move_forearms: { left: "l_arm_lower", right: "r_arm_lower" },
+  move_shoulders: { left: "l_arm_upper", right: "r_arm_upper" },
+  move_shins: { left: "l_leg_lower", right: "r_leg_lower" },
+  move_thighs: { left: "l_leg_upper", right: "r_leg_upper" },
+};
+
+function buildChannelMapFromLocks(
+  locked: Record<number, LockedInfo>,
+  baseline: number[],
+): ChannelMap | null {
+  const byStep: Record<string, number[]> = {};
+  for (const [chStr, info] of Object.entries(locked)) {
+    const ch = Number(chStr);
+    if (!STEP_TO_PAIR[info.step]) continue;
+    (byStep[info.step] ??= []).push(ch);
+  }
+
+  const map: ChannelMap = { ...DEFAULT_CHANNEL_TO_POSE };
+  const usedKeys = new Set<PoseKey>();
+
+  for (const [step, pair] of Object.entries(STEP_TO_PAIR)) {
+    const chs = byStep[step];
+    if (!chs || chs.length !== 2) return null;
+    // Lower neutral reading → left (matches Python _assign_left_right_pairs)
+    const sorted = [...chs].sort(
+      (a, b) => (baseline[a] ?? 0) - (baseline[b] ?? 0),
+    );
+    map[sorted[0]] = pair.left;
+    map[sorted[1]] = pair.right;
+    usedKeys.add(pair.left);
+    usedKeys.add(pair.right);
+  }
+
+  if (usedKeys.size !== 8) return null;
+  return map;
+}
+
 const ACTIVE_DELTA_DEG = 10;
 const BAR_FULL_SCALE_DEG = 20;
 const TOP_N = 2;
-
-type LockedInfo = { step: string; label: string };
 
 function degreesFromSources(
   sensors: SensorChannelReading[] | null | undefined,
@@ -308,16 +351,16 @@ export default function SensorSetupWizard({
           setBusy("");
           return;
         }
-        setLocked((prev) => {
-          const next = { ...prev };
-          for (const ch of picks) {
-            next[ch] = {
-              step: current,
-              label: LOCK_LABELS[current] ?? current,
-            };
-          }
-          return next;
-        });
+
+        const nextLocked: Record<number, LockedInfo> = { ...lockedRef.current };
+        for (const ch of picks) {
+          nextLocked[ch] = {
+            step: current,
+            label: LOCK_LABELS[current] ?? current,
+          };
+        }
+        setLocked(nextLocked);
+        lockedRef.current = nextLocked;
         setMessage(
           `ล็อก CH${picks.join(", CH")} เป็น ${LOCK_LABELS[current] ?? current}`,
         );
@@ -325,6 +368,19 @@ export default function SensorSetupWizard({
 
       const data = await postSensorMappingAction(bridgeUrl, "calibrate_next");
       applyMappingResult(data);
+
+      // calibrate_next may overwrite map via auto_detect — re-apply wizard locks
+      if (current === "move_thighs") {
+        const baseline = neutralBaseline ?? degrees;
+        const built = buildChannelMapFromLocks(lockedRef.current, baseline);
+        if (built) {
+          const setData = await postSensorMappingAction(bridgeUrl, "set", {
+            channelMap: channelMapToRecord(built),
+          });
+          applyMappingResult(setData);
+        }
+      }
+
       if (data.step === "complete") {
         setPhase("review");
         setMessage("บันทึก channel_map + pose_defaults ลง sensor_map.json แล้ว — ตรวจแมปด้านล่าง");
