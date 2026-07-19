@@ -381,6 +381,18 @@ export default function LocalBridgePanel({
                   { label: "Session", value: state.joints?.session_state ?? "—" },
                   { label: "Reps", value: state.joints ? `${state.joints.rep_count ?? 0}/${state.joints.rep_target ?? 0}` : "—" },
                   { label: "Confidence", value: state.joints ? `${Math.round(state.joints.confidence * 100)}%` : "—" },
+                  {
+                    label: "Δ default (L/R shldr)",
+                    value: state.joints?.angles_relative
+                      ? `${Math.round(state.joints.angles_relative.shoulder_left ?? 0)}° / ${Math.round(state.joints.angles_relative.shoulder_right ?? 0)}°`
+                      : "—",
+                  },
+                  {
+                    label: "Δ default (L/R knee)",
+                    value: state.joints?.angles_relative
+                      ? `${Math.round(state.joints.angles_relative.knee_left ?? 0)}° / ${Math.round(state.joints.angles_relative.knee_right ?? 0)}°`
+                      : "—",
+                  },
                 ].map((item) => (
                   <div key={item.label} className="cohere-product-card py-3">
                     <p className="cohere-mono-label text-[10px]">{item.label}</p>

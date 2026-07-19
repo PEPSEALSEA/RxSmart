@@ -70,50 +70,6 @@ def _hands_payload(joint_data: Optional[JointData]) -> list[dict[str, Any]]:
     return hands
 
 
-def _joint_to_dict(j: JointData, sensor_map: Optional[dict] = None) -> dict[str, Any]:
-    payload = {
-        "elbow_left": round(j.elbow_left, 2),
-        "elbow_right": round(j.elbow_right, 2),
-        "knee_left": round(j.knee_left, 2),
-        "knee_right": round(j.knee_right, 2),
-        "shoulder_left": round(j.shoulder_left, 2),
-        "shoulder_right": round(j.shoulder_right, 2),
-        "source": j.source,
-        "confidence": round(j.confidence, 3),
-        "posture_state": j.posture_state,
-        "rep_count": j.rep_count,
-        "rep_target": j.rep_target,
-        "speed_dps": round(j.speed_dps, 2),
-        "session_state": j.session_state,
-        "alert_level": j.alert_level,
-        "hand_left_detected": j.hand_left_detected,
-        "hand_right_detected": j.hand_right_detected,
-        "palm_left_facing": j.palm_left_facing,
-        "palm_right_facing": j.palm_right_facing,
-        "palm_left_ok": j.palm_left_ok,
-        "palm_right_ok": j.palm_right_ok,
-        "fingers_left_extended": j.fingers_left_extended,
-        "fingers_right_extended": j.fingers_right_extended,
-        "fingers_left_straight": j.fingers_left_straight,
-        "fingers_right_straight": j.fingers_right_straight,
-        "finger_left_straight_score": round(j.finger_left_straight_score, 2),
-        "finger_right_straight_score": round(j.finger_right_straight_score, 2),
-    }
-    if j.sensor_channels:
-        payload["sensors"] = [
-            {
-                "channel": s.get("channel", idx),
-                "key": s.get("key", ""),
-                "calibrated": s.get("calibrated", 0),
-                "degrees": round(calibrated_to_degrees(float(s.get("calibrated", 0))), 2),
-            }
-            for idx, s in enumerate(j.sensor_channels)
-        ]
-    if sensor_map:
-        payload["sensor_map"] = {str(k): v for k, v in sorted(sensor_map.items())}
-    return payload
-
-
 def _channel_degrees(joint_data: Optional[JointData]) -> Optional[list[float]]:
     if not joint_data or not joint_data.sensor_channels:
         return None
@@ -139,14 +95,17 @@ def _apply_sensor_mapping(
 
     mapper.ingest_channels(degrees)
 
-    mapped = sensors_to_angles(degrees, mapper.channel_map, mapper.pose_defaults)
-    return JointData(
-        elbow_left=mapped["elbow_left"],
-        elbow_right=mapped["elbow_right"],
-        knee_left=mapped["knee_left"],
-        knee_right=mapped["knee_right"],
-        shoulder_left=mapped["shoulder_left"],
-        shoulder_right=mapped["shoulder_right"],
+    # Absolute angles drive the 3D mannequin. Pose-defaults only affect relative feedback.
+    mapped_abs = sensors_to_angles(degrees, mapper.channel_map, pose_defaults=None)
+    mapped_rel = sensors_to_angles(degrees, mapper.channel_map, mapper.pose_defaults)
+
+    jd = JointData(
+        elbow_left=mapped_abs["elbow_left"],
+        elbow_right=mapped_abs["elbow_right"],
+        knee_left=mapped_abs["knee_left"],
+        knee_right=mapped_abs["knee_right"],
+        shoulder_left=mapped_abs["shoulder_left"],
+        shoulder_right=mapped_abs["shoulder_right"],
         source=joint_data.source,
         confidence=joint_data.confidence,
         timestamp_ms=joint_data.timestamp_ms,
@@ -176,6 +135,63 @@ def _apply_sensor_mapping(
         finger_left_straight_score=joint_data.finger_left_straight_score,
         finger_right_straight_score=joint_data.finger_right_straight_score,
     )
+    # Stash relative angles for API (not part of JointData dataclass).
+    jd.raw_sensors = {
+        **(joint_data.raw_sensors if isinstance(joint_data.raw_sensors, dict) else {}),
+        "angles_absolute": mapped_abs,
+        "angles_relative": mapped_rel,
+    }
+    return jd
+
+
+def _joint_to_dict(j: JointData, sensor_map: Optional[dict] = None) -> dict[str, Any]:
+    payload = {
+        "elbow_left": round(j.elbow_left, 2),
+        "elbow_right": round(j.elbow_right, 2),
+        "knee_left": round(j.knee_left, 2),
+        "knee_right": round(j.knee_right, 2),
+        "shoulder_left": round(j.shoulder_left, 2),
+        "shoulder_right": round(j.shoulder_right, 2),
+        "source": j.source,
+        "confidence": round(j.confidence, 3),
+        "posture_state": j.posture_state,
+        "rep_count": j.rep_count,
+        "rep_target": j.rep_target,
+        "speed_dps": round(j.speed_dps, 2),
+        "session_state": j.session_state,
+        "alert_level": j.alert_level,
+        "hand_left_detected": j.hand_left_detected,
+        "hand_right_detected": j.hand_right_detected,
+        "palm_left_facing": j.palm_left_facing,
+        "palm_right_facing": j.palm_right_facing,
+        "palm_left_ok": j.palm_left_ok,
+        "palm_right_ok": j.palm_right_ok,
+        "fingers_left_extended": j.fingers_left_extended,
+        "fingers_right_extended": j.fingers_right_extended,
+        "fingers_left_straight": j.fingers_left_straight,
+        "fingers_right_straight": j.fingers_right_straight,
+        "finger_left_straight_score": round(j.finger_left_straight_score, 2),
+        "finger_right_straight_score": round(j.finger_right_straight_score, 2),
+    }
+    if isinstance(j.raw_sensors, dict):
+        rel = j.raw_sensors.get("angles_relative")
+        if isinstance(rel, dict):
+            payload["angles_relative"] = {
+                k: round(float(v), 2) for k, v in rel.items()
+            }
+    if j.sensor_channels:
+        payload["sensors"] = [
+            {
+                "channel": s.get("channel", idx),
+                "key": s.get("key", ""),
+                "calibrated": s.get("calibrated", 0),
+                "degrees": round(calibrated_to_degrees(float(s.get("calibrated", 0))), 2),
+            }
+            for idx, s in enumerate(j.sensor_channels)
+        ]
+    if sensor_map:
+        payload["sensor_map"] = {str(k): v for k, v in sorted(sensor_map.items())}
+    return payload
 
 
 class WebBridgeServer:

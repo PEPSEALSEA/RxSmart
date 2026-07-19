@@ -162,22 +162,44 @@ export function mapJointsAndSensorsToFrame(
     shoulder_left?: number;
     shoulder_right?: number;
     sensors?: SensorChannelReading[];
+    angles_relative?: {
+      elbow_left?: number;
+      elbow_right?: number;
+      knee_left?: number;
+      knee_right?: number;
+      shoulder_left?: number;
+      shoulder_right?: number;
+    };
   } | null,
   channelMap: ChannelMap,
 ): SensorFrame {
-  if (joints?.sensors?.length) {
-    return mapSensorsToFrame(joints.sensors, channelMap);
-  }
-
+  // Mannequin uses joint bends — never raw MPU channel degrees as elevation
+  // (that produced star-jump poses).
   const frame = createNeutralFrame();
   if (!joints) return frame;
 
+  const rel = joints.angles_relative;
+  // Shoulders: prefer deviation-from-default so "at default pose" ≈ arms rest.
+  // Knees/elbows: absolute so sitting still shows bent legs.
+  const shL = rel
+    ? Math.min(180, Math.max(0, (rel.shoulder_left ?? 0) + 8))
+    : Math.min(180, Math.max(0, joints.shoulder_left ?? 0));
+  const shR = rel
+    ? Math.min(180, Math.max(0, (rel.shoulder_right ?? 0) + 8))
+    : Math.min(180, Math.max(0, joints.shoulder_right ?? 0));
+
+  frame.l_arm_upper.elevation = shL;
+  frame.r_arm_upper.elevation = shR;
   frame.l_arm_lower.bend = joints.elbow_left;
   frame.r_arm_lower.bend = joints.elbow_right;
   frame.l_leg_lower.bend = joints.knee_left;
   frame.r_leg_lower.bend = joints.knee_right;
-  frame.l_arm_upper.elevation = Math.min(180, joints.shoulder_left ?? 0);
-  frame.r_arm_upper.elevation = Math.min(180, joints.shoulder_right ?? 0);
+
+  // Thigh elevation from knee bend → sitting reads as a squat, not a V-split.
+  frame.l_leg_upper.elevation = Math.min(70, joints.knee_left * 0.65);
+  frame.r_leg_upper.elevation = Math.min(70, joints.knee_right * 0.65);
+
+  void channelMap;
   return frame;
 }
 
