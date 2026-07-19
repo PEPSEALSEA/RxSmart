@@ -277,12 +277,22 @@ export async function fetchSensorMapping(baseUrl: string): Promise<SensorMapping
 
 export async function postSensorMappingAction(
   baseUrl: string,
-  action: "reset" | "auto_recheck" | "calibrate_start" | "calibrate_next" | "set",
-  channelMap?: Record<string, string>,
+  action:
+    | "reset"
+    | "auto_recheck"
+    | "calibrate_start"
+    | "calibrate_next"
+    | "set"
+    | "capture_pose"
+    | "activate_pose",
+  options?: { channelMap?: Record<string, string>; pose?: "standing" | "sitting" },
 ) {
   const body: Record<string, unknown> = { action };
-  if (action === "set" && channelMap) {
-    body.channel_map = channelMap;
+  if (action === "set" && options?.channelMap) {
+    body.channel_map = options.channelMap;
+  }
+  if ((action === "capture_pose" || action === "activate_pose") && options?.pose) {
+    body.pose = options.pose;
   }
   const res = await fetch(`${normalizeBase(baseUrl)}/api/sensor-map`, {
     method: "POST",
@@ -290,6 +300,6 @@ export async function postSensorMappingAction(
     body: JSON.stringify(body),
   });
   const data = await res.json();
-  if (!res.ok) throw new Error(data.error || "sensor map action ไม่สำเร็จ");
+  if (!res.ok) throw new Error(data.message || data.error || "sensor map action ไม่สำเร็จ");
   return data;
 }

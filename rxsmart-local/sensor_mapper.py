@@ -71,7 +71,11 @@ POSE_DEFAULT_ANGLE_KEYS: list[str] = [
     "shoulder_right",
     "elbow_left",
     "elbow_right",
+    "knee_left",
+    "knee_right",
 ]
+
+POSE_PROFILE_NAMES: tuple[str, ...] = ("standing", "sitting")
 
 RAW_TO_DEG = 180.0 / 4095.0
 
@@ -417,17 +421,44 @@ def apply_pose_defaults(
     angles: dict[str, float],
     pose_defaults: Optional[dict[str, dict[str, float]]],
 ) -> dict[str, float]:
-    """Subtract personal hang baseline so resting arms read near 0° elevation."""
+    """Subtract personal baseline so the active default pose reads near 0°."""
     if not pose_defaults:
         return angles
     out = dict(angles)
-    for key in ("shoulder_left", "shoulder_right"):
+    for key in POSE_DEFAULT_ANGLE_KEYS:
         d = pose_defaults.get(key)
         if not d:
             continue
         neutral = float(d.get("neutral", 0.0))
-        out[key] = max(0.0, min(180.0, float(angles.get(key, 0.0)) - neutral))
+        # Shoulders: elevation above hang/default. Others: absolute deviation.
+        if key.startswith("shoulder_"):
+            out[key] = max(0.0, min(180.0, float(angles.get(key, 0.0)) - neutral))
+        else:
+            out[key] = max(0.0, min(180.0, abs(float(angles.get(key, 0.0)) - neutral)))
     return out
+
+
+def defaults_from_samples(
+    samples: list[list[float]],
+    channel_map: dict[int, str],
+) -> dict[str, dict[str, float]]:
+    """Average current pose into a neutral profile (min=max=neutral)."""
+    if not samples:
+        return {}
+    totals = {k: 0.0 for k in POSE_DEFAULT_ANGLE_KEYS}
+    n = 0
+    for row in samples:
+        ang = sensors_to_angles(row, channel_map, pose_defaults=None)
+        for k in totals:
+            totals[k] += float(ang.get(k, 0.0))
+        n += 1
+    if n == 0:
+        return {}
+    result: dict[str, dict[str, float]] = {}
+    for k, total in totals.items():
+        v = round(total / n, 2)
+        result[k] = {"neutral": v, "min": v, "max": v}
+    return result
 
 
 def compute_pose_defaults(
@@ -502,6 +533,8 @@ class SensorMappingManager:
     map_path: Path = field(default_factory=lambda: Path(config.SENSOR_MAP_FILE))
     channel_map: dict[int, str] = field(default_factory=lambda: dict(DEFAULT_CHANNEL_MAP))
     pose_defaults: dict[str, dict[str, float]] = field(default_factory=dict)
+    pose_profiles: dict[str, dict[str, dict[str, float]]] = field(default_factory=dict)
+    active_pose: str = ""
     device_id: str = ""
     calibrated_at: float = 0.0
     confidence: float = 0.0
@@ -524,6 +557,20 @@ class SensorMappingManager:
                     for k, v in raw_defaults.items()
                     if isinstance(v, dict)
                 }
+            raw_profiles = data.get("pose_profiles", {})
+            self.pose_profiles = {}
+            if isinstance(raw_profiles, dict):
+                for name, profile in raw_profiles.items():
+                    if not isinstance(profile, dict):
+                        continue
+                    self.pose_profiles[str(name)] = {
+                        str(k): {sk: float(sv) for sk, sv in v.items()}
+                        for k, v in profile.items()
+                        if isinstance(v, dict)
+                    }
+            self.active_pose = str(data.get("active_pose", "") or "")
+            if self.active_pose and self.active_pose in self.pose_profiles:
+                self.pose_defaults = dict(self.pose_profiles[self.active_pose])
             self.device_id = data.get("device_id", "")
             self.calibrated_at = float(data.get("calibrated_at", 0))
             self.confidence = float(data.get("confidence", 0))
@@ -536,6 +583,8 @@ class SensorMappingManager:
             "device_id": self.device_id,
             "channel_map": {str(k): v for k, v in sorted(self.channel_map.items())},
             "pose_defaults": self.pose_defaults,
+            "pose_profiles": self.pose_profiles,
+            "active_pose": self.active_pose,
             "calibrated_at": self.calibrated_at,
             "confidence": self.confidence,
         }
@@ -544,6 +593,8 @@ class SensorMappingManager:
     def reset_to_default(self) -> None:
         self.channel_map = dict(DEFAULT_CHANNEL_MAP)
         self.pose_defaults = {}
+        self.pose_profiles = {}
+        self.active_pose = ""
         self.confidence = 0.0
         self.calibrated_at = 0.0
         self.save()
@@ -556,8 +607,56 @@ class SensorMappingManager:
 
     def set_pose_defaults(self, pose_defaults: dict[str, dict[str, float]]) -> None:
         self.pose_defaults = pose_defaults
+        if pose_defaults:
+            # Guided arm calib becomes the standing profile by default.
+            name = self.active_pose or "standing"
+            self.pose_profiles[name] = dict(pose_defaults)
+            self.active_pose = name
         self.calibrated_at = time.time()
         self.save()
+
+    def capture_pose_profile(self, pose_name: str) -> dict[str, Any]:
+        """Snapshot recent IMU samples as named default (standing / sitting)."""
+        name = str(pose_name).strip().lower()
+        if name not in POSE_PROFILE_NAMES:
+            return {"ok": False, "error": f"pose must be one of {POSE_PROFILE_NAMES}"}
+        samples = self._motion_buffer[-20:]
+        if len(samples) < 5:
+            return {
+                "ok": False,
+                "error": "need_more_motion",
+                "message": "รอสัญญาณ IMU สักครู่ แล้วยืน/นั่งนิ่งก่อนกดอีกครั้ง",
+            }
+        profile = defaults_from_samples(samples, self.channel_map)
+        if not profile:
+            return {"ok": False, "error": "capture_failed"}
+        self.pose_profiles[name] = profile
+        self.pose_defaults = dict(profile)
+        self.active_pose = name
+        self.calibrated_at = time.time()
+        self.save()
+        return {
+            "ok": True,
+            "active_pose": self.active_pose,
+            "pose_defaults": self.pose_defaults,
+            "pose_profiles": self.pose_profiles,
+        }
+
+    def activate_pose_profile(self, pose_name: str) -> dict[str, Any]:
+        name = str(pose_name).strip().lower()
+        profile = self.pose_profiles.get(name)
+        if not profile:
+            return {"ok": False, "error": "pose_not_set", "message": f"ยังไม่ได้บันทึกท่า {name}"}
+        self.pose_defaults = dict(profile)
+        self.active_pose = name
+        self.calibrated_at = time.time()
+        self.save()
+        return {
+            "ok": True,
+            "active_pose": self.active_pose,
+            "pose_defaults": self.pose_defaults,
+            "pose_profiles": self.pose_profiles,
+        }
 
     def ingest_channels(self, degrees: list[float]) -> None:
         if len(degrees) != 8:
@@ -652,6 +751,8 @@ class SensorMappingManager:
             "channel_map": {str(k): v for k, v in sorted(self.channel_map.items())},
             "default_map": {str(k): v for k, v in sorted(DEFAULT_CHANNEL_MAP.items())},
             "pose_defaults": self.pose_defaults,
+            "pose_profiles": self.pose_profiles,
+            "active_pose": self.active_pose,
             "confidence": round(self.confidence, 3),
             "calibrated_at": self.calibrated_at,
             "calibration_step": self.calibration_step,

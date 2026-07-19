@@ -20,6 +20,7 @@ import {
   CALIBRATION_STEP_LABELS,
   ChannelMap,
   parseChannelMap,
+  POSE_PROFILE_LABELS,
   saveStoredChannelMap,
   SensorMappingState,
 } from "@/lib/sensor-mapping";
@@ -216,6 +217,28 @@ export default function LocalBridgePanel({
       }
     } catch (err) {
       setMapMessage(err instanceof Error ? err.message : "sensor map ไม่สำเร็จ");
+    } finally {
+      setMapBusy("");
+    }
+  };
+
+  const runPoseAction = async (
+    action: "capture_pose" | "activate_pose",
+    pose: "standing" | "sitting",
+  ) => {
+    setMapBusy(`${action}:${pose}`);
+    setMapMessage("");
+    try {
+      const data = await postSensorMappingAction(bridgeUrl, action, { pose });
+      setMapping(data as SensorMappingState);
+      const label = POSE_PROFILE_LABELS[pose] ?? pose;
+      if (action === "capture_pose") {
+        setMapMessage(`บันทึก ${label} เป็น default แล้ว — ใช้อยู่ตอนนี้`);
+      } else {
+        setMapMessage(`สลับใช้ ${label} แล้ว`);
+      }
+    } catch (err) {
+      setMapMessage(err instanceof Error ? err.message : "ตั้งค่าท่าไม่สำเร็จ");
     } finally {
       setMapBusy("");
     }
@@ -467,6 +490,53 @@ export default function LocalBridgePanel({
               {mapMessage && (
                 <p className="mt-4 rounded-cohere-sm bg-cohere-pale-green px-4 py-2.5 text-xs text-cohere-ink">{mapMessage}</p>
               )}
+
+              <div className="mt-5 border-t border-cohere-hairline pt-5">
+                <p className="cohere-mono-label text-[11px]">Default pose</p>
+                <p className="mt-2 text-sm text-cohere-body-muted">
+                  ท่าที่ใช้อยู่:{" "}
+                  {mapping?.active_pose
+                    ? POSE_PROFILE_LABELS[mapping.active_pose] ?? mapping.active_pose
+                    : "ยังไม่ตั้ง"}
+                </p>
+                <p className="mt-1 text-xs text-cohere-muted">
+                  ยืนหรือนั่งนิ่งในท่าที่ต้องการ แล้วกดบันทึก
+                </p>
+                <div className="mt-3 flex flex-wrap gap-2">
+                  <button
+                    type="button"
+                    disabled={Boolean(mapBusy)}
+                    onClick={() => void runPoseAction("capture_pose", "standing")}
+                    className="cohere-btn-primary px-4 py-2 text-xs disabled:opacity-50"
+                  >
+                    {mapBusy === "capture_pose:standing" ? "…" : "บันทึกท่ายืนปกติ"}
+                  </button>
+                  <button
+                    type="button"
+                    disabled={Boolean(mapBusy)}
+                    onClick={() => void runPoseAction("capture_pose", "sitting")}
+                    className="cohere-btn-primary px-4 py-2 text-xs disabled:opacity-50"
+                  >
+                    {mapBusy === "capture_pose:sitting" ? "…" : "บันทึกท่านั่งปกติ"}
+                  </button>
+                  <button
+                    type="button"
+                    disabled={Boolean(mapBusy) || !mapping?.pose_profiles?.standing}
+                    onClick={() => void runPoseAction("activate_pose", "standing")}
+                    className="cohere-btn-pill-outline text-xs disabled:opacity-50"
+                  >
+                    ใช้ท่ายืน
+                  </button>
+                  <button
+                    type="button"
+                    disabled={Boolean(mapBusy) || !mapping?.pose_profiles?.sitting}
+                    onClick={() => void runPoseAction("activate_pose", "sitting")}
+                    className="cohere-btn-pill-outline text-xs disabled:opacity-50"
+                  >
+                    ใช้ท่านั่ง
+                  </button>
+                </div>
+              </div>
             </div>
           )}
         </FadeIn>

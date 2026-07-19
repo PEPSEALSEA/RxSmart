@@ -421,6 +421,16 @@ class WebBridgeServer:
                     "step": step,
                     **bridge._mapper.to_api_dict(),
                 })
+            elif action == "capture_pose":
+                pose_name = str(body.get("pose", "")).lower()
+                result = bridge._mapper.capture_pose_profile(pose_name)
+                status = 200 if result.get("ok") else 400
+                return jsonify({**bridge._mapper.to_api_dict(), **result}), status
+            elif action == "activate_pose":
+                pose_name = str(body.get("pose", "")).lower()
+                result = bridge._mapper.activate_pose_profile(pose_name)
+                status = 200 if result.get("ok") else 400
+                return jsonify({**bridge._mapper.to_api_dict(), **result}), status
             elif action == "set":
                 raw_map = body.get("channel_map", {})
                 if isinstance(raw_map, dict) and raw_map:

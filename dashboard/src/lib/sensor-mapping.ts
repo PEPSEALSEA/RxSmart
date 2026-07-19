@@ -17,10 +17,14 @@ export type SensorChannelReading = {
   degrees?: number;
 };
 
+export type PoseDefaultProfile = Record<string, { neutral?: number; min?: number; max?: number }>;
+
 export type SensorMappingState = {
   channel_map: Record<string, string>;
   default_map: Record<string, string>;
-  pose_defaults?: Record<string, { neutral?: number; min?: number; max?: number }>;
+  pose_defaults?: PoseDefaultProfile;
+  pose_profiles?: Record<string, PoseDefaultProfile>;
+  active_pose?: string;
   confidence: number;
   calibrated_at: number;
   calibration_step: string;
@@ -29,6 +33,11 @@ export type SensorMappingState = {
 };
 
 const STORAGE_KEY = "rxsmart_sensor_channel_map";
+
+export const POSE_PROFILE_LABELS: Record<string, string> = {
+  standing: "ท่ายืนปกติ",
+  sitting: "ท่านั่งปกติ",
+};
 
 export const CALIBRATION_STEP_LABELS: Record<string, string> = {
   neutral: "ยืนนิ่ง — แขนขาห้อยธรรมชาติ",
