@@ -14,7 +14,7 @@
 // ---------------------------------------------------------
 // Configuration / การตั้งค่าระบบ
 // ---------------------------------------------------------
-const String CURRENT_VERSION = "1.0.0";
+const String CURRENT_VERSION = "1.0.1";
 const String CLOUDFLARE_API_URL = "https://rxsmart-worker.sealseapep.workers.dev"; // URL ของ Cloudflare Workers
 
 // ตั้งค่า AP & Captive Portal
@@ -37,12 +37,22 @@ const size_t SENSOR_COUNT = 8;
 const unsigned long MOTION_SAMPLE_INTERVAL_MS = 50;
 const unsigned long CALIBRATION_WINDOW_MS = 3000;
 const float RAW_TO_DEGREE = 360.0f / 4095.0f;
+const float DEGREE_TO_RAW = 4095.0f / 360.0f;
 const float REP_UP_THRESHOLD = 65.0f;
 const float REP_DOWN_THRESHOLD = 25.0f;
 const float SAFE_MAX_JOINT_ANGLE = 165.0f;
 const float SAFE_MAX_SPEED_DPS = 220.0f;
 const int POSTURE_STABILITY_MAX = 5;
 const int POSTURE_STABILITY_MIN = -5;
+
+// 1D complementary filter (accel pitch + gyro Y). Flip sign if mount is mirrored.
+const float COMPLEMENTARY_ALPHA = 0.97f;
+const float OUTPUT_EMA_BETA = 0.25f;
+const float IMU_DT_MIN_SEC = 0.002f;
+const float IMU_DT_MAX_SEC = 0.05f;
+const float GYRO_PITCH_SIGN = 1.0f;
+const float ACCEL_SENS_2G = 16384.0f;
+const float GYRO_SENS_250DPS = 131.0f;
 
 const uint16_t POSTURE_FAULT_ELBOW_SYMMETRY = 1 << 0;
 const uint16_t POSTURE_FAULT_KNEE_SYMMETRY = 1 << 1;
@@ -60,6 +70,10 @@ const uint8_t I2C_SDA_FALLBACK_PIN = 23;
 const uint8_t I2C_SCL_PIN = 22;
 const uint8_t TCA9548A_ADDR = 0x70;             // A0=A1=A2=GND
 const uint8_t MPU6050_ADDR = 0x68;              // AD0 -> GND (ทุกตัว)
+const uint8_t MPU6050_REG_SMPLRT_DIV = 0x19;
+const uint8_t MPU6050_REG_CONFIG = 0x1A;
+const uint8_t MPU6050_REG_GYRO_CONFIG = 0x1B;
+const uint8_t MPU6050_REG_ACCEL_CONFIG = 0x1C;
 const uint8_t MPU6050_REG_PWR_MGMT_1 = 0x6B;
 const uint8_t MPU6050_REG_ACCEL_XOUT_H = 0x3B;
 
@@ -124,6 +138,12 @@ uint8_t activeI2CSdaPin = I2C_SDA_PIN;
 uint8_t activeI2CSclPin = I2C_SCL_PIN;
 bool mpuPresent[SENSOR_COUNT] = {};
 bool mpuReadOk[SENSOR_COUNT] = {};
+float fusedDeg[SENSOR_COUNT] = {};
+float smoothedDeg[SENSOR_COUNT] = {};
+float gyroBiasDps[SENSOR_COUNT] = {};
+float lastGyroPitchDps[SENSOR_COUNT] = {};
+bool filtInitialized[SENSOR_COUNT] = {};
+unsigned long lastImuSampleMs[SENSOR_COUNT] = {};
 
 // ---------------------------------------------------------
 // HTML สำหรับหน้า Captive Portal
@@ -227,9 +247,12 @@ void completeSession(const char* reason);
 const char* sessionStateToString(SessionState state);
 String buildSessionId();
 float clampAngle(float value);
+bool writeMPU6050Register(uint8_t address, uint8_t reg, uint8_t value);
 bool initMPU6050(uint8_t address);
-bool readMPU6050Accel(uint8_t address, int16_t& ax, int16_t& ay, int16_t& az);
-float accelToPseudoRaw(int16_t ax, int16_t ay, int16_t az);
+bool readMPU6050(uint8_t address, int16_t& ax, int16_t& ay, int16_t& az, int16_t& gx, int16_t& gy, int16_t& gz);
+float accelPitchDeg(int16_t ax, int16_t ay, int16_t az);
+float encodeDegrees(float degrees);
+float updateImuFilter(size_t index, float accelAngleDeg, float gyroPitchDps, unsigned long nowMs);
 void printRealtimeDebug(unsigned long nowMs);
 bool probeI2CAddress(uint8_t address);
 bool configureI2CForMPU(uint8_t sdaPin, uint8_t sclPin);
@@ -860,12 +883,20 @@ void runCalibration() {
   Serial.println("Calibration started: keep standing in reference posture.");
   const unsigned long startMs = millis();
   unsigned long sampleCount = 0;
-  float sums[SENSOR_COUNT] = {0};
+  float angleSums[SENSOR_COUNT] = {0};
+  float gyroSums[SENSOR_COUNT] = {0};
+
+  for (size_t i = 0; i < SENSOR_COUNT; i++) {
+    gyroBiasDps[i] = 0.0f;
+    filtInitialized[i] = false;
+    lastImuSampleMs[i] = 0;
+  }
 
   while (millis() - startMs < CALIBRATION_WINDOW_MS) {
     sampleSensors(millis(), false);
     for (size_t i = 0; i < SENSOR_COUNT; i++) {
-      sums[i] += sensors[i].raw;
+      angleSums[i] += sensors[i].raw;
+      gyroSums[i] += lastGyroPitchDps[i];
     }
     sampleCount++;
     delay(20);
@@ -874,8 +905,20 @@ void runCalibration() {
   if (sampleCount == 0) sampleCount = 1;
 
   for (size_t i = 0; i < SENSOR_COUNT; i++) {
-    sensors[i].zeroOffset = sums[i] / sampleCount;
+    sensors[i].zeroOffset = angleSums[i] / sampleCount;
     sensors[i].calibrated = 0;
+    gyroBiasDps[i] = gyroSums[i] / sampleCount;
+    float restDeg = sensors[i].zeroOffset * RAW_TO_DEGREE;
+    fusedDeg[i] = restDeg;
+    smoothedDeg[i] = restDeg;
+    filtInitialized[i] = mpuPresent[i];
+    Serial.printf(
+      "Calib CH%u %s: rest=%.1f deg bias=%.3f dps present=%d\n",
+      (unsigned)i,
+      sensors[i].key,
+      restDeg,
+      gyroBiasDps[i],
+      mpuPresent[i] ? 1 : 0);
   }
 
   calibrationDone = true;
@@ -894,14 +937,25 @@ void runCalibration() {
 void sampleSensors(unsigned long nowMs, bool applyCalibration) {
   if (USE_MPU6050_TEST) {
     for (size_t i = 0; i < SENSOR_COUNT; i++) {
-      int16_t ax = 0, ay = 0, az = 0;
+      int16_t ax = 0, ay = 0, az = 0, gx = 0, gy = 0, gz = 0;
       if (mpuPresent[i]) {
         tcaSelect(i);
-        mpuReadOk[i] = readMPU6050Accel(MPU6050_ADDR, ax, ay, az);
+        mpuReadOk[i] = readMPU6050(MPU6050_ADDR, ax, ay, az, gx, gy, gz);
       } else {
         mpuReadOk[i] = false;
       }
-      float raw = mpuReadOk[i] ? accelToPseudoRaw(ax, ay, az) : 0.0f;
+
+      float raw = 0.0f;
+      if (mpuReadOk[i]) {
+        float accelAngle = accelPitchDeg(ax, ay, az);
+        float gyroPitch = GYRO_PITCH_SIGN * ((float)gy / GYRO_SENS_250DPS);
+        lastGyroPitchDps[i] = gyroPitch;
+        float fused = updateImuFilter(i, accelAngle, gyroPitch, nowMs);
+        raw = encodeDegrees(fused);
+      } else {
+        lastGyroPitchDps[i] = 0.0f;
+      }
+
       sensors[i].raw = raw;
       sensors[i].calibrated = applyCalibration ? (raw - sensors[i].zeroOffset) : raw;
       sensors[i].timestampMs = nowMs;
@@ -914,6 +968,7 @@ void sampleSensors(unsigned long nowMs, bool applyCalibration) {
     sensors[i].raw = analogRead(sensors[i].pin);
     sensors[i].calibrated = applyCalibration ? (sensors[i].raw - sensors[i].zeroOffset) : sensors[i].raw;
     sensors[i].timestampMs = nowMs;
+    lastGyroPitchDps[i] = 0.0f;
   }
 }
 
@@ -1060,44 +1115,104 @@ float clampAngle(float value) {
   return value;
 }
 
-bool initMPU6050(uint8_t address) {
+bool writeMPU6050Register(uint8_t address, uint8_t reg, uint8_t value) {
   Wire.beginTransmission(address);
-  Wire.write(MPU6050_REG_PWR_MGMT_1);
-  Wire.write(0x00); // wake up MPU6050
-  if (Wire.endTransmission() != 0) {
+  Wire.write(reg);
+  Wire.write(value);
+  return Wire.endTransmission() == 0;
+}
+
+bool initMPU6050(uint8_t address) {
+  if (!writeMPU6050Register(address, MPU6050_REG_PWR_MGMT_1, 0x00)) {
+    return false;
+  }
+  delay(10);
+  if (!writeMPU6050Register(address, MPU6050_REG_SMPLRT_DIV, 0x07)) {
+    return false;
+  }
+  if (!writeMPU6050Register(address, MPU6050_REG_CONFIG, 0x03)) {
+    return false;
+  }
+  if (!writeMPU6050Register(address, MPU6050_REG_GYRO_CONFIG, 0x00)) {
+    return false;
+  }
+  if (!writeMPU6050Register(address, MPU6050_REG_ACCEL_CONFIG, 0x00)) {
     return false;
   }
   delay(10);
   return true;
 }
 
-bool readMPU6050Accel(uint8_t address, int16_t& ax, int16_t& ay, int16_t& az) {
+bool readMPU6050(
+    uint8_t address,
+    int16_t& ax,
+    int16_t& ay,
+    int16_t& az,
+    int16_t& gx,
+    int16_t& gy,
+    int16_t& gz) {
   Wire.beginTransmission(address);
   Wire.write(MPU6050_REG_ACCEL_XOUT_H);
   if (Wire.endTransmission(false) != 0) {
     return false;
   }
 
-  int readBytes = Wire.requestFrom((int)address, 6);
-  if (readBytes != 6) {
+  int readBytes = Wire.requestFrom((int)address, 14);
+  if (readBytes != 14) {
     return false;
   }
 
   ax = (Wire.read() << 8) | Wire.read();
   ay = (Wire.read() << 8) | Wire.read();
   az = (Wire.read() << 8) | Wire.read();
+  Wire.read();
+  Wire.read();
+  gx = (Wire.read() << 8) | Wire.read();
+  gy = (Wire.read() << 8) | Wire.read();
+  gz = (Wire.read() << 8) | Wire.read();
   return true;
 }
 
-float accelToPseudoRaw(int16_t ax, int16_t ay, int16_t az) {
-  float fx = (float)ax;
-  float fy = (float)ay;
-  float fz = (float)az;
-
-  // use pitch angle from accelerometer as a quick test signal
+float accelPitchDeg(int16_t ax, int16_t ay, int16_t az) {
+  float fx = (float)ax / ACCEL_SENS_2G;
+  float fy = (float)ay / ACCEL_SENS_2G;
+  float fz = (float)az / ACCEL_SENS_2G;
   float pitchDeg = atan2f(fx, sqrtf(fy * fy + fz * fz)) * 180.0f / PI;
-  float angle0to180 = constrain(pitchDeg + 90.0f, 0.0f, 180.0f);
-  return angle0to180 * (4095.0f / 360.0f); // keep compatible with sensorToDegrees()
+  return constrain(pitchDeg + 90.0f, 0.0f, 180.0f);
+}
+
+float encodeDegrees(float degrees) {
+  return constrain(degrees, 0.0f, 180.0f) * DEGREE_TO_RAW;
+}
+
+float updateImuFilter(size_t index, float accelAngleDeg, float gyroPitchDps, unsigned long nowMs) {
+  if (index >= SENSOR_COUNT) {
+    return accelAngleDeg;
+  }
+
+  float dtSec = IMU_DT_MIN_SEC;
+  if (lastImuSampleMs[index] > 0 && nowMs > lastImuSampleMs[index]) {
+    dtSec = (nowMs - lastImuSampleMs[index]) / 1000.0f;
+  }
+  if (dtSec < IMU_DT_MIN_SEC) dtSec = IMU_DT_MIN_SEC;
+  if (dtSec > IMU_DT_MAX_SEC) dtSec = IMU_DT_MAX_SEC;
+  lastImuSampleMs[index] = nowMs;
+
+  if (!filtInitialized[index]) {
+    fusedDeg[index] = accelAngleDeg;
+    smoothedDeg[index] = accelAngleDeg;
+    filtInitialized[index] = true;
+    return smoothedDeg[index];
+  }
+
+  float rate = gyroPitchDps - gyroBiasDps[index];
+  float fused = COMPLEMENTARY_ALPHA * (fusedDeg[index] + rate * dtSec)
+      + (1.0f - COMPLEMENTARY_ALPHA) * accelAngleDeg;
+  fused = constrain(fused, 0.0f, 180.0f);
+  fusedDeg[index] = fused;
+  smoothedDeg[index] = OUTPUT_EMA_BETA * fused + (1.0f - OUTPUT_EMA_BETA) * smoothedDeg[index];
+  smoothedDeg[index] = constrain(smoothedDeg[index], 0.0f, 180.0f);
+  return smoothedDeg[index];
 }
 
 bool probeI2CAddress(uint8_t address) {
