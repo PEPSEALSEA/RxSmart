@@ -747,6 +747,9 @@ class SensorMappingManager:
         }
 
     def to_api_dict(self) -> dict[str, Any]:
+        degrees: Optional[list[float]] = None
+        if self._motion_buffer and len(self._motion_buffer[-1]) >= 8:
+            degrees = [round(float(d), 2) for d in self._motion_buffer[-1][:8]]
         return {
             "channel_map": {str(k): v for k, v in sorted(self.channel_map.items())},
             "default_map": {str(k): v for k, v in sorted(DEFAULT_CHANNEL_MAP.items())},
@@ -758,6 +761,7 @@ class SensorMappingManager:
             "calibration_step": self.calibration_step,
             "calibration_steps": CALIBRATION_STEPS,
             "buffer_samples": len(self._motion_buffer),
+            "channel_degrees": degrees,
         }
 
     def _flatten_guided(self, steps: Optional[list[str]] = None) -> list[list[float]]:

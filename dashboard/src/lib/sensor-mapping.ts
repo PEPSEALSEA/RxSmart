@@ -31,6 +31,8 @@ export type SensorMappingState = {
   calibration_step: string;
   calibration_steps: string[];
   buffer_samples: number;
+  /** Live CH0–7 degrees from motion buffer (when available). */
+  channel_degrees?: number[] | null;
 };
 
 const STORAGE_KEY = "rxsmart_sensor_channel_map";
@@ -48,6 +50,17 @@ export const CALIBRATION_STEP_LABELS: Record<string, string> = {
   move_thighs: "ยกขา / ขยับต้นขาทั้งสองข้าง",
   arms_down: "ห้อยแขนทั้งสองข้าง — จับค่า default (baseline)",
   arms_up_down: "ยกแขนขึ้น–ลงช้าๆ ทั้งสองข้าง — จับช่วง default",
+};
+
+/** What the wizard is collecting / when it writes disk for each guided step. */
+export const CALIBRATION_STEP_SAVE_HINTS: Record<string, string> = {
+  neutral: "กำลังเก็บตัวอย่างท่านิ่งในหน่วยความจำ — ยังไม่เขียนไฟล์",
+  move_forearms: "กำลังเก็บว่า CH ไหนขยับตอนงอศอก — ยังไม่เขียนไฟล์",
+  move_shoulders: "กำลังเก็บว่า CH ไหนขยับตอนยกไหล่ — ยังไม่เขียนไฟล์",
+  move_shins: "กำลังเก็บว่า CH ไหนขยับตอนงอเข่า — ยังไม่เขียนไฟล์",
+  move_thighs: "หลังกดถัดไปจะเขียน channel_map ลง sensor_map.json",
+  arms_down: "กำลังเก็บมุม baseline แขนห้อย — ยังไม่เขียน pose_defaults",
+  arms_up_down: "หลังกดถัดไปจะเขียน pose_defaults (standing) ลง sensor_map.json",
 };
 
 export function calibratedToDegrees(calibrated: number): number {

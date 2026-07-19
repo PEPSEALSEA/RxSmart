@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import FadeIn from "@/components/ui/FadeIn";
+import SensorSetupWizard from "@/components/SensorSetupWizard";
 import {
   bridgeFrameUrl,
   fetchBridgeState,
@@ -10,20 +11,19 @@ import {
   LocalBridgeState,
   mapLocalJointsToFrame,
   pingBridge,
-  postSensorMappingAction,
   saveBridgeUrl,
   setBridgeMode,
   setBridgeSkeletonDebug,
 } from "@/lib/local-bridge";
 import { SensorFrame } from "@/lib/pose-physics";
 import {
-  CALIBRATION_STEP_LABELS,
   ChannelMap,
   parseChannelMap,
   POSE_PROFILE_LABELS,
   saveStoredChannelMap,
   SensorMappingState,
 } from "@/lib/sensor-mapping";
+import { POSE_LABELS } from "@/lib/pose";
 
 interface LocalBridgePanelProps {
   onConnectChange: (connected: boolean) => void;
@@ -64,9 +64,7 @@ export default function LocalBridgePanel({
   const [error, setError] = useState("");
   const [mapping, setMapping] = useState<SensorMappingState | null>(null);
   const [channelMap, setChannelMap] = useState<ChannelMap>(() => parseChannelMap(undefined));
-  const [mapBusy, setMapBusy] = useState("");
-  const [mapMessage, setMapMessage] = useState("");
-  const autoRecheckAt = useRef(0);
+  const [wizardOpen, setWizardOpen] = useState(false);
   const connectInFlight = useRef(false);
   const channelMapRef = useRef(channelMap);
   const imuStats = variant === "imu";
@@ -153,15 +151,6 @@ export default function LocalBridgePanel({
 
         onFrameUpdate(mapLocalJointsToFrame(next.joints, activeMap, next.sensor_mapping?.active_pose));
 
-        if (
-          imuStats &&
-          next.sensor_mapping &&
-          next.sensor_mapping.buffer_samples >= 15 &&
-          Date.now() - autoRecheckAt.current > 30_000
-        ) {
-          autoRecheckAt.current = Date.now();
-          void postSensorMappingAction(bridgeUrl, "auto_recheck").catch(() => undefined);
-        }
         setFrameTick(Date.now());
         setError("");
       } catch {
@@ -183,66 +172,7 @@ export default function LocalBridgePanel({
       cancelled = true;
       clearInterval(interval);
     };
-  }, [polling, connected, bridgeUrl, onConnectChange, onFrameUpdate, onStateUpdate, imuStats]);
-
-  const runMapAction = async (
-    action: "reset" | "auto_recheck" | "calibrate_start" | "calibrate_next",
-  ) => {
-    setMapBusy(action);
-    setMapMessage("");
-    try {
-      const data = await postSensorMappingAction(bridgeUrl, action);
-      if (data.channel_map) {
-        const parsed = parseChannelMap(data.channel_map as Record<string, string>);
-        setChannelMap(parsed);
-        saveStoredChannelMap(parsed);
-      }
-      setMapping(data as SensorMappingState);
-      if (action === "auto_recheck") {
-        setMapMessage(
-          data.updated
-            ? `อัปเดต mapping แล้ว (confidence ${Math.round((data.confidence as number) * 100)}%)`
-            : `mapping ปัจจุบันดีอยู่ (${Math.round((data.confidence as number) * 100)}%)`,
-        );
-      } else if (action === "calibrate_next") {
-        setMapMessage(
-          data.step === "complete"
-            ? "Setup เสร็จ — จำตำแหน่ง sensor + ค่า default แขนแล้ว"
-            : `ขั้นตอนถัดไป: ${CALIBRATION_STEP_LABELS[data.step as string] ?? data.step}`,
-        );
-      } else if (action === "calibrate_start") {
-        setMapMessage(`เริ่ม calibrate — ${CALIBRATION_STEP_LABELS.neutral}`);
-      } else {
-        setMapMessage("รีเซ็ตเป็น firmware default แล้ว");
-      }
-    } catch (err) {
-      setMapMessage(err instanceof Error ? err.message : "sensor map ไม่สำเร็จ");
-    } finally {
-      setMapBusy("");
-    }
-  };
-
-  const runPoseAction = async (
-    action: "capture_pose" | "activate_pose",
-    pose: "standing" | "sitting",
-  ) => {
-    setMapBusy(`${action}:${pose}`);
-    setMapMessage("");
-    try {
-      const data = await postSensorMappingAction(bridgeUrl, action, { pose });
-      setMapping(data as SensorMappingState);
-      const label = POSE_PROFILE_LABELS[pose] ?? pose;
-      if (action === "capture_pose") {
-        setMapMessage(`บันทึก ${label} เป็น default แล้ว — ใช้อยู่ตอนนี้`);
-      } else {
-        setMapMessage(`สลับใช้ ${label} แล้ว`);
-      }
-    } catch (err) {
-      setMapMessage(err instanceof Error ? err.message : "ตั้งค่าท่าไม่สำเร็จ");
-    } finally {
-      setMapBusy("");
-    }
-  };
+  }, [polling, connected, bridgeUrl, onConnectChange, onFrameUpdate, onStateUpdate]);
 
   const handleMode = async (mode: LocalBridgeMode) => {
     try {
@@ -446,111 +376,66 @@ export default function LocalBridgePanel({
             <div className="cohere-card p-5">
               <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
                 <div>
-                  <p className="cohere-mono-label text-[11px]">
-                    Sensor mapping · distal-first setup
-                  </p>
+                  <p className="cohere-mono-label text-[11px]">Sensor mapping</p>
                   <p className="mt-2 text-sm text-cohere-body-muted">
                     confidence{" "}
                     {mapping ? `${Math.round(mapping.confidence * 100)}%` : "—"}
-                    {mapping?.calibration_step && mapping.calibration_step !== "idle"
-                      ? ` · ขั้นตอน: ${CALIBRATION_STEP_LABELS[mapping.calibration_step] ?? mapping.calibration_step}`
+                    {mapping?.active_pose
+                      ? ` · ท่า: ${POSE_PROFILE_LABELS[mapping.active_pose] ?? mapping.active_pose}`
                       : ""}
                   </p>
                   <p className="mt-1 text-xs text-cohere-muted">
-                    ขยับทั้งสองข้างพร้อมกัน — ระบบเดาซ้าย–ขวาให้
+                    แมป CH→ข้อต่อ บันทึกใน{" "}
+                    <span className="font-mono-label">sensor_map.json</span> บนเครื่องนี้ · ใช้
+                    Setup Wizard เพื่อจับและแก้แมป
                   </p>
                 </div>
-                <div className="flex flex-wrap gap-2">
-                  <button
-                    type="button"
-                    disabled={Boolean(mapBusy)}
-                    onClick={() => void runMapAction("auto_recheck")}
-                    className="cohere-btn-pill-outline text-xs disabled:opacity-50"
-                  >
-                    {mapBusy === "auto_recheck" ? "…" : "Auto recheck"}
-                  </button>
-                  <button
-                    type="button"
-                    disabled={Boolean(mapBusy)}
-                    onClick={() => void runMapAction("calibrate_start")}
-                    className="cohere-btn-pill-outline text-xs disabled:opacity-50"
-                  >
-                    เริ่ม calibrate
-                  </button>
-                  <button
-                    type="button"
-                    disabled={
-                      Boolean(mapBusy) ||
-                      !mapping?.calibration_step ||
-                      mapping.calibration_step === "idle"
-                    }
-                    onClick={() => void runMapAction("calibrate_next")}
-                    className="cohere-btn-primary px-4 py-2 text-xs disabled:opacity-50"
-                  >
-                    {mapBusy === "calibrate_next" ? "…" : "ขั้นถัดไป"}
-                  </button>
-                  <button
-                    type="button"
-                    disabled={Boolean(mapBusy)}
-                    onClick={() => void runMapAction("reset")}
-                    className="cohere-btn-pill-outline border-dashed text-xs disabled:opacity-50"
-                  >
-                    Reset default
-                  </button>
-                </div>
+                <button
+                  type="button"
+                  onClick={() => setWizardOpen(true)}
+                  className="cohere-btn-primary px-5 py-2.5 text-xs"
+                >
+                  Setup Wizard
+                </button>
               </div>
-              {mapMessage && (
-                <p className="mt-4 rounded-cohere-sm bg-cohere-pale-green px-4 py-2.5 text-xs text-cohere-ink">{mapMessage}</p>
-              )}
 
-              <div className="mt-5 border-t border-cohere-hairline pt-5">
-                <p className="cohere-mono-label text-[11px]">Default pose</p>
-                <p className="mt-2 text-sm text-cohere-body-muted">
-                  ท่าที่ใช้อยู่:{" "}
-                  {mapping?.active_pose
-                    ? POSE_PROFILE_LABELS[mapping.active_pose] ?? mapping.active_pose
-                    : "ยังไม่ตั้ง"}
-                </p>
-                <p className="mt-1 text-xs text-cohere-muted">
-                  ยืนหรือนั่งนิ่งในท่าที่ต้องการ แล้วกดบันทึก
-                </p>
-                <div className="mt-3 flex flex-wrap gap-2">
-                  <button
-                    type="button"
-                    disabled={Boolean(mapBusy)}
-                    onClick={() => void runPoseAction("capture_pose", "standing")}
-                    className="cohere-btn-primary px-4 py-2 text-xs disabled:opacity-50"
-                  >
-                    {mapBusy === "capture_pose:standing" ? "…" : "บันทึกท่ายืนปกติ"}
-                  </button>
-                  <button
-                    type="button"
-                    disabled={Boolean(mapBusy)}
-                    onClick={() => void runPoseAction("capture_pose", "sitting")}
-                    className="cohere-btn-primary px-4 py-2 text-xs disabled:opacity-50"
-                  >
-                    {mapBusy === "capture_pose:sitting" ? "…" : "บันทึกท่านั่งปกติ"}
-                  </button>
-                  <button
-                    type="button"
-                    disabled={Boolean(mapBusy) || !mapping?.pose_profiles?.standing}
-                    onClick={() => void runPoseAction("activate_pose", "standing")}
-                    className="cohere-btn-pill-outline text-xs disabled:opacity-50"
-                  >
-                    ใช้ท่ายืน
-                  </button>
-                  <button
-                    type="button"
-                    disabled={Boolean(mapBusy) || !mapping?.pose_profiles?.sitting}
-                    onClick={() => void runPoseAction("activate_pose", "sitting")}
-                    className="cohere-btn-pill-outline text-xs disabled:opacity-50"
-                  >
-                    ใช้ท่านั่ง
-                  </button>
+              {mapping?.channel_map && (
+                <div className="mt-4 grid grid-cols-2 gap-2 sm:grid-cols-4">
+                  {Array.from({ length: 8 }, (_, ch) => {
+                    const key = channelMap[ch];
+                    return (
+                      <div
+                        key={ch}
+                        className="rounded-cohere-sm border border-cohere-hairline px-2.5 py-2"
+                      >
+                        <p className="font-mono-label text-[10px] text-cohere-muted">CH{ch}</p>
+                        <p className="mt-0.5 truncate text-[11px] text-cohere-ink">
+                          {key ? POSE_LABELS[key] ?? key : "—"}
+                        </p>
+                      </div>
+                    );
+                  })}
                 </div>
-              </div>
+              )}
             </div>
           )}
+
+          <SensorSetupWizard
+            open={wizardOpen}
+            onClose={() => setWizardOpen(false)}
+            bridgeUrl={bridgeUrl}
+            mapping={mapping}
+            sensors={state?.joints?.sensors ?? null}
+            channelDegrees={mapping?.channel_degrees ?? null}
+            onMappingChange={(next) => {
+              setMapping(next);
+              if (next.channel_map) {
+                const parsed = parseChannelMap(next.channel_map);
+                setChannelMap(parsed);
+                saveStoredChannelMap(parsed);
+              }
+            }}
+          />
         </FadeIn>
       )}
     </div>
