@@ -25,6 +25,7 @@ import config
 from data_models import JointData, SystemMode
 from sensor_mapper import (
     SensorMappingManager,
+    angles_to_pose_frame,
     calibrated_to_degrees,
     sensors_to_angles,
 )
@@ -103,9 +104,12 @@ def _apply_sensor_mapping(
 
     mapper.ingest_channels(degrees)
 
-    # Absolute angles drive the 3D mannequin. Pose-defaults only affect relative feedback.
+    # Absolute angles for readout; relative (vs wizard pose_defaults) for IMU scoring.
     mapped_abs = sensors_to_angles(degrees, mapper.channel_map, pose_defaults=None)
     mapped_rel = sensors_to_angles(degrees, mapper.channel_map, mapper.pose_defaults)
+    # Camera keeps MediaPipe pose_frame; IoT builds one from mapped IMU angles.
+    imu_pose_frame = angles_to_pose_frame(mapped_rel)
+    pose_frame = joint_data.pose_frame if joint_data.source in ("camera", "fused") else imu_pose_frame
 
     jd = JointData(
         elbow_left=mapped_abs["elbow_left"],
@@ -122,7 +126,7 @@ def _apply_sensor_mapping(
         raw_hands=joint_data.raw_hands,
         raw_sensors=joint_data.raw_sensors,
         sensor_channels=joint_data.sensor_channels,
-        pose_frame=joint_data.pose_frame,
+        pose_frame=pose_frame,
         posture_state=joint_data.posture_state,
         posture_fault_mask=joint_data.posture_fault_mask,
         rep_count=joint_data.rep_count,
@@ -186,7 +190,9 @@ def _joint_to_dict(j: JointData, sensor_map: Optional[dict] = None) -> dict[str,
         rel = j.raw_sensors.get("angles_relative")
         if isinstance(rel, dict):
             payload["angles_relative"] = {
-                k: round(float(v), 2) for k, v in rel.items()
+                k: round(float(v), 2)
+                for k, v in rel.items()
+                if isinstance(v, (int, float))
             }
     if j.sensor_channels:
         payload["sensors"] = [

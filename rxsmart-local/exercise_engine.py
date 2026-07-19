@@ -63,7 +63,15 @@ def _velocities(prev_frame: Optional[dict], frame: dict, dt: float) -> Dict[str,
     return out
 
 
-def _evaluate_upper(key: str, frame: dict, targets: dict, velocities: dict, active: bool, phase: ExercisePhase) -> dict:
+def _evaluate_upper(
+    key: str,
+    frame: dict,
+    targets: dict,
+    velocities: dict,
+    active: bool,
+    phase: ExercisePhase,
+    score_plane: bool = True,
+) -> dict:
     lim = UPPER_JOINT_LIMITS[key]
     f = frame[key]
     t = targets[key]
@@ -71,11 +79,12 @@ def _evaluate_upper(key: str, frame: dict, targets: dict, velocities: dict, acti
 
     elevation_error = abs(f["elevation"] - t["elevation"])
     plane_error = abs(shortest_plane_delta(f["plane"], t["plane"]))
-    angle_ok = (not active) or (
-        elevation_error <= lim["elevation"]["tolerance"] and plane_error <= lim["plane"]["tolerance"]
-    )
+    elev_ok = elevation_error <= lim["elevation"]["tolerance"]
+    plane_ok = (not score_plane) or plane_error <= lim["plane"]["tolerance"]
+    angle_ok = (not active) or (elev_ok and plane_ok)
 
-    speed = math.hypot(v["elevation"], v["plane"])
+    # IMU has no plane motion — judge speed from elevation alone.
+    speed = abs(v["elevation"]) if not score_plane else math.hypot(v["elevation"], v["plane"])
     is_holding = phase.hold_seconds > 0
     velocity_ok = True
     if active and not is_holding and speed > 0.5:
@@ -84,7 +93,7 @@ def _evaluate_upper(key: str, frame: dict, targets: dict, velocities: dict, acti
         velocity_ok = speed < 14
 
     score_e = _joint_score(elevation_error, lim["elevation"]["tolerance"])
-    score_p = _joint_score(plane_error, lim["plane"]["tolerance"])
+    score_p = _joint_score(plane_error, lim["plane"]["tolerance"]) if score_plane else score_e
 
     return {
         "elevation": round(f["elevation"], 2),
@@ -102,7 +111,15 @@ def _evaluate_upper(key: str, frame: dict, targets: dict, velocities: dict, acti
     }
 
 
-def _evaluate_lower(key: str, frame: dict, targets: dict, velocities: dict, active: bool, phase: ExercisePhase) -> dict:
+def _evaluate_lower(
+    key: str,
+    frame: dict,
+    targets: dict,
+    velocities: dict,
+    active: bool,
+    phase: ExercisePhase,
+    score_plane: bool = True,  # noqa: ARG001 — kept for call-site symmetry with upper
+) -> dict:
     lim = LOWER_JOINT_LIMITS[key]["bend"]
     f = frame[key]
     t = targets[key]
@@ -133,15 +150,30 @@ def _evaluate_lower(key: str, frame: dict, targets: dict, velocities: dict, acti
     }
 
 
-def _evaluate_joint(key: str, frame: dict, targets: dict, velocities: dict, active: bool, phase: ExercisePhase) -> dict:
+def _evaluate_joint(
+    key: str,
+    frame: dict,
+    targets: dict,
+    velocities: dict,
+    active: bool,
+    phase: ExercisePhase,
+    score_plane: bool = True,
+) -> dict:
     if key in UPPER_KEYS:
-        return _evaluate_upper(key, frame, targets, velocities, active, phase)
-    return _evaluate_lower(key, frame, targets, velocities, active, phase)
+        return _evaluate_upper(key, frame, targets, velocities, active, phase, score_plane=score_plane)
+    return _evaluate_lower(key, frame, targets, velocities, active, phase, score_plane=score_plane)
 
 
-def _is_at_target(frame: dict, targets: dict, velocities: dict, active_joints: List[str], phase: ExercisePhase) -> bool:
+def _is_at_target(
+    frame: dict,
+    targets: dict,
+    velocities: dict,
+    active_joints: List[str],
+    phase: ExercisePhase,
+    score_plane: bool = True,
+) -> bool:
     for key in active_joints:
-        fb = _evaluate_joint(key, frame, targets, velocities, True, phase)
+        fb = _evaluate_joint(key, frame, targets, velocities, True, phase, score_plane=score_plane)
         if not fb["angleOk"]:
             return False
     return True
@@ -179,13 +211,14 @@ def build_session_feedback(
     rep: int,
     total_reps: int,
     status: str,
+    score_plane: bool = True,
 ) -> SessionFeedback:
     joint_feedback: Dict[str, dict] = {}
     active_scores: List[float] = []
 
     for key in POSE_KEYS:
         active = key in phase.active_joints
-        fb = _evaluate_joint(key, frame, targets, velocities, active, phase)
+        fb = _evaluate_joint(key, frame, targets, velocities, active, phase, score_plane=score_plane)
         if active:
             active_scores.append(fb.pop("_score"))
         else:
@@ -196,11 +229,17 @@ def build_session_feedback(
 
     messages: List[str] = []
     if status == "holding":
-        messages.append("ค้างท่า — รักษามุม elevation + plane ให้คงที่")
+        messages.append(
+            "ค้างท่า — รักษามุมยกให้คงที่"
+            if not score_plane
+            else "ค้างท่า — รักษามุม elevation + plane ให้คงที่"
+        )
     elif status == "moving":
         has_upper_active = any(k in UPPER_KEYS for k in phase.active_joints)
-        if has_upper_active:
+        if has_upper_active and score_plane:
             messages.append("หมุนข้อต่อรอบทิศ — ควบคุมทั้งยกขึ้นและทิศทาง (plane)")
+        elif has_upper_active:
+            messages.append("ยก/ลดตามเป้า — คะแนนจากมุม elevation ของ IMU")
         else:
             messages.append("ความเร็วและมุมเหมาะสม — ทำต่อได้เลย")
     elif status == "rest":
@@ -208,7 +247,11 @@ def build_session_feedback(
     elif status == "complete":
         messages.append("เสร็จโปรแกรมแล้ว!")
     else:
-        messages.append("กดเริ่มเพื่อฝึก — คำนวณจากกล้องบนเครื่องนี้ (Python)")
+        messages.append(
+            "กดเริ่มเพื่อฝึก — คะแนนจาก IMU (elevation / bend)"
+            if not score_plane
+            else "กดเริ่มเพื่อฝึก — คำนวณจากกล้องบนเครื่องนี้ (Python)"
+        )
 
     return SessionFeedback(
         score=round(raw_score),
@@ -310,7 +353,7 @@ class ExerciseSessionManager:
         self._running = False
         self._status = "complete"
 
-    def tick(self, frame: Optional[dict]) -> SessionFeedback:
+    def tick(self, frame: Optional[dict], score_plane: bool = True) -> SessionFeedback:
         now = time.perf_counter()
         dt = 0.0 if self._last_tick_ts is None else max(0.0, now - self._last_tick_ts)
         dt = min(dt, 1.0)  # guard against huge gaps (bridge disconnects, etc.)
@@ -323,7 +366,10 @@ class ExerciseSessionManager:
         phase = self._current_phase()
 
         if not self._running:
-            fb = build_session_feedback(frame, self._targets, velocities, phase, self._rep, self._exercise.reps, "idle")
+            fb = build_session_feedback(
+                frame, self._targets, velocities, phase, self._rep, self._exercise.reps, "idle",
+                score_plane=score_plane,
+            )
             return self._smooth(fb)
 
         if self._rest_remaining > 0:
@@ -333,12 +379,17 @@ class ExerciseSessionManager:
             if self._rest_remaining == 0:
                 self._status = "moving"
                 self._targets = resolve_pose(self._exercise.start_pose, phase.targets)
-            fb = build_session_feedback(frame, self._targets, velocities, phase, self._rep, self._exercise.reps, self._status)
+            fb = build_session_feedback(
+                frame, self._targets, velocities, phase, self._rep, self._exercise.reps, self._status,
+                score_plane=score_plane,
+            )
             return self._smooth(fb)
 
         self._targets = resolve_pose(self._exercise.start_pose, phase.targets)
         self._phase_elapsed += dt
-        at_target = _is_at_target(frame, self._targets, velocities, phase.active_joints, phase)
+        at_target = _is_at_target(
+            frame, self._targets, velocities, phase.active_joints, phase, score_plane=score_plane,
+        )
 
         if phase.hold_seconds > 0:
             self._status = "holding" if at_target else "moving"
@@ -349,7 +400,10 @@ class ExerciseSessionManager:
         else:
             self._status = "moving"
 
-        fb = build_session_feedback(frame, self._targets, velocities, phase, self._rep, self._exercise.reps, self._status)
+        fb = build_session_feedback(
+            frame, self._targets, velocities, phase, self._rep, self._exercise.reps, self._status,
+            score_plane=score_plane,
+        )
         return self._smooth(fb)
 
     def _smooth(self, fb: SessionFeedback) -> SessionFeedback:

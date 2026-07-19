@@ -421,6 +421,47 @@ def sensors_to_angles(
     return apply_pose_defaults(angles, pose_defaults)
 
 
+ARM_REST_ELEV = 8.0
+ARM_REST_PLANE = 18.0
+
+
+def angles_to_pose_frame(angles: dict[str, float]) -> dict[str, dict[str, float]]:
+    """
+    Map IMU joint angles into the 8-key pose_frame used by exercise_engine.
+
+    Single-pitch IMU has no plane — plane is filled with rest defaults and
+    scoring should ignore it (score_plane=False). Elevation uses relative
+    shoulder/hip (0 at hang) plus a small rest bias so targets like ARM_REST
+    (~8°) line up with arms-down after wizard calibration.
+    """
+
+    def clamp(v: float, lo: float = 0.0, hi: float = 180.0) -> float:
+        return max(lo, min(hi, float(v)))
+
+    return {
+        "l_arm_upper": {
+            "elevation": clamp(float(angles.get("shoulder_left", 0.0)) + ARM_REST_ELEV),
+            "plane": ARM_REST_PLANE,
+        },
+        "r_arm_upper": {
+            "elevation": clamp(float(angles.get("shoulder_right", 0.0)) + ARM_REST_ELEV),
+            "plane": ARM_REST_PLANE,
+        },
+        "l_leg_upper": {
+            "elevation": clamp(abs(float(angles.get("hip_left", 0.0)))),
+            "plane": 90.0 if abs(float(angles.get("hip_left", 0.0))) > 8.0 else 0.0,
+        },
+        "r_leg_upper": {
+            "elevation": clamp(abs(float(angles.get("hip_right", 0.0)))),
+            "plane": 90.0 if abs(float(angles.get("hip_right", 0.0))) > 8.0 else 0.0,
+        },
+        "l_arm_lower": {"bend": clamp(float(angles.get("elbow_left", 0.0)))},
+        "r_arm_lower": {"bend": clamp(float(angles.get("elbow_right", 0.0)))},
+        "l_leg_lower": {"bend": clamp(float(angles.get("knee_left", 0.0)), 0.0, 140.0)},
+        "r_leg_lower": {"bend": clamp(float(angles.get("knee_right", 0.0)), 0.0, 140.0)},
+    }
+
+
 def apply_pose_defaults(
     angles: dict[str, float],
     pose_defaults: Optional[dict[str, dict[str, float]]],

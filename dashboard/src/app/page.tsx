@@ -8,20 +8,12 @@ import LocalBridgePanel from "@/components/LocalBridgePanel";
 import SensorReadout from "@/components/SensorReadout";
 import FadeIn from "@/components/ui/FadeIn";
 import {
-  BridgeLiveTelemetry,
   LocalBridgeState,
   loadBridgeUrl,
   mapBridgeSessionFeedback,
-  mapBridgeToLiveTelemetry,
   postBridgeSessionAction,
   selectBridgeExercise,
 } from "@/lib/local-bridge";
-import { FIRMWARE_SENSOR_TO_POSE, isUpperKey } from "@/lib/pose";
-import {
-  calibratedToDegrees,
-  mapSensorsToFrame,
-  parseChannelMap,
-} from "@/lib/sensor-mapping";
 import { getExerciseById, REHAB_EXERCISES, RehabExercise } from "@/lib/rehab-exercises";
 import {
   RehabSessionEngine,
@@ -31,8 +23,6 @@ import {
   createNeutralFrame,
   stepPhysics,
 } from "@/lib/pose-physics";
-
-type LiveTelemetry = BridgeLiveTelemetry;
 
 type DataMode = "simulation" | "live" | "camera";
 
@@ -75,64 +65,11 @@ function makeIdleFeedback(exercise: RehabExercise, frame: SensorFrame): SessionF
   return { ...fb, messages: ["เลือกโปรแกรมฝึกแล้วกดเริ่ม — โหมดจำลอง physics 8 sensor"] };
 }
 
-function mapTelemetryToFrame(payload: LiveTelemetry): SensorFrame {
-  if (payload.sensors?.length) {
-    return mapSensorsToFrame(
-      payload.sensors,
-      parseChannelMap(payload.sensor_map),
-    );
-  }
-
-  const base = createNeutralFrame();
-  if (payload.angles) {
-    base.l_arm_lower.bend = payload.angles.elbow_left ?? base.l_arm_lower.bend;
-    base.r_arm_lower.bend = payload.angles.elbow_right ?? base.r_arm_lower.bend;
-    base.l_leg_lower.bend = payload.angles.knee_left ?? base.l_leg_lower.bend;
-    base.r_leg_lower.bend = payload.angles.knee_right ?? base.r_leg_lower.bend;
-  }
-
-  if (Array.isArray(payload.sensors)) {
-    for (const sensor of payload.sensors) {
-      const poseKey = sensor.key ? FIRMWARE_SENSOR_TO_POSE[sensor.key] : undefined;
-      if (!poseKey || typeof sensor.calibrated !== "number") continue;
-      const calibrated = calibratedToDegrees(sensor.calibrated);
-      if (isUpperKey(poseKey)) {
-        base[poseKey].elevation = calibrated;
-      } else {
-        base[poseKey].bend = calibrated;
-      }
-    }
-  }
-
-  return base;
-}
-
-function mapSessionState(state?: string): "idle" | "moving" | "holding" | "rest" | "complete" {
-  if (state === "exercise") return "moving";
-  if (state === "complete") return "complete";
-  return "idle";
-}
-
-function makeLiveFeedback(exercise: RehabExercise, payload: LiveTelemetry): SessionFeedback {
-  const base = makeIdleFeedback(exercise, createNeutralFrame());
-  return {
-    ...base,
-    status: mapSessionState(payload.session_state),
-    rep: payload.rep_count ?? 0,
-    totalReps: payload.rep_target ?? exercise.reps,
-    messages: [
-      `Board session: ${payload.session_state || "idle"}`,
-      `ความเร็ว ${(payload.speed_dps ?? 0).toFixed(1)}°/s · posture ${payload.posture?.state || "—"}`,
-    ],
-  };
-}
-
 /**
- * Camera mode no longer computes score/angleOk in the browser — Python
- * (rxsmart-local/exercise_engine.py) judges pose correctness from the real
- * camera angles and this just renders that result as-is.
+ * Live IMU + Camera: score/angleOk judged on Python (exercise_engine).
+ * Browser only renders session_feedback from the local bridge.
  */
-function makeCameraFeedback(state: LocalBridgeState): SessionFeedback | null {
+function makeBridgeFeedback(state: LocalBridgeState, sourceLabel: string): SessionFeedback | null {
   const mapped = mapBridgeSessionFeedback(state.session_feedback);
   if (!mapped) return null;
   const joints = state.joints;
@@ -141,8 +78,8 @@ function makeCameraFeedback(state: LocalBridgeState): SessionFeedback | null {
     messages: [
       ...mapped.messages,
       joints
-        ? `confidence ${Math.round(joints.confidence * 100)}% · ${joints.source}`
-        : "รอ MediaPipe จับ pose…",
+        ? `${sourceLabel} · ${joints.source} · conf ${Math.round(joints.confidence * 100)}%`
+        : `รอข้อมูลจาก ${sourceLabel}…`,
     ].slice(0, 3),
   };
 }
@@ -221,9 +158,8 @@ export default function UserHome() {
   const rafRef = useRef<number | null>(null);
 
   const isLive = dataMode === "live" && bridgeConnected;
-  const isCameraBridge = dataMode === "camera" && bridgeConnected;
-  const useExternalFrame = isLive || isCameraBridge;
-  const liveTelemetry = bridgeState ? mapBridgeToLiveTelemetry(bridgeState) : null;
+  const useBridgeControls = dataMode === "live" || dataMode === "camera";
+  const useExternalFrame = useBridgeControls && bridgeConnected;
 
   useEffect(() => {
     const tick = (now: number) => {
@@ -254,28 +190,19 @@ export default function UserHome() {
   const handleSelectExercise = (next: RehabExercise) => {
     setExercise(next);
 
-    if (isCameraBridge) {
-      // Python owns exercise selection/targets for Camera mode — the
-      // browser just tells it which one to judge against.
+    if (useBridgeControls) {
       void selectBridgeExercise(loadBridgeUrl(), next.id).catch(() => undefined);
       return;
     }
 
     engineRef.current.setExercise(next);
-    if (isLive && liveTelemetry) {
-      const mappedFrame = mapTelemetryToFrame(liveTelemetry);
-      frameRef.current = mappedFrame;
-      setFrame(mappedFrame);
-      setFeedback(makeLiveFeedback(next, liveTelemetry));
-    } else {
-      frameRef.current = createNeutralFrame();
-      setFrame(createNeutralFrame());
-      setFeedback(makeIdleFeedback(next, createNeutralFrame()));
-    }
+    frameRef.current = createNeutralFrame();
+    setFrame(createNeutralFrame());
+    setFeedback(makeIdleFeedback(next, createNeutralFrame()));
   };
 
   const handleStart = () => {
-    if (isCameraBridge) {
+    if (useBridgeControls) {
       void postBridgeSessionAction(loadBridgeUrl(), "start").catch(() => undefined);
       return;
     }
@@ -284,7 +211,7 @@ export default function UserHome() {
   };
 
   const handleStop = () => {
-    if (isCameraBridge) {
+    if (useBridgeControls) {
       void postBridgeSessionAction(loadBridgeUrl(), "stop").catch(() => undefined);
       return;
     }
@@ -292,7 +219,7 @@ export default function UserHome() {
   };
 
   const handleReset = () => {
-    if (isCameraBridge) {
+    if (useBridgeControls) {
       void postBridgeSessionAction(loadBridgeUrl(), "reset").catch(() => undefined);
       return;
     }
@@ -321,18 +248,16 @@ export default function UserHome() {
   const handleBridgeStateUpdate = (state: LocalBridgeState | null) => {
     setBridgeState(state);
     if (!state) return;
+    if (state.exercise_id && state.exercise_id !== exercise.id) {
+      const synced = getExerciseById(state.exercise_id);
+      if (synced) setExercise(synced);
+    }
     if (dataMode === "live") {
-      const telemetry = mapBridgeToLiveTelemetry(state);
-      if (telemetry) {
-        setFeedback(makeLiveFeedback(exercise, telemetry));
-      }
+      const liveFb = makeBridgeFeedback(state, "IMU");
+      if (liveFb) setFeedback(liveFb);
     } else if (dataMode === "camera") {
-      if (state.exercise_id && state.exercise_id !== exercise.id) {
-        const synced = getExerciseById(state.exercise_id);
-        if (synced) setExercise(synced);
-      }
-      const camFeedback = makeCameraFeedback(state);
-      if (camFeedback) setFeedback(camFeedback);
+      const camFb = makeBridgeFeedback(state, "Camera");
+      if (camFb) setFeedback(camFb);
     }
   };
 
@@ -406,7 +331,7 @@ export default function UserHome() {
         </FadeIn>
 
         {dataMode === "live" && (
-          <FadeIn delay={80} className="mb-8">
+          <FadeIn delay={80} className="mb-8 space-y-8">
             <LocalBridgePanel
               autoConnect
               defaultMode="IOT_ONLY"
@@ -416,6 +341,37 @@ export default function UserHome() {
               onFrameUpdate={handleBridgeFrameUpdate}
               onStateUpdate={handleBridgeStateUpdate}
             />
+
+            {bridgeConnected && (
+              <section className="grid gap-8 lg:grid-cols-12">
+                <FadeIn delay={120} className="lg:col-span-7">
+                  <div className="cohere-card flex h-full min-h-[480px] flex-col p-5 sm:p-6">
+                    <RehabPanel
+                      exercise={exercise}
+                      feedback={feedback}
+                      onSelectExercise={handleSelectExercise}
+                      onStart={handleStart}
+                      onStop={handleStop}
+                      onReset={handleReset}
+                    />
+                  </div>
+                </FadeIn>
+
+                <FadeIn delay={180} className="lg:col-span-5">
+                  <section className="cohere-card h-full overflow-hidden">
+                    <div className="border-b border-cohere-hairline px-6 py-5">
+                      <h2 className="text-base font-normal text-cohere-ink">Joint readout</h2>
+                      <p className="mt-1 text-sm text-cohere-body-muted">
+                        มุมจาก IMU · คะแนน elevation / bend (ไม่มี plane)
+                      </p>
+                    </div>
+                    <div className="px-6 py-5">
+                      <SensorReadout jointFeedback={feedback.jointFeedback} />
+                    </div>
+                  </section>
+                </FadeIn>
+              </section>
+            )}
           </FadeIn>
         )}
 
@@ -477,13 +433,13 @@ export default function UserHome() {
           </FadeIn>
         )}
 
-        {dataMode !== "camera" && (
+        {dataMode === "simulation" && (
           <section className="grid gap-8 lg:grid-cols-12">
             <FadeIn delay={120} className="lg:col-span-7">
               <PanelCard
                 title="3D ท่าทาง"
                 subtitle="ลากหมุน · spring animation"
-                badge={isLive ? "IMU Live" : "Physics Sim"}
+                badge="Physics Sim"
                 variant="agent"
               >
                 <PoseViewer frame={frame} activeJoints={activeJoints} />
@@ -505,7 +461,7 @@ export default function UserHome() {
           </section>
         )}
 
-        {dataMode !== "camera" && (
+        {dataMode === "simulation" && (
           <FadeIn delay={240} className="mt-8">
             <section className="cohere-card overflow-hidden">
               <button

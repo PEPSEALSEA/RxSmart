@@ -205,9 +205,13 @@ class SystemModeManager:
 
     def get_session_feedback(self, joint_data: Optional[JointData]) -> SessionFeedback:
         pose_frame = None
-        if joint_data is not None and joint_data.source in ("camera", "fused"):
+        score_plane = True
+        if joint_data is not None:
             pose_frame = joint_data.pose_frame
-        return self._exercise.tick(pose_frame)
+            # Single-pitch IMU has no rotate XYZ — score elevation/bend only.
+            if joint_data.source == "iot":
+                score_plane = False
+        return self._exercise.tick(pose_frame, score_plane=score_plane)
 
     # ------------------------------------------------------------------
     # Internal
