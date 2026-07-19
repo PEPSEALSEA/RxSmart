@@ -67,6 +67,14 @@ export type LocalJointData = {
   finger_right_straight_score?: number;
   sensors?: SensorChannelReading[];
   sensor_map?: Record<string, string>;
+  angles_relative?: {
+    elbow_left?: number;
+    elbow_right?: number;
+    knee_left?: number;
+    knee_right?: number;
+    shoulder_left?: number;
+    shoulder_right?: number;
+  };
 };
 
 export type LocalBridgeState = {
