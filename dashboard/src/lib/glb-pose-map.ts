@@ -25,7 +25,8 @@ export const MIXAMO_BONES = {
   rightLeg: "mixamorigRightLeg",
 } as const;
 
-export const ATHLETE_MODEL_URL = "/models/athlete.glb";
+/** Must include Next.js `basePath` (`/RxSmart`) so GitHub Pages resolves the asset. */
+export const ATHLETE_MODEL_URL = "/RxSmart/models/athlete.glb";
 
 export type BoneIndex = Map<string, Bone>;
 export type BindPose = Map<string, Quaternion>;

@@ -2,8 +2,9 @@
 
 import { Canvas } from "@react-three/fiber";
 import { ContactShadows, Environment, Grid, OrbitControls } from "@react-three/drei";
-import { Suspense } from "react";
+import { Component, type ReactNode, Suspense } from "react";
 import { GlbAvatar } from "@/components/game/GlbAvatar";
+import { Mannequin } from "@/components/Mannequin";
 import { PoseKey } from "@/lib/pose";
 import { SensorFrame } from "@/lib/pose-physics";
 
@@ -14,12 +15,23 @@ interface GamePoseCanvasProps {
   showGhost?: boolean;
 }
 
-function StageScene({
-  frame,
-  ghostFrame,
-  activeJoints,
-  showGhost,
-}: GamePoseCanvasProps) {
+class AvatarErrorBoundary extends Component<
+  { fallback: ReactNode; children: ReactNode },
+  { failed: boolean }
+> {
+  state = { failed: false };
+
+  static getDerivedStateFromError() {
+    return { failed: true };
+  }
+
+  render() {
+    if (this.state.failed) return this.props.fallback;
+    return this.props.children;
+  }
+}
+
+function StageLights() {
   return (
     <>
       <color attach="background" args={["#0b1220"]} />
@@ -41,26 +53,13 @@ function StageScene({
         intensity={1.1}
         color="#7dd3fc"
       />
+    </>
+  );
+}
 
-      <GlbAvatar
-        frame={frame}
-        activeJoints={activeJoints}
-        position={showGhost ? [-0.55, 0, 0] : [0, 0, 0]}
-        scale={1}
-      />
-
-      {showGhost && ghostFrame && (
-        <GlbAvatar
-          frame={ghostFrame}
-          activeJoints={activeJoints}
-          opacity={0.42}
-          tint="#67e8f9"
-          ghost
-          position={[0.7, 0, 0]}
-          scale={1}
-        />
-      )}
-
+function StageFloor() {
+  return (
+    <>
       <Grid
         position={[0, 0, 0]}
         args={[8, 8]}
@@ -87,6 +86,70 @@ function StageScene({
   );
 }
 
+function MannequinFallback({
+  frame,
+  ghostFrame,
+  activeJoints,
+  showGhost,
+}: GamePoseCanvasProps) {
+  return (
+    <group>
+      <group position={showGhost ? [-0.55, 0, 0] : [0, 0, 0]}>
+        <Mannequin frame={frame} activeJoints={activeJoints} />
+      </group>
+      {showGhost && ghostFrame && (
+        <group position={[0.7, 0, 0]}>
+          <Mannequin frame={ghostFrame} activeJoints={activeJoints} />
+        </group>
+      )}
+    </group>
+  );
+}
+
+function StageScene({
+  frame,
+  ghostFrame,
+  activeJoints,
+  showGhost,
+}: GamePoseCanvasProps) {
+  const fallback = (
+    <MannequinFallback
+      frame={frame}
+      ghostFrame={ghostFrame}
+      activeJoints={activeJoints}
+      showGhost={showGhost}
+    />
+  );
+
+  return (
+    <>
+      <StageLights />
+      <AvatarErrorBoundary fallback={fallback}>
+        <Suspense fallback={fallback}>
+          <GlbAvatar
+            frame={frame}
+            activeJoints={activeJoints}
+            position={showGhost ? [-0.55, 0, 0] : [0, 0, 0]}
+            scale={1}
+          />
+          {showGhost && ghostFrame && (
+            <GlbAvatar
+              frame={ghostFrame}
+              activeJoints={activeJoints}
+              opacity={0.42}
+              tint="#67e8f9"
+              ghost
+              position={[0.7, 0, 0]}
+              scale={1}
+            />
+          )}
+        </Suspense>
+      </AvatarErrorBoundary>
+      <StageFloor />
+    </>
+  );
+}
+
 export default function GamePoseCanvas({
   frame,
   ghostFrame = null,
@@ -96,14 +159,12 @@ export default function GamePoseCanvas({
   return (
     <div className="h-full min-h-[420px] w-full overflow-hidden bg-[#0b1220]">
       <Canvas shadows camera={{ position: [2.1, 1.45, 2.8], fov: 38 }} gl={{ antialias: true }}>
-        <Suspense fallback={null}>
-          <StageScene
-            frame={frame}
-            ghostFrame={ghostFrame}
-            activeJoints={activeJoints}
-            showGhost={showGhost}
-          />
-        </Suspense>
+        <StageScene
+          frame={frame}
+          ghostFrame={ghostFrame}
+          activeJoints={activeJoints}
+          showGhost={showGhost}
+        />
       </Canvas>
     </div>
   );
