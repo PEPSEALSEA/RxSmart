@@ -53,6 +53,24 @@ CALIBRATION_STEPS: list[str] = [
     "move_shoulders",
     "move_shins",
     "move_thighs",
+    "arms_down",
+    "arms_up_down",
+]
+
+# Steps used only for channel→segment mapping (before personal defaults).
+MAPPING_STEPS: list[str] = [
+    "neutral",
+    "move_forearms",
+    "move_shoulders",
+    "move_shins",
+    "move_thighs",
+]
+
+POSE_DEFAULT_ANGLE_KEYS: list[str] = [
+    "shoulder_left",
+    "shoulder_right",
+    "elbow_left",
+    "elbow_right",
 ]
 
 RAW_TO_DEG = 180.0 / 4095.0
@@ -376,6 +394,7 @@ def mapping_confidence(
 def sensors_to_angles(
     degrees: list[float],
     channel_map: dict[int, str],
+    pose_defaults: Optional[dict[str, dict[str, float]]] = None,
 ) -> dict[str, float]:
     """Compute elbow/knee + shoulder elevation from 8 segment angles."""
     by_pose = {channel_map[ch]: degrees[ch] for ch in range(8) if ch in channel_map}
@@ -383,7 +402,7 @@ def sensors_to_angles(
     def bend(prox: str, dist: str) -> float:
         return max(0.0, min(180.0, abs(by_pose.get(dist, 0.0) - by_pose.get(prox, 0.0))))
 
-    return {
+    angles = {
         "elbow_left": bend("l_arm_upper", "l_arm_lower"),
         "elbow_right": bend("r_arm_upper", "r_arm_lower"),
         "knee_left": bend("l_leg_upper", "l_leg_lower"),
@@ -391,6 +410,89 @@ def sensors_to_angles(
         "shoulder_left": by_pose.get("l_arm_upper", 0.0),
         "shoulder_right": by_pose.get("r_arm_upper", 0.0),
     }
+    return apply_pose_defaults(angles, pose_defaults)
+
+
+def apply_pose_defaults(
+    angles: dict[str, float],
+    pose_defaults: Optional[dict[str, dict[str, float]]],
+) -> dict[str, float]:
+    """Subtract personal hang baseline so resting arms read near 0° elevation."""
+    if not pose_defaults:
+        return angles
+    out = dict(angles)
+    for key in ("shoulder_left", "shoulder_right"):
+        d = pose_defaults.get(key)
+        if not d:
+            continue
+        neutral = float(d.get("neutral", 0.0))
+        out[key] = max(0.0, min(180.0, float(angles.get(key, 0.0)) - neutral))
+    return out
+
+
+def compute_pose_defaults(
+    step_samples: dict[str, list[list[float]]],
+    channel_map: dict[int, str],
+) -> dict[str, dict[str, float]]:
+    """
+    Personal arm defaults after channel mapping:
+      arms_down  → neutral baseline
+      arms_up_down → min/max ROM while raising/lowering
+    """
+    down_rows = step_samples.get("arms_down", []) or step_samples.get("neutral", [])
+    move_rows = step_samples.get("arms_up_down", [])
+
+    result: dict[str, dict[str, float]] = {}
+    if not down_rows and not move_rows:
+        return result
+
+    def _mean_angles(rows: list[list[float]]) -> dict[str, float]:
+        if not rows:
+            return {}
+        totals = {k: 0.0 for k in POSE_DEFAULT_ANGLE_KEYS}
+        # also need knees for completeness but defaults focus on arms
+        totals.update(
+            {
+                "knee_left": 0.0,
+                "knee_right": 0.0,
+            }
+        )
+        n = 0
+        for row in rows:
+            ang = sensors_to_angles(row, channel_map, pose_defaults=None)
+            for k in totals:
+                totals[k] += float(ang.get(k, 0.0))
+            n += 1
+        if n == 0:
+            return {}
+        return {k: v / n for k, v in totals.items()}
+
+    neutral = _mean_angles(down_rows)
+
+    mins: dict[str, float] = {}
+    maxs: dict[str, float] = {}
+    for row in move_rows or down_rows:
+        ang = sensors_to_angles(row, channel_map, pose_defaults=None)
+        for key in POSE_DEFAULT_ANGLE_KEYS:
+            v = float(ang.get(key, 0.0))
+            mins[key] = v if key not in mins else min(mins[key], v)
+            maxs[key] = v if key not in maxs else max(maxs[key], v)
+
+    for key in POSE_DEFAULT_ANGLE_KEYS:
+        n_val = float(neutral.get(key, mins.get(key, 0.0)))
+        mn = float(mins.get(key, n_val))
+        mx = float(maxs.get(key, n_val))
+        # Ensure max is at least neutral (raised should go above hang)
+        if mx < n_val:
+            mx = n_val
+        if mn > n_val:
+            mn = n_val
+        result[key] = {
+            "neutral": round(n_val, 2),
+            "min": round(mn, 2),
+            "max": round(mx, 2),
+        }
+    return result
 
 
 @dataclass
@@ -399,6 +501,7 @@ class SensorMappingManager:
 
     map_path: Path = field(default_factory=lambda: Path(config.SENSOR_MAP_FILE))
     channel_map: dict[int, str] = field(default_factory=lambda: dict(DEFAULT_CHANNEL_MAP))
+    pose_defaults: dict[str, dict[str, float]] = field(default_factory=dict)
     device_id: str = ""
     calibrated_at: float = 0.0
     confidence: float = 0.0
@@ -414,6 +517,13 @@ class SensorMappingManager:
             data = json.loads(self.map_path.read_text(encoding="utf-8"))
             raw_map = data.get("channel_map", {})
             self.channel_map = {int(k): v for k, v in raw_map.items()}
+            raw_defaults = data.get("pose_defaults", {})
+            if isinstance(raw_defaults, dict):
+                self.pose_defaults = {
+                    str(k): {sk: float(sv) for sk, sv in v.items()}
+                    for k, v in raw_defaults.items()
+                    if isinstance(v, dict)
+                }
             self.device_id = data.get("device_id", "")
             self.calibrated_at = float(data.get("calibrated_at", 0))
             self.confidence = float(data.get("confidence", 0))
@@ -425,6 +535,7 @@ class SensorMappingManager:
         payload = {
             "device_id": self.device_id,
             "channel_map": {str(k): v for k, v in sorted(self.channel_map.items())},
+            "pose_defaults": self.pose_defaults,
             "calibrated_at": self.calibrated_at,
             "confidence": self.confidence,
         }
@@ -432,6 +543,7 @@ class SensorMappingManager:
 
     def reset_to_default(self) -> None:
         self.channel_map = dict(DEFAULT_CHANNEL_MAP)
+        self.pose_defaults = {}
         self.confidence = 0.0
         self.calibrated_at = 0.0
         self.save()
@@ -439,6 +551,11 @@ class SensorMappingManager:
     def set_map(self, channel_map: dict[int, str], confidence: float = 1.0) -> None:
         self.channel_map = {int(k): v for k, v in channel_map.items()}
         self.confidence = confidence
+        self.calibrated_at = time.time()
+        self.save()
+
+    def set_pose_defaults(self, pose_defaults: dict[str, dict[str, float]]) -> None:
+        self.pose_defaults = pose_defaults
         self.calibrated_at = time.time()
         self.save()
 
@@ -459,6 +576,12 @@ class SensorMappingManager:
         self.calibration_step = "neutral"
         self._guided_buffer = {step: [] for step in CALIBRATION_STEPS}
 
+    def _commit_channel_map_from_guided(self) -> None:
+        mapping_buf = {k: self._guided_buffer.get(k, []) for k in MAPPING_STEPS}
+        new_map = auto_detect_guided(mapping_buf)
+        conf = mapping_confidence(self._flatten_guided(MAPPING_STEPS), new_map)
+        self.set_map(new_map, conf)
+
     def advance_calibration_step(self) -> str:
         if self.calibration_step == "idle":
             self.start_guided_calibration()
@@ -466,16 +589,25 @@ class SensorMappingManager:
 
         idx = CALIBRATION_STEPS.index(self.calibration_step)
         if idx + 1 < len(CALIBRATION_STEPS):
-            self.calibration_step = CALIBRATION_STEPS[idx + 1]
+            nxt = CALIBRATION_STEPS[idx + 1]
+            # After body-segment mapping steps, lock channel map before pose defaults.
+            if self.calibration_step == "move_thighs" and nxt == "arms_down":
+                self._commit_channel_map_from_guided()
+            self.calibration_step = nxt
             return self.calibration_step
 
-        # Final step complete → compute mapping
-        new_map = auto_detect_guided(self._guided_buffer)
+        # Final step (arms_up_down) → personal defaults, then done
+        if not self.channel_map or len(self.channel_map) < 8:
+            self._commit_channel_map_from_guided()
+        defaults = compute_pose_defaults(self._guided_buffer, self.channel_map)
+        self.set_pose_defaults(defaults)
         conf = mapping_confidence(
-            self._flatten_guided(),
-            new_map,
+            self._flatten_guided(MAPPING_STEPS),
+            self.channel_map,
         )
-        self.set_map(new_map, conf)
+        self.confidence = conf
+        self.calibrated_at = time.time()
+        self.save()
         self.calibration_step = "idle"
         self._guided_buffer = {}
         return "complete"
@@ -519,6 +651,7 @@ class SensorMappingManager:
         return {
             "channel_map": {str(k): v for k, v in sorted(self.channel_map.items())},
             "default_map": {str(k): v for k, v in sorted(DEFAULT_CHANNEL_MAP.items())},
+            "pose_defaults": self.pose_defaults,
             "confidence": round(self.confidence, 3),
             "calibrated_at": self.calibrated_at,
             "calibration_step": self.calibration_step,
@@ -526,8 +659,8 @@ class SensorMappingManager:
             "buffer_samples": len(self._motion_buffer),
         }
 
-    def _flatten_guided(self) -> list[list[float]]:
+    def _flatten_guided(self, steps: Optional[list[str]] = None) -> list[list[float]]:
         rows: list[list[float]] = []
-        for step in CALIBRATION_STEPS:
+        for step in steps or CALIBRATION_STEPS:
             rows.extend(self._guided_buffer.get(step, []))
         return rows

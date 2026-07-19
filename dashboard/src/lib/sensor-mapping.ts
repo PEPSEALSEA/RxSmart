@@ -20,6 +20,7 @@ export type SensorChannelReading = {
 export type SensorMappingState = {
   channel_map: Record<string, string>;
   default_map: Record<string, string>;
+  pose_defaults?: Record<string, { neutral?: number; min?: number; max?: number }>;
   confidence: number;
   calibrated_at: number;
   calibration_step: string;
@@ -35,6 +36,8 @@ export const CALIBRATION_STEP_LABELS: Record<string, string> = {
   move_shoulders: "ยกไหล่ / ยกแขนทั้งสองข้าง",
   move_shins: "งอเข่าทั้งสองข้าง (ปลายขาขยับ)",
   move_thighs: "ยกขา / ขยับต้นขาทั้งสองข้าง",
+  arms_down: "ห้อยแขนทั้งสองข้าง — จับค่า default (baseline)",
+  arms_up_down: "ยกแขนขึ้น–ลงช้าๆ ทั้งสองข้าง — จับช่วง default",
 };
 
 export function calibratedToDegrees(calibrated: number): number {

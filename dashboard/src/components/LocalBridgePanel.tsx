@@ -206,7 +206,7 @@ export default function LocalBridgePanel({
       } else if (action === "calibrate_next") {
         setMapMessage(
           data.step === "complete"
-            ? "Auto-calibrate เสร็จแล้ว"
+            ? "Setup เสร็จ — จำตำแหน่ง sensor + ค่า default แขนแล้ว"
             : `ขั้นตอนถัดไป: ${CALIBRATION_STEP_LABELS[data.step as string] ?? data.step}`,
         );
       } else if (action === "calibrate_start") {

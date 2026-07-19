@@ -139,7 +139,7 @@ def _apply_sensor_mapping(
 
     mapper.ingest_channels(degrees)
 
-    mapped = sensors_to_angles(degrees, mapper.channel_map)
+    mapped = sensors_to_angles(degrees, mapper.channel_map, mapper.pose_defaults)
     return JointData(
         elbow_left=mapped["elbow_left"],
         elbow_right=mapped["elbow_right"],
