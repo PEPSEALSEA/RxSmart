@@ -7,7 +7,6 @@ const DEG = Math.PI / 180;
 const FOOT_OFFSET_Y = -0.02;
 const FOOT_OFFSET_Z = 0.04;
 const HIP_LINE_Y = 0.98;
-const ROOT_BASE_Y = 0.02;
 const SQUAT_HIP_ELEV_MAX = 55;
 const SQUAT_KNEE_BEND_MAX = 75;
 const SQUAT_TORSO_LEAN_MAX = 24;
@@ -158,6 +157,9 @@ const referenceFeet = (() => {
     right: _rightFoot.clone(),
   };
 })();
+
+/** Root Y so standing soles sit on the grid (world y ≈ 0). */
+export const ROOT_BASE_Y = -((referenceFeet.left.y + referenceFeet.right.y) * 0.5);
 
 /** Derive pelvis drop, forward weight shift, and torso counter-lean from leg flexion. */
 export function computeSquatTransform(

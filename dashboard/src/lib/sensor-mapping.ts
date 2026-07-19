@@ -220,12 +220,17 @@ export function mapJointsAndSensorsToFrame(
     elevL = Math.max(elevL, 58);
     elevR = Math.max(elevR, 58);
   }
+  // plane 0 = lateral (V-spread); plane 90 = forward (chair sit / squat).
+  const planeL = elevL > 5 || mode === "sitting" ? 90 : 0;
+  const planeR = elevR > 5 || mode === "sitting" ? 90 : 0;
   frame.l_leg_upper.elevation = elevL;
+  frame.l_leg_upper.plane = planeL;
   frame.r_leg_upper.elevation = elevR;
+  frame.r_leg_upper.plane = planeR;
 
   const squat = computeSquatTransform(
-    { elevation: elevL, plane: 0, bend: kneeL },
-    { elevation: elevR, plane: 0, bend: kneeR },
+    { elevation: elevL, plane: planeL, bend: kneeL },
+    { elevation: elevR, plane: planeR, bend: kneeR },
     { mode },
   );
   frame.body = {

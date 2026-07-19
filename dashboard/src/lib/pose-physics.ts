@@ -5,6 +5,7 @@ import {
   clampScalar,
   clampVelocity,
 } from "@/lib/biomechanics";
+import { ROOT_BASE_Y } from "@/lib/mannequin-rig";
 import { ExercisePhase, RehabExercise } from "@/lib/rehab-exercises";
 import {
   LOWER_KEYS,
@@ -77,7 +78,7 @@ export function createNeutralFrame(): SensorFrame {
     r_arm_lower: { ...r_arm_lower, vBend: 0 },
     l_leg_lower: { ...l_leg_lower, vBend: 0 },
     r_leg_lower: { ...r_leg_lower, vBend: 0 },
-    body: { rootY: 0.02, rootZ: 0, mode: "standing" },
+    body: { rootY: ROOT_BASE_Y, rootZ: 0, mode: "standing" },
   };
 }
 

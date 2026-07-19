@@ -5,7 +5,7 @@ import { RoundedBox } from "@react-three/drei";
 import { type RefObject, useMemo, useRef } from "react";
 import { Group, MeshPhysicalMaterial } from "three";
 import { SEGMENT_LENGTHS } from "@/lib/biomechanics";
-import { applyElbowBend, computeSquatTransform, orientUpperLimb } from "@/lib/mannequin-rig";
+import { applyElbowBend, computeSquatTransform, orientUpperLimb, ROOT_BASE_Y } from "@/lib/mannequin-rig";
 import { NEUTRAL_POSE, PoseKey, UPPER_KEYS, shortestPlaneDelta } from "@/lib/pose";
 import { SensorFrame } from "@/lib/pose-physics";
 
@@ -16,7 +16,6 @@ const ACTIVE = "#22d3ee";
 
 const VISUAL_SPRING = 16;
 const VISUAL_DAMP = 8;
-const ROOT_BASE_Y = 0.02;
 const PELVIS_Y = 0.98;
 
 function useBodyMaterial(color: string, active: boolean) {
