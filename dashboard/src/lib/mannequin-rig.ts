@@ -169,10 +169,11 @@ export function computeSquatTransform(left: LegPoseSample, right: LegPoseSample)
 
   const rootY =
     ROOT_BASE_Y +
-    (_leftFoot.y + _rightFoot.y) * 0.5 -
-    (referenceFeet.left.y + referenceFeet.right.y) * 0.5;
+    (referenceFeet.left.y + referenceFeet.right.y) * 0.5 -
+    (_leftFoot.y + _rightFoot.y) * 0.5;
   const rootZ =
-    (_leftFoot.z + _rightFoot.z) * 0.5 - (referenceFeet.left.z + referenceFeet.right.z) * 0.5;
+    (referenceFeet.left.z + referenceFeet.right.z) * 0.5 -
+    (_leftFoot.z + _rightFoot.z) * 0.5;
 
   return {
     depth,
