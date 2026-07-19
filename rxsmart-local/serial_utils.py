@@ -84,7 +84,7 @@ def list_serial_ports() -> List[Tuple[str, str]]:
     return found
 
 
-def detect_board_port() -> Optional[str]:
+def detect_board_port(exclude: Optional[str] = None) -> Optional[str]:
     """Return COM port that looks like ESP32 or Pico, preferring strongest match."""
     try:
         from serial.tools import list_ports
@@ -94,10 +94,13 @@ def detect_board_port() -> Optional[str]:
     best_port: Optional[str] = None
     best_score = 0
     for info in list_ports.comports():
+        port = info.device
+        if exclude and port == exclude:
+            continue
         score = _board_match_score(info.description or "", info.hwid or "")
         if score > best_score:
             best_score = score
-            best_port = info.device
+            best_port = port
     return best_port if best_score >= 50 else None
 
 
@@ -108,15 +111,24 @@ def detect_esp32_port() -> Optional[str]:
 
 def pick_default_port(exclude: Optional[str] = None) -> str:
     """
-    Prefer ESP32/Pico board port; else highest COM number; else config fallback.
+    Prefer ESP32/Pico board port only — never fall back to Bluetooth/random COM.
     """
-    board = detect_board_port()
-    if board and board != exclude:
+    board = detect_board_port(exclude=exclude)
+    if board:
         return board
 
-    ports = [p for p, _ in list_serial_ports() if p != exclude]
-    if ports:
-        return max(ports, key=_com_number)
+    # Only board was excluded — keep it rather than jumping to COM3/Bluetooth.
+    if exclude:
+        return exclude
+
+    board = detect_board_port()
+    if board:
+        return board
 
     fallback = config.SERIAL_PORT_FALLBACK
     return fallback if fallback != "auto" else "COM3"
+
+
+def pick_alternate_board_port(current: str) -> Optional[str]:
+    """Another scored board COM different from current, or None."""
+    return detect_board_port(exclude=current)

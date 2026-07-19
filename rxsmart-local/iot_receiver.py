@@ -87,6 +87,7 @@ class IoTReceiver:
         self._lock = threading.Lock()
         self._port_lock = threading.Lock()
         self._force_serial_reconnect = False
+        self._port_locked = False  # True after user picks COM in Tk — never auto-steal
         self._thread: Optional[threading.Thread] = None
         self._running = False
         self._flask_server = None   # werkzeug server instance (server mode only)
@@ -165,17 +166,29 @@ class IoTReceiver:
         with self._port_lock:
             return self._serial_port
 
-    def set_serial_port(self, port: str) -> None:
-        """Switch USB serial port; reconnect loop picks up the new port."""
+    def set_serial_port(self, port: str, *, lock: bool = False) -> None:
+        """Switch USB serial port; reconnect loop picks up the new port.
+
+        lock=True (Tk Apply) freezes this COM so auto-repick will not change it.
+        """
         port = port.strip()
         if not port:
             return
         with self._port_lock:
-            if port == self._serial_port:
-                return
-            self._serial_port = port
-            self._force_serial_reconnect = True
-        print(f"[IoTReceiver] Serial port changed → {port}")
+            if lock:
+                self._port_locked = True
+            changed = port != self._serial_port
+            if changed:
+                self._serial_port = port
+                self._force_serial_reconnect = True
+                # New auto pick (not user lock) clears a previous soft auto choice only
+            elif lock:
+                # Same COM re-applied — still lock so auto cannot steal it later
+                pass
+        if changed:
+            print(f"[IoTReceiver] Serial port changed -> {port}" + (" (locked)" if lock else ""))
+        elif lock:
+            print(f"[IoTReceiver] Serial port locked -> {port}")
 
     def _take_serial_reconnect(self) -> bool:
         with self._port_lock:
@@ -188,26 +201,27 @@ class IoTReceiver:
         with self._port_lock:
             return self._serial_port
 
-    # ------------------------------------------------------------------
-    # Serial transport
-    # ------------------------------------------------------------------
-
     def _try_auto_repick_port(self, reason: str) -> None:
-        """If SERIAL_PORT=auto, pick another board COM when current port is silent/failing."""
+        """Only when unlocked + SERIAL_PORT=auto: switch to another scored board COM."""
+        with self._port_lock:
+            locked = self._port_locked
+        if locked:
+            print(f"[IoTReceiver] Auto-repick skipped ({reason}) - port locked by user")
+            return
         if config.SERIAL_PORT != "auto":
             return
         try:
-            from serial_utils import pick_default_port
+            from serial_utils import pick_alternate_board_port
         except ImportError:
             return
 
         current = self._current_serial_port()
-        candidate = pick_default_port(exclude=current)
-        if not candidate or candidate == current:
-            candidate = pick_default_port()
+        candidate = pick_alternate_board_port(current)
         if candidate and candidate != current:
-            print(f"[IoTReceiver] Auto-repick port ({reason}): {current} → {candidate}")
-            self.set_serial_port(candidate)
+            print(f"[IoTReceiver] Auto-repick port ({reason}): {current} -> {candidate}")
+            self.set_serial_port(candidate, lock=False)
+        else:
+            print(f"[IoTReceiver] Auto-repick ({reason}): no other board port - staying on {current}")
 
     def _open_serial(self, serial_mod, port: str):
         """Open COM without hard-resetting the MCU via DTR when possible."""

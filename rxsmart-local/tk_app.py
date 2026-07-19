@@ -329,8 +329,8 @@ class RxSmartTkApp:
         if not port:
             self._manager.stats.add_log("No COM port selected")
             return
-        self._iot.set_serial_port(port)
-        self._manager.stats.add_log(f"Board port → {port}")
+        self._iot.set_serial_port(port, lock=True)
+        self._manager.stats.add_log(f"Board port → {port} (locked)")
 
     def _selected_camera_index(self) -> Optional[int]:
         label = self._cam_var.get()
