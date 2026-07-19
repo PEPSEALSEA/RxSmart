@@ -381,6 +381,13 @@ export default function LocalBridgePanel({
           )}
           {imuStats && connected && (
             <div className="cohere-card p-5">
+              <div className="mb-4 rounded-cohere-sm border border-cohere-hairline bg-cohere-pale-green/60 px-3 py-2 text-xs text-cohere-ink">
+                <span className="font-medium">IMU: elevation + bend only</span>
+                <span className="text-cohere-muted">
+                  {" "}
+                  · ไม่มี plane tips ในเกม (accel+gyro filter บน firmware)
+                </span>
+              </div>
               <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
                 <div>
                   <p className="cohere-mono-label text-[11px]">Sensor mapping</p>

@@ -27,6 +27,7 @@ interface GameHudProps {
   exerciseName: string;
   muted: boolean;
   onToggleMute: () => void;
+  imuMode?: boolean;
 }
 
 export default function GameHud({
@@ -35,8 +36,9 @@ export default function GameHud({
   exerciseName,
   muted,
   onToggleMute,
+  imuMode = false,
 }: GameHudProps) {
-  const hints = buildDirectionHints(feedback);
+  const hints = buildDirectionHints(feedback, { ignorePlane: imuMode });
   const progress = feedback.totalReps > 0 ? (feedback.rep / feedback.totalReps) * 100 : 0;
   const scoreRing = Math.min(100, Math.max(0, feedback.score));
   const celebrating = feedback.status === "complete";

@@ -12,6 +12,7 @@ import {
 import { resolvePose } from "@/lib/pose";
 import { SessionFeedback, SensorFrame } from "@/lib/pose-physics";
 import { RehabExercise } from "@/lib/rehab-exercises";
+import { stripImuUnreachablePlane } from "@/lib/sensor-mapping";
 
 const GamePoseCanvas = dynamic(() => import("@/components/game/GamePoseCanvas"), {
   ssr: false,
@@ -30,6 +31,7 @@ interface GameStageProps {
   onStart: () => void;
   onStop: () => void;
   onReset: () => void;
+  imuMode?: boolean;
 }
 
 function useCombo(feedback: SessionFeedback): number {
@@ -85,7 +87,11 @@ function useCombo(feedback: SessionFeedback): number {
   return combo;
 }
 
-function useGhostFrame(exercise: RehabExercise, feedback: SessionFeedback): SensorFrame {
+function useGhostFrame(
+  exercise: RehabExercise,
+  feedback: SessionFeedback,
+  imuMode: boolean,
+): SensorFrame {
   const [ghost, setGhost] = useState(() => resolvedPoseToFrame(exercise.startPose));
   const phaseIndex = useMemo(() => {
     const idx = exercise.phases.findIndex((p) => p.label === feedback.phaseLabel);
@@ -101,18 +107,20 @@ function useGhostFrame(exercise: RehabExercise, feedback: SessionFeedback): Sens
     const animateDemo = feedback.status === "idle" || feedback.status === "rest";
 
     const tick = (now: number) => {
+      let next: SensorFrame;
       if (animateDemo) {
         const t = ((now - start) / 1800) % 2;
         const u = t < 1 ? t : 2 - t;
-        setGhost(lerpFrames(from, to, u));
+        next = lerpFrames(from, to, u);
       } else {
-        setGhost(to);
+        next = to;
       }
+      setGhost(imuMode ? stripImuUnreachablePlane(next) : next);
       raf = requestAnimationFrame(tick);
     };
     raf = requestAnimationFrame(tick);
     return () => cancelAnimationFrame(raf);
-  }, [exercise, feedback.status, phaseIndex]);
+  }, [exercise, feedback.status, phaseIndex, imuMode]);
 
   return ghost;
 }
@@ -125,9 +133,10 @@ export default function GameStage({
   onStart,
   onStop,
   onReset,
+  imuMode = false,
 }: GameStageProps) {
   const combo = useCombo(feedback);
-  const ghostFrame = useGhostFrame(exercise, feedback);
+  const ghostFrame = useGhostFrame(exercise, feedback, imuMode);
   const { muted, toggleMute } = useGameAudio(feedback, true);
 
   return (
@@ -146,10 +155,16 @@ export default function GameStage({
             exerciseName={exercise.name}
             muted={muted}
             onToggleMute={toggleMute}
+            imuMode={imuMode}
           />
           <div className="pointer-events-none absolute bottom-4 left-4 z-20 flex gap-3 text-[10px] uppercase tracking-wider text-slate-400">
             <span className="rounded-full bg-slate-950/70 px-2 py-1">คุณ</span>
             <span className="rounded-full bg-cyan-500/20 px-2 py-1 text-cyan-200">โค้ช (ท่าเป้าหมาย)</span>
+            {imuMode && (
+              <span className="rounded-full bg-slate-950/70 px-2 py-1 text-slate-300">
+                IMU · elev/bend
+              </span>
+            )}
           </div>
         </div>
 

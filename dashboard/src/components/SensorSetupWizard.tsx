@@ -98,8 +98,8 @@ function buildChannelMapFromLocks(
   return map;
 }
 
-const ACTIVE_DELTA_DEG = 10;
-const BAR_FULL_SCALE_DEG = 20;
+const ACTIVE_DELTA_DEG = 6;
+const BAR_FULL_SCALE_DEG = 12;
 const TOP_N = 2;
 
 function degreesFromSources(
@@ -496,7 +496,12 @@ export default function SensorSetupWizard({
               จับว่า board CH ไหนคือแขน/ขา โดยดูการขยับ — ขั้น 1 ยืนนิ่งเป็น baseline แล้วขั้นต่อๆ
               ไปเทียบจากค่านั้น
             </p>
+            <p className="rounded-cohere-sm border border-cohere-hairline bg-white px-3 py-2 text-xs">
+              Firmware กรองมุมด้วย accel+gyro แล้ว — ขยับช้าๆ ให้ชัดก็พอ · ยังวัดได้แค่ elevation/bend
+              (ไม่มี plane / แยก abduction vs flexion)
+            </p>
             <ul className="list-disc space-y-2 pl-5">
+              <li>ก่อน wizard: ยืนนิ่งตอน board calibrate (ประมาณ 3 วินาที) ให้ gyro bias นิ่ง</li>
               <li>ขั้น 2 (งอศอก): เลือก top 2 CH → ล็อก</li>
               <li>ขั้น 3 (ยกไหล่): เลือก top 2 จาก CH ที่ยังไม่ล็อก</li>
               <li>ขั้น 4 (งอเข่า): เลือก top 2 จากที่เหลือ</li>
@@ -531,8 +536,8 @@ export default function SensorSetupWizard({
                   : ""}
               </p>
               <p className="rounded-cohere-sm border border-dashed border-cohere-hairline px-3 py-2 text-xs text-cohere-body-muted">
-                ขยับทั้งสองข้างให้ Δ ≥ {ACTIVE_DELTA_DEG}° บนช่องที่ยังไม่ล็อก แล้วกดขั้นถัดไป —
-                ระบบจะล็อก top {TOP_N} ของขั้นนี้
+                ขยับช้าๆ ให้ชัด — มุมกรองแล้ว · ให้ Δ ≥ {ACTIVE_DELTA_DEG}° บนช่องที่ยังไม่ล็อก
+                แล้วกดขั้นถัดไป — ระบบจะล็อก top {TOP_N} ของขั้นนี้
               </p>
               {lockedCount > 0 && (
                 <div className="rounded-cohere-sm bg-neutral-100 px-3 py-2 text-xs text-neutral-600">

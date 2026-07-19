@@ -8,7 +8,16 @@ export type DirectionHint = {
   tip: string;
 };
 
-function upperHint(key: PoseKey, fb: JointFeedback): DirectionHint | null {
+export type DirectionHintOptions = {
+  /** Live IMU has no measurable plane — skip rotate tips. */
+  ignorePlane?: boolean;
+};
+
+function upperHint(
+  key: PoseKey,
+  fb: JointFeedback,
+  options?: DirectionHintOptions,
+): DirectionHint | null {
   if (!isUpperKey(key) || !("elevationError" in fb) || !fb.isActive) return null;
   if (fb.angleOk) {
     return {
@@ -29,7 +38,7 @@ function upperHint(key: PoseKey, fb: JointFeedback): DirectionHint | null {
         : `ลดลงอีก ~${Math.round(fb.elevationError)}°`,
     };
   }
-  if (fb.planeError > 18) {
+  if (!options?.ignorePlane && fb.planeError > 18) {
     const delta = ((fb.targetPlane - fb.plane + 540) % 360) - 180;
     return {
       joint: key,
@@ -67,12 +76,15 @@ function lowerHint(key: PoseKey, fb: JointFeedback): DirectionHint | null {
   };
 }
 
-export function buildDirectionHints(feedback: SessionFeedback): DirectionHint[] {
+export function buildDirectionHints(
+  feedback: SessionFeedback,
+  options?: DirectionHintOptions,
+): DirectionHint[] {
   const hints: DirectionHint[] = [];
   for (const key of feedback.activeJoints) {
     const fb = feedback.jointFeedback[key];
     if (!fb) continue;
-    const hint = isUpperKey(key) ? upperHint(key, fb) : lowerHint(key, fb);
+    const hint = isUpperKey(key) ? upperHint(key, fb, options) : lowerHint(key, fb);
     if (hint) hints.push(hint);
   }
   return hints.slice(0, 3);

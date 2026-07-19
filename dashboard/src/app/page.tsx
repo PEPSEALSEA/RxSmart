@@ -353,6 +353,7 @@ export default function UserHome() {
                   onStart={handleStart}
                   onStop={handleStop}
                   onReset={handleReset}
+                  imuMode
                 />
               </FadeIn>
             )}
