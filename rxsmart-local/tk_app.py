@@ -231,24 +231,73 @@ class RxSmartTkApp:
             wraplength=config.DEBUG_PANEL_WIDTH - 20,
         ).pack(anchor=tk.W, pady=(0, 8))
 
-        self._joints_var = tk.StringVar(value="Joint angles\n—")
+        angles_box = tk.Frame(right, bg="#ffffff", highlightbackground="#e5e5e5", highlightthickness=1)
+        angles_box.pack(fill=tk.X, pady=(0, 8))
+
         tk.Label(
-            right,
-            textvariable=self._joints_var,
-            justify=tk.LEFT,
+            angles_box,
+            text="Angles (°)",
+            font=("Segoe UI", 10, "bold"),
             bg="#ffffff",
             fg="#171717",
-            font=("Consolas", 9),
-            wraplength=config.DEBUG_PANEL_WIDTH - 20,
-            padx=8,
-            pady=8,
-            relief=tk.SOLID,
-            borderwidth=1,
-        ).pack(fill=tk.X, pady=(0, 8))
+            anchor=tk.W,
+        ).pack(fill=tk.X, padx=10, pady=(8, 4))
+
+        grid = tk.Frame(angles_box, bg="#ffffff")
+        grid.pack(fill=tk.X, padx=8, pady=(0, 4))
+
+        self._angle_vars: dict[str, tk.StringVar] = {}
+        angle_cells = [
+            ("elbow_left", "Elbow L"),
+            ("elbow_right", "Elbow R"),
+            ("knee_left", "Knee L"),
+            ("knee_right", "Knee R"),
+            ("shoulder_left", "Shoulder L"),
+            ("shoulder_right", "Shoulder R"),
+        ]
+        for i, (key, label) in enumerate(angle_cells):
+            cell = tk.Frame(grid, bg="#fafafa", highlightbackground="#e5e5e5", highlightthickness=1)
+            cell.grid(row=i // 2, column=i % 2, sticky="nsew", padx=3, pady=3)
+            tk.Label(cell, text=label, bg="#fafafa", fg="#737373", font=("Segoe UI", 8)).pack(
+                anchor=tk.W, padx=8, pady=(6, 0)
+            )
+            var = tk.StringVar(value="—")
+            self._angle_vars[key] = var
+            tk.Label(
+                cell,
+                textvariable=var,
+                bg="#fafafa",
+                fg="#171717",
+                font=("Consolas", 18, "bold"),
+            ).pack(anchor=tk.W, padx=8, pady=(0, 6))
+        grid.columnconfigure(0, weight=1)
+        grid.columnconfigure(1, weight=1)
+
+        self._angle_meta_var = tk.StringVar(value="no joint data")
+        tk.Label(
+            angles_box,
+            textvariable=self._angle_meta_var,
+            bg="#ffffff",
+            fg="#a3a3a3",
+            font=("Segoe UI", 8),
+            anchor=tk.W,
+        ).pack(fill=tk.X, padx=10, pady=(0, 4))
+
+        self._ch_var = tk.StringVar(value="")
+        self._ch_label = tk.Label(
+            angles_box,
+            textvariable=self._ch_var,
+            justify=tk.LEFT,
+            bg="#ffffff",
+            fg="#525252",
+            font=("Consolas", 8),
+            anchor=tk.W,
+        )
+        self._ch_label.pack(fill=tk.X, padx=10, pady=(0, 8))
 
         self._log_text = tk.Text(
             right,
-            height=8,
+            height=6,
             bg="#ffffff",
             fg="#737373",
             font=("Consolas", 8),
@@ -437,32 +486,42 @@ class RxSmartTkApp:
 
         if joint_data:
             j = joint_data
-            lines = [
-                "Joint angles (°)",
-                f"Elbow L/R: {j.elbow_left:.0f} / {j.elbow_right:.0f}",
-                f"Knee L/R: {j.knee_left:.0f} / {j.knee_right:.0f}",
-                f"Shldr L/R: {j.shoulder_left:.0f} / {j.shoulder_right:.0f}",
-                f"Confidence: {j.confidence * 100:.0f}%  ·  {j.source}",
-            ]
-            if j.hand_left_detected or j.hand_right_detected:
-                lines.append("")
-                lines.append("Hand / palm check")
-                if j.hand_left_detected:
-                    lines.append(
-                        f"L: {j.palm_left_facing}  "
-                        f"{'OK' if j.palm_left_ok else 'CHECK'}  "
-                        f"straight {j.finger_left_straight_score * 100:.0f}%"
-                    )
-                if j.hand_right_detected:
-                    lines.append(
-                        f"R: {j.palm_right_facing}  "
-                        f"{'OK' if j.palm_right_ok else 'CHECK'}  "
-                        f"straight {j.finger_right_straight_score * 100:.0f}%"
-                    )
-            self._joints_var.set("\n".join(lines))
+            self._angle_vars["elbow_left"].set(f"{j.elbow_left:.0f}")
+            self._angle_vars["elbow_right"].set(f"{j.elbow_right:.0f}")
+            self._angle_vars["knee_left"].set(f"{j.knee_left:.0f}")
+            self._angle_vars["knee_right"].set(f"{j.knee_right:.0f}")
+            self._angle_vars["shoulder_left"].set(f"{j.shoulder_left:.0f}")
+            self._angle_vars["shoulder_right"].set(f"{j.shoulder_right:.0f}")
+            self._angle_meta_var.set(
+                f"{j.source}  ·  confidence {j.confidence * 100:.0f}%"
+            )
+
+            ch_lines: list[str] = []
+            channels = j.sensor_channels or []
+            if channels:
+                ch_lines.append("MPU CH (deg)")
+                for s in channels[:8]:
+                    if not isinstance(s, dict):
+                        continue
+                    ch = s.get("channel", "?")
+                    key = str(s.get("key", "")).replace("_", " ")[:14]
+                    deg = s.get("degrees")
+                    if deg is None:
+                        cal = s.get("calibrated", 0.0)
+                        try:
+                            deg = abs(float(cal)) * (180.0 / 4095.0)
+                        except (TypeError, ValueError):
+                            deg = 0.0
+                    ch_lines.append(f"CH{ch} {key:<14} {float(deg):5.1f}")
+            self._ch_var.set("\n".join(ch_lines))
         else:
-            hint = "Stand in frame for MediaPipe" if stats.camera_status == ConnectionStatus.CONNECTED else "Check camera / Apply"
-            self._joints_var.set(f"Joint angles\n{hint}")
+            for var in self._angle_vars.values():
+                var.set("—")
+            if stats.camera_status == ConnectionStatus.CONNECTED:
+                self._angle_meta_var.set("waiting for pose / IMU")
+            else:
+                self._angle_meta_var.set("no joint data — check camera / COM")
+            self._ch_var.set("")
 
     def _update_log(self, messages: List[str]) -> None:
         self._log_text.configure(state=tk.NORMAL)
