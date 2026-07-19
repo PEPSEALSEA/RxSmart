@@ -475,11 +475,9 @@ def apply_pose_defaults(
         if not d:
             continue
         neutral = float(d.get("neutral", 0.0))
-        # Shoulders/hips: elevation above hang/default. Others: absolute deviation.
-        if key.startswith("shoulder_") or key.startswith("hip_"):
-            out[key] = max(0.0, min(180.0, float(angles.get(key, 0.0)) - neutral))
-        else:
-            out[key] = max(0.0, min(180.0, abs(float(angles.get(key, 0.0)) - neutral)))
+        # Deviation from hang/neutral — abs so either pitch direction (raise) counts.
+        # One-sided (angle - neutral) fails when MPU pitch decreases on raise.
+        out[key] = max(0.0, min(180.0, abs(float(angles.get(key, 0.0)) - neutral)))
     return out
 
 

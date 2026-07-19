@@ -293,19 +293,27 @@ export function mapJointsAndSensorsToFrame(
     const shNeutralL = upperNeutral(poseDefaults, "arm", "left");
     const shNeutralR = upperNeutral(poseDefaults, "arm", "right");
 
-    frame.l_arm_upper.elevation = rel?.shoulder_left !== undefined
-      ? clampDeg((rel.shoulder_left ?? 0) + ARM_REST_ELEV)
-      : relativeElevation(byPose.l_arm_upper ?? 0, shNeutralL, ARM_REST_ELEV);
-    frame.r_arm_upper.elevation = rel?.shoulder_right !== undefined
-      ? clampDeg((rel.shoulder_right ?? 0) + ARM_REST_ELEV)
-      : relativeElevation(byPose.r_arm_upper ?? 0, shNeutralR, ARM_REST_ELEV);
+    // Always abs(raw − hang) for elevation — matches Python apply_pose_defaults.
+    // Do not trust one-sided angles_relative.shoulder_* (can stick at 0 when pitch falls on raise).
+    frame.l_arm_upper.elevation = relativeElevation(
+      byPose.l_arm_upper ?? 0,
+      shNeutralL,
+      ARM_REST_ELEV,
+    );
+    frame.r_arm_upper.elevation = relativeElevation(
+      byPose.r_arm_upper ?? 0,
+      shNeutralR,
+      ARM_REST_ELEV,
+    );
 
-    frame.l_leg_upper.elevation = rel?.hip_left !== undefined
-      ? clampDeg(Math.abs(rel.hip_left))
-      : relativeElevation(byPose.l_leg_upper ?? 0, upperNeutral(poseDefaults, "leg", "left"));
-    frame.r_leg_upper.elevation = rel?.hip_right !== undefined
-      ? clampDeg(Math.abs(rel.hip_right))
-      : relativeElevation(byPose.r_leg_upper ?? 0, upperNeutral(poseDefaults, "leg", "right"));
+    frame.l_leg_upper.elevation = relativeElevation(
+      byPose.l_leg_upper ?? 0,
+      upperNeutral(poseDefaults, "leg", "left"),
+    );
+    frame.r_leg_upper.elevation = relativeElevation(
+      byPose.r_leg_upper ?? 0,
+      upperNeutral(poseDefaults, "leg", "right"),
+    );
 
     // Bends: prefer angles_relative (pose_defaults zero), else Δ from neutral, else absolute
     const hasRelOrDefaults = Boolean(rel) || Boolean(poseDefaults);
@@ -335,11 +343,11 @@ export function mapJointsAndSensorsToFrame(
   const frame = createNeutralFrame();
   const rel = joints.angles_relative;
   frame.l_arm_upper.elevation = rel
-    ? clampDeg((rel.shoulder_left ?? 0) + ARM_REST_ELEV)
-    : clampDeg(joints.shoulder_left ?? 0);
+    ? clampDeg(Math.abs(rel.shoulder_left ?? 0) + ARM_REST_ELEV)
+    : relativeElevation(joints.shoulder_left ?? 0, upperNeutral(poseDefaults, "arm", "left"), ARM_REST_ELEV);
   frame.r_arm_upper.elevation = rel
-    ? clampDeg((rel.shoulder_right ?? 0) + ARM_REST_ELEV)
-    : clampDeg(joints.shoulder_right ?? 0);
+    ? clampDeg(Math.abs(rel.shoulder_right ?? 0) + ARM_REST_ELEV)
+    : relativeElevation(joints.shoulder_right ?? 0, upperNeutral(poseDefaults, "arm", "right"), ARM_REST_ELEV);
   frame.l_arm_lower.bend =
     rel?.elbow_left !== undefined
       ? clampDeg(rel.elbow_left)
@@ -356,9 +364,14 @@ export function mapJointsAndSensorsToFrame(
     rel?.knee_right !== undefined
       ? clampDeg(Math.min(140, rel.knee_right))
       : Math.min(140, relativeBend(joints.knee_right, lowerNeutral(poseDefaults, "knee_right")));
-  // Hips from relative when present
-  frame.l_leg_upper.elevation = rel?.hip_left !== undefined ? clampDeg(Math.abs(rel.hip_left)) : 0;
-  frame.r_leg_upper.elevation = rel?.hip_right !== undefined ? clampDeg(Math.abs(rel.hip_right)) : 0;
+  frame.l_leg_upper.elevation =
+    rel?.hip_left !== undefined
+      ? clampDeg(Math.abs(rel.hip_left))
+      : relativeElevation(0, upperNeutral(poseDefaults, "leg", "left"));
+  frame.r_leg_upper.elevation =
+    rel?.hip_right !== undefined
+      ? clampDeg(Math.abs(rel.hip_right))
+      : relativeElevation(0, upperNeutral(poseDefaults, "leg", "right"));
   return applyLegPlanesAndSquat(frame, mode);
 }
 
