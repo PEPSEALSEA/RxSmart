@@ -154,7 +154,11 @@ class SystemModeManager:
         iot_status = self._iot.status
 
         cam_ok = cam_data is not None and cam_status == ConnectionStatus.CONNECTED
-        iot_ok = iot_data is not None and iot_status == ConnectionStatus.CONNECTED
+        # Keep last IMU sample during brief TIMEOUT so dashboard does not blank out.
+        iot_ok = iot_data is not None and iot_status in (
+            ConnectionStatus.CONNECTED,
+            ConnectionStatus.TIMEOUT,
+        )
 
         self._refresh_stats(cam_status, iot_status)
 

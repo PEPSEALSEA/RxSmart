@@ -25,6 +25,7 @@ from data_models import ConnectionStatus, JointData
 # ---------------------------------------------------------------------------
 # Pre-compiled regex for the ESP32 Serial debug block
 # ---------------------------------------------------------------------------
+# ESP32: i2c=21/22  ·  Pico: i2c=GP4/GP5
 _DBG_HEADER_RE = re.compile(
     r"\[DBG\]\s+"
     r"t=(\d+)\s+"
@@ -35,7 +36,7 @@ _DBG_HEADER_RE = re.compile(
     r"speed=([\d.]+)\s+"
     r"alert=(\S+)\s+"
     r"code=(\d+)\s+"
-    r"i2c=(\d+)/(\d+)"
+    r"i2c=(?:GP)?(\d+)/(?:GP)?(\d+)"
 )
 
 _DBG_ANGLES_RE = re.compile(
@@ -93,6 +94,8 @@ class IoTReceiver:
         self._latest: Optional[JointData] = None
         self._status: ConnectionStatus = ConnectionStatus.DISCONNECTED
         self._last_received_ts: float = 0.0
+        self._serial_opened_at: float = 0.0
+        self._open_fail_streak: int = 0
         self._poll_times: list = []
         self._latency_ms: float = 0.0
         self._device_id: str = config.DEVICE_ID
@@ -132,8 +135,8 @@ class IoTReceiver:
 
     @property
     def status(self) -> ConnectionStatus:
-        """Returns TIMEOUT if no packet has been received within the watchdog window."""
-        if self._status == ConnectionStatus.CONNECTED:
+        """Returns TIMEOUT only after at least one packet, then silence too long."""
+        if self._status == ConnectionStatus.CONNECTED and self._last_received_ts > 0:
             if time.time() - self._last_received_ts > config.IOT_WATCHDOG_TIMEOUT_S:
                 return ConnectionStatus.TIMEOUT
         return self._status
@@ -189,6 +192,41 @@ class IoTReceiver:
     # Serial transport
     # ------------------------------------------------------------------
 
+    def _try_auto_repick_port(self, reason: str) -> None:
+        """If SERIAL_PORT=auto, pick another board COM when current port is silent/failing."""
+        if config.SERIAL_PORT != "auto":
+            return
+        try:
+            from serial_utils import pick_default_port
+        except ImportError:
+            return
+
+        current = self._current_serial_port()
+        candidate = pick_default_port(exclude=current)
+        if not candidate or candidate == current:
+            candidate = pick_default_port()
+        if candidate and candidate != current:
+            print(f"[IoTReceiver] Auto-repick port ({reason}): {current} → {candidate}")
+            self.set_serial_port(candidate)
+
+    def _open_serial(self, serial_mod, port: str):
+        """Open COM without hard-resetting the MCU via DTR when possible."""
+        ser = serial_mod.Serial()
+        ser.port = port
+        ser.baudrate = config.SERIAL_BAUDRATE
+        ser.timeout = config.SERIAL_TIMEOUT
+        try:
+            ser.dtr = False
+            ser.rts = False
+        except Exception:
+            pass
+        ser.open()
+        try:
+            ser.reset_input_buffer()
+        except Exception:
+            pass
+        return ser
+
     def _serial_loop(self) -> None:
         try:
             import serial  # pyserial
@@ -198,6 +236,7 @@ class IoTReceiver:
             return
 
         ser = None
+        no_packet_grace_s = max(8.0, config.IOT_WATCHDOG_TIMEOUT_S * 2)
         while self._running:
             if self._take_serial_reconnect() and ser is not None:
                 try:
@@ -206,23 +245,48 @@ class IoTReceiver:
                     pass
                 ser = None
                 self._status = ConnectionStatus.DISCONNECTED
+                self._dbg_block = None
 
             # --- Establish / re-establish connection ---
             if ser is None or not ser.is_open:
                 port = self._current_serial_port()
                 try:
-                    ser = serial.Serial(
-                        port=port,
-                        baudrate=config.SERIAL_BAUDRATE,
-                        timeout=config.SERIAL_TIMEOUT,
-                    )
+                    ser = self._open_serial(serial, port)
                     self._status = ConnectionStatus.CONNECTED
+                    self._serial_opened_at = time.time()
+                    self._open_fail_streak = 0
+                    self._dbg_block = None
                     print(f"[IoTReceiver] Serial connected on {port}")
                 except Exception as exc:
+                    self._open_fail_streak += 1
                     print(f"[IoTReceiver] Serial open failed ({port}): {exc}. Retrying in 2 s…")
                     self._status = ConnectionStatus.ERROR
+                    if self._open_fail_streak >= 3:
+                        self._try_auto_repick_port("open_failed")
+                        self._open_fail_streak = 0
                     time.sleep(2.0)
                     continue
+
+            # Opened but never got a valid [DBG] block → wrong COM or firmware silent
+            if (
+                self._last_received_ts == 0
+                and self._serial_opened_at > 0
+                and time.time() - self._serial_opened_at > no_packet_grace_s
+            ):
+                print(
+                    f"[IoTReceiver] No [DBG] telemetry on {self._current_serial_port()} "
+                    f"for {no_packet_grace_s:.0f}s — reconnecting…"
+                )
+                try:
+                    ser.close()
+                except Exception:
+                    pass
+                ser = None
+                self._status = ConnectionStatus.TIMEOUT
+                self._try_auto_repick_port("no_telemetry")
+                self._serial_opened_at = 0.0
+                time.sleep(1.0)
+                continue
 
             # --- Read one line ---
             try:
@@ -237,6 +301,7 @@ class IoTReceiver:
                 jd = self._parse_serial_line(line)
                 if jd is not None:
                     self._record_packet()
+                    self._status = ConnectionStatus.CONNECTED
                     with self._lock:
                         self._latest = jd
 
@@ -258,7 +323,11 @@ class IoTReceiver:
         if line.startswith("[DBG]"):
             m = _DBG_HEADER_RE.search(line)
             if not m:
+                if not getattr(self, "_warned_dbg_header", False):
+                    print(f"[IoTReceiver] Unrecognized [DBG] header (check firmware): {line[:120]}")
+                    self._warned_dbg_header = True
                 return None
+            self._warned_dbg_header = False
             (
                 t_ms, state, cal,
                 rep_count, rep_target,

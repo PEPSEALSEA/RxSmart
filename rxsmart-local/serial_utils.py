@@ -1,4 +1,4 @@
-"""Serial port discovery — ESP32 auto-detect and COM port listing."""
+"""Serial port discovery — ESP32 / Pico auto-detect and COM port listing."""
 from __future__ import annotations
 
 import re
@@ -6,21 +6,29 @@ from typing import List, Optional, Tuple
 
 import config
 
-ESP32_VID_PIDS = {
+BOARD_VID_PIDS = {
     (0x10C4, 0xEA60),  # CP210x (common on ESP32 DevKit)
     (0x1A86, 0x7523),  # CH340
     (0x303A, 0x1001),  # ESP32-S2/S3 native USB
+    (0x2E8A, 0x0005),  # Raspberry Pi Pico USB CDC
+    (0x2E8A, 0x000A),  # Pico / Pico W variants
+    (0x2E8A, 0x000C),  # Pico 2 / RP2350 CDC
 }
 
-ESP32_KEYWORDS = (
+BOARD_KEYWORDS = (
     "cp210",
     "ch340",
     "silicon labs",
     "usb-serial",
     "esp32",
-    "uart",
+    "pico",
+    "raspberry",
+    "usb serial device",
     "usb serial",
 )
+
+# Avoid matching generic Bluetooth / modem COM ports via bare "uart"
+WEAK_KEYWORDS = ("uart",)
 
 
 def _com_number(port: str) -> int:
@@ -35,12 +43,24 @@ def _parse_vid_pid(hwid: str) -> Optional[Tuple[int, int]]:
     return int(m.group(1), 16), int(m.group(2), 16)
 
 
-def _is_esp32_port(description: str, hwid: str) -> bool:
+def _board_match_score(description: str, hwid: str) -> int:
+    """Higher = more likely an RxSmart board. 0 = not a match."""
     vid_pid = _parse_vid_pid(hwid)
-    if vid_pid and vid_pid in ESP32_VID_PIDS:
-        return True
+    if vid_pid and vid_pid[0] == 0x2E8A:
+        return 100
+    if vid_pid and vid_pid in BOARD_VID_PIDS:
+        return 90
+
     text = f"{description} {hwid}".lower()
-    return any(kw in text for kw in ESP32_KEYWORDS)
+    if any(kw in text for kw in BOARD_KEYWORDS):
+        return 50
+    if any(kw in text for kw in WEAK_KEYWORDS):
+        return 10
+    return 0
+
+
+def _is_board_port(description: str, hwid: str) -> bool:
+    return _board_match_score(description, hwid) >= 50
 
 
 def list_serial_ports() -> List[Tuple[str, str]]:
@@ -64,30 +84,39 @@ def list_serial_ports() -> List[Tuple[str, str]]:
     return found
 
 
-def detect_esp32_port() -> Optional[str]:
-    """Return COM port that looks like an ESP32 DevKit, or None."""
+def detect_board_port() -> Optional[str]:
+    """Return COM port that looks like ESP32 or Pico, preferring strongest match."""
     try:
         from serial.tools import list_ports
     except ImportError:
         return None
 
+    best_port: Optional[str] = None
+    best_score = 0
     for info in list_ports.comports():
-        if _is_esp32_port(info.description or "", info.hwid or ""):
-            return info.device
-    return None
+        score = _board_match_score(info.description or "", info.hwid or "")
+        if score > best_score:
+            best_score = score
+            best_port = info.device
+    return best_port if best_score >= 50 else None
 
 
-def pick_default_port() -> str:
+def detect_esp32_port() -> Optional[str]:
+    """Alias kept for callers; detects ESP32 or Pico board ports."""
+    return detect_board_port()
+
+
+def pick_default_port(exclude: Optional[str] = None) -> str:
     """
-    Prefer ESP32 DevKit port; else highest COM number; else config fallback.
+    Prefer ESP32/Pico board port; else highest COM number; else config fallback.
     """
-    esp32 = detect_esp32_port()
-    if esp32:
-        return esp32
+    board = detect_board_port()
+    if board and board != exclude:
+        return board
 
-    ports = list_serial_ports()
+    ports = [p for p, _ in list_serial_ports() if p != exclude]
     if ports:
-        return max(ports, key=lambda item: _com_number(item[0]))[0]
+        return max(ports, key=_com_number)
 
     fallback = config.SERIAL_PORT_FALLBACK
     return fallback if fallback != "auto" else "COM3"
