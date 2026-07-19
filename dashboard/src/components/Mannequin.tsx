@@ -175,7 +175,7 @@ export function Mannequin({ frame, activeJoints = [] }: MannequinProps) {
 
     for (const [key, ref] of Object.entries(elbowRefs)) {
       const target = frame[key as keyof SensorFrame];
-      if (!("bend" in target)) continue;
+      if (!target || typeof target !== "object" || !("bend" in target)) continue;
       const vis = visualLower.current[key];
       const vel = velLower.current[key] ?? 0;
       const accel = (target.bend - vis.bend) * VISUAL_SPRING - vel * VISUAL_DAMP;
@@ -196,6 +196,7 @@ export function Mannequin({ frame, activeJoints = [] }: MannequinProps) {
         plane: visualUpper.current.r_leg_upper.plane,
         bend: visualLower.current.r_leg_lower.bend,
       },
+      { mode: frame.body?.mode },
     );
 
     for (const key of UPPER_KEYS) {

@@ -77,6 +77,7 @@ export function createNeutralFrame(): SensorFrame {
     r_arm_lower: { ...r_arm_lower, vBend: 0 },
     l_leg_lower: { ...l_leg_lower, vBend: 0 },
     r_leg_lower: { ...r_leg_lower, vBend: 0 },
+    body: { rootY: 0.02, rootZ: 0, mode: "standing" },
   };
 }
 
@@ -131,6 +132,7 @@ export function stepPhysics(frame: SensorFrame, targets: ResolvedPose, dt: numbe
     };
   }
 
+  next.body = frame.body;
   return next;
 }
 

@@ -176,9 +176,10 @@ export function bridgeFrameUrl(baseUrl: string, cacheBust = Date.now()) {
 export function mapLocalJointsToFrame(
   joints: LocalJointData | null,
   channelMap?: ChannelMap,
+  activePose?: string,
 ): SensorFrame {
   const map = channelMap ?? parseChannelMap(joints?.sensor_map);
-  return mapJointsAndSensorsToFrame(joints, map);
+  return mapJointsAndSensorsToFrame(joints, map, activePose);
 }
 
 export type BridgeLiveTelemetry = {

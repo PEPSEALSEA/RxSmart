@@ -160,9 +160,15 @@ const referenceFeet = (() => {
 })();
 
 /** Derive pelvis drop, forward weight shift, and torso counter-lean from leg flexion. */
-export function computeSquatTransform(left: LegPoseSample, right: LegPoseSample): SquatTransform {
+export function computeSquatTransform(
+  left: LegPoseSample,
+  right: LegPoseSample,
+  options?: { mode?: string },
+): SquatTransform {
   const depth = squatDepth(left, right);
-  const pelvisLeanRad = depth * SQUAT_TORSO_LEAN_MAX * DEG;
+  // Chair sit: keep torso more upright than a deep squat lean.
+  const leanScale = options?.mode === "sitting" ? 0.22 : 1;
+  const pelvisLeanRad = depth * SQUAT_TORSO_LEAN_MAX * DEG * leanScale;
 
   footInRootSpace(false, left, pelvisLeanRad, _leftFoot);
   footInRootSpace(true, right, pelvisLeanRad, _rightFoot);
@@ -181,7 +187,7 @@ export function computeSquatTransform(left: LegPoseSample, right: LegPoseSample)
     rootZ,
     pelvisLeanRad,
     headCounterLeanRad: -pelvisLeanRad * 0.42,
-    armElevationOffset: depth * 40,
-    armPlaneOffset: depth * 62,
+    armElevationOffset: depth * (options?.mode === "sitting" ? 12 : 40),
+    armPlaneOffset: depth * (options?.mode === "sitting" ? 18 : 62),
   };
 }

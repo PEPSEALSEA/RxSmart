@@ -24,7 +24,17 @@ export interface LowerJointReading extends LowerJointAngles {
   vBend: number;
 }
 
-export type SensorFrame = Record<UpperPoseKey, UpperJointReading> & Record<LowerPoseKey, LowerJointReading>;
+/** Pelvis / root placement in world space (Y-up), derived from leg pose + sit/stand mode. */
+export type BodyRootPose = {
+  rootY: number;
+  rootZ: number;
+  mode?: string;
+};
+
+export type SensorFrame = Record<UpperPoseKey, UpperJointReading> &
+  Record<LowerPoseKey, LowerJointReading> & {
+    body?: BodyRootPose;
+  };
 
 export type UpperJointTarget = Partial<UpperJointAngles>;
 export type LowerJointTarget = Partial<LowerJointAngles>;

@@ -151,7 +151,7 @@ export default function LocalBridgePanel({
           setChannelMap(activeMap);
         }
 
-        onFrameUpdate(mapLocalJointsToFrame(next.joints, activeMap));
+        onFrameUpdate(mapLocalJointsToFrame(next.joints, activeMap, next.sensor_mapping?.active_pose));
 
         if (
           imuStats &&

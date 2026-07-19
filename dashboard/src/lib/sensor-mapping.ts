@@ -7,6 +7,7 @@ import {
   UPPER_KEYS,
 } from "@/lib/pose";
 import { createNeutralFrame, SensorFrame } from "@/lib/pose-physics";
+import { computeSquatTransform } from "@/lib/mannequin-rig";
 
 export type ChannelMap = Record<number, PoseKey>;
 
@@ -172,15 +173,16 @@ export function mapJointsAndSensorsToFrame(
     };
   } | null,
   channelMap: ChannelMap,
+  activePose?: string,
 ): SensorFrame {
   // Mannequin uses joint bends — never raw MPU channel degrees as elevation
   // (that produced star-jump poses).
   const frame = createNeutralFrame();
   if (!joints) return frame;
 
+  const mode = activePose === "sitting" || activePose === "standing" ? activePose : undefined;
   const rel = joints.angles_relative;
   // Shoulders: prefer deviation-from-default so "at default pose" ≈ arms rest.
-  // Knees/elbows: absolute so sitting still shows bent legs.
   const shL = rel
     ? Math.min(180, Math.max(0, (rel.shoulder_left ?? 0) + 8))
     : Math.min(180, Math.max(0, joints.shoulder_left ?? 0));
@@ -192,12 +194,45 @@ export function mapJointsAndSensorsToFrame(
   frame.r_arm_upper.elevation = shR;
   frame.l_arm_lower.bend = joints.elbow_left;
   frame.r_arm_lower.bend = joints.elbow_right;
-  frame.l_leg_lower.bend = joints.knee_left;
-  frame.r_leg_lower.bend = joints.knee_right;
 
-  // Thigh elevation from knee bend → sitting reads as a squat, not a V-split.
-  frame.l_leg_upper.elevation = Math.min(70, joints.knee_left * 0.65);
-  frame.r_leg_upper.elevation = Math.min(70, joints.knee_right * 0.65);
+  // Live knees drive height; sitting mode raises a chair-sit floor so pelvis drops.
+  let kneeL = Math.min(140, Math.max(0, joints.knee_left));
+  let kneeR = Math.min(140, Math.max(0, joints.knee_right));
+  if (mode === "sitting") {
+    const relKnee =
+      ((rel?.knee_left ?? 0) + (rel?.knee_right ?? 0)) * 0.5;
+    // Near sitting default (rel≈0) → force chair sit; standing up raises rel → blend to live knees.
+    const nearSitDefault = 1 - Math.min(1, relKnee / 55);
+    const SIT_KNEE = 90;
+    kneeL = kneeL * (1 - nearSitDefault) + Math.max(kneeL, SIT_KNEE) * nearSitDefault;
+    kneeR = kneeR * (1 - nearSitDefault) + Math.max(kneeR, SIT_KNEE) * nearSitDefault;
+  }
+
+  frame.l_leg_lower.bend = kneeL;
+  frame.r_leg_lower.bend = kneeR;
+
+  // Thigh elevation from knee bend → sitting reads as seated, not a V-split.
+  const elevScale = mode === "sitting" ? 0.78 : 0.65;
+  const elevCap = mode === "sitting" ? 78 : 70;
+  let elevL = Math.min(elevCap, kneeL * elevScale);
+  let elevR = Math.min(elevCap, kneeR * elevScale);
+  if (mode === "sitting") {
+    elevL = Math.max(elevL, 58);
+    elevR = Math.max(elevR, 58);
+  }
+  frame.l_leg_upper.elevation = elevL;
+  frame.r_leg_upper.elevation = elevR;
+
+  const squat = computeSquatTransform(
+    { elevation: elevL, plane: 0, bend: kneeL },
+    { elevation: elevR, plane: 0, bend: kneeR },
+    { mode },
+  );
+  frame.body = {
+    rootY: squat.rootY,
+    rootZ: squat.rootZ,
+    mode: mode ?? "standing",
+  };
 
   void channelMap;
   return frame;
