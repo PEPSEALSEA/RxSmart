@@ -40,6 +40,10 @@ const MODES: { id: LocalBridgeMode; label: string }[] = [
   { id: "FUSION", label: "Fusion" },
 ];
 
+const RECONNECT_MS = 2000;
+const WAITING_MSG =
+  "รอ Python bridge — เปิดเว็บก่อนหรือหลังก็ได้ ระบบจะลองเชื่อมใหม่อัตโนมัติ";
+
 export default function LocalBridgePanel({
   onConnectChange,
   onFrameUpdate,
@@ -53,6 +57,7 @@ export default function LocalBridgePanel({
   const [connected, setConnected] = useState(false);
   const [checking, setChecking] = useState(false);
   const [polling, setPolling] = useState(false);
+  const [seeking, setSeeking] = useState(autoConnect);
   const [state, setState] = useState<LocalBridgeState | null>(null);
   const [frameTick, setFrameTick] = useState(0);
   const [error, setError] = useState("");
@@ -60,52 +65,81 @@ export default function LocalBridgePanel({
   const [channelMap, setChannelMap] = useState<ChannelMap>(() => parseChannelMap(undefined));
   const [mapBusy, setMapBusy] = useState("");
   const [mapMessage, setMapMessage] = useState("");
-  const autoConnectAttempted = useRef(false);
   const autoRecheckAt = useRef(0);
+  const connectInFlight = useRef(false);
+  const channelMapRef = useRef(channelMap);
   const imuStats = variant === "imu";
 
-  const connect = useCallback(async () => {
-    setChecking(true);
-    setError("");
-    saveBridgeUrl(bridgeUrl);
-    const ok = await pingBridge(bridgeUrl);
-    setChecking(false);
-    setConnected(ok);
-    onConnectChange(ok);
-    if (!ok) {
-      setError("เชื่อมต่อไม่ได้ — รัน python main.py ใน rxsmart-local ก่อน");
-      onStateUpdate(null);
-      return;
-    }
-    if (defaultMode) {
-      try {
-        await setBridgeMode(bridgeUrl, defaultMode);
-      } catch (err) {
-        setError(err instanceof Error ? err.message : "สลับโหมด IMU ไม่สำเร็จ");
-      }
-    }
-    setPolling(true);
-  }, [bridgeUrl, defaultMode, onConnectChange, onStateUpdate]);
-
   useEffect(() => {
-    if (!autoConnect || autoConnectAttempted.current) return;
-    autoConnectAttempted.current = true;
-    void connect();
-  }, [autoConnect, connect]);
+    channelMapRef.current = channelMap;
+  }, [channelMap]);
+
+  const connect = useCallback(
+    async (opts?: { quiet?: boolean }) => {
+      if (connectInFlight.current) return;
+      connectInFlight.current = true;
+      setSeeking(true);
+      if (!opts?.quiet) {
+        setChecking(true);
+        setError("");
+      }
+      saveBridgeUrl(bridgeUrl);
+      try {
+        const ok = await pingBridge(bridgeUrl);
+        if (!ok) {
+          setConnected(false);
+          setPolling(false);
+          onConnectChange(false);
+          onStateUpdate(null);
+          setError(WAITING_MSG);
+          return;
+        }
+
+        if (defaultMode) {
+          try {
+            await setBridgeMode(bridgeUrl, defaultMode);
+          } catch (err) {
+            setError(err instanceof Error ? err.message : "สลับโหมด IMU ไม่สำเร็จ");
+          }
+        }
+
+        setConnected(true);
+        setPolling(true);
+        setError("");
+        onConnectChange(true);
+      } finally {
+        connectInFlight.current = false;
+        setChecking(false);
+      }
+    },
+    [bridgeUrl, defaultMode, onConnectChange, onStateUpdate],
+  );
+
+  // Keep retrying until Python is up (open site first or Python first — both OK).
+  useEffect(() => {
+    if (!seeking || connected) return;
+    void connect({ quiet: true });
+    const interval = window.setInterval(() => {
+      void connect({ quiet: true });
+    }, RECONNECT_MS);
+    return () => window.clearInterval(interval);
+  }, [seeking, connected, connect]);
 
   useEffect(() => {
     if (!polling || !connected) return;
 
     let cancelled = false;
+    let failStreak = 0;
 
     const poll = async () => {
       try {
         const next = await fetchBridgeState(bridgeUrl);
         if (cancelled) return;
+        failStreak = 0;
         setState(next);
         onStateUpdate(next);
 
-        let activeMap = channelMap;
+        let activeMap = channelMapRef.current;
         if (next.sensor_mapping) {
           setMapping(next.sensor_mapping);
           activeMap = parseChannelMap(next.sensor_mapping.channel_map);
@@ -118,7 +152,6 @@ export default function LocalBridgePanel({
 
         onFrameUpdate(mapLocalJointsToFrame(next.joints, activeMap));
 
-        // Passive auto-recheck every ~30 s when buffer has enough samples
         if (
           imuStats &&
           next.sensor_mapping &&
@@ -130,12 +163,16 @@ export default function LocalBridgePanel({
         }
         setFrameTick(Date.now());
         setError("");
-      } catch (err) {
+      } catch {
         if (cancelled) return;
+        failStreak += 1;
+        // Tolerate a single blip; then drop and let reconnect loop recover.
+        if (failStreak < 2) return;
         setConnected(false);
         setPolling(false);
+        setSeeking(true);
         onConnectChange(false);
-        setError(err instanceof Error ? err.message : "การเชื่อมต่อขาด");
+        setError("ขาดการเชื่อมต่อ — กำลังลองใหม่เมื่อ Python พร้อม…");
       }
     };
 
@@ -145,7 +182,7 @@ export default function LocalBridgePanel({
       cancelled = true;
       clearInterval(interval);
     };
-  }, [polling, connected, bridgeUrl, onConnectChange, onFrameUpdate, onStateUpdate, channelMap, imuStats]);
+  }, [polling, connected, bridgeUrl, onConnectChange, onFrameUpdate, onStateUpdate, imuStats]);
 
   const runMapAction = async (
     action: "reset" | "auto_recheck" | "calibrate_start" | "calibrate_next",
@@ -231,39 +268,55 @@ export default function LocalBridgePanel({
                   disabled={checking}
                   className="cohere-btn-primary px-5 py-2.5 text-sm disabled:opacity-50"
                 >
-                  {checking ? "กำลังเชื่อม…" : connected ? "เชื่อมต่อแล้ว" : "เชื่อมต่อเครื่องนี้"}
+                  {checking
+                    ? "กำลังเชื่อม…"
+                    : connected
+                      ? "เชื่อมต่อแล้ว"
+                      : seeking
+                        ? "กำลังรอ Python…"
+                        : "เชื่อมต่อเครื่องนี้"}
                 </button>
               </div>
               <p className="mt-3 text-sm text-cohere-body-muted">
                 {imuStats
-                  ? "เสียบ Pico 2 W / ESP32 ทาง USB → รัน python main.py → ข้อมูล IMU realtime ~400 ms"
-                  : "GitHub Pages เรียก 127.0.0.1:8766 ได้เมื่อเปิดเว็บและรัน Python บน PC เครื่องเดียวกัน"}
+                  ? "เสียบ Pico / ESP32 ทาง USB — เปิดเว็บหรือรัน python ก่อนก็ได้ ระบบเชื่อมใหม่อัตโนมัติ"
+                  : "เปิดเว็บก่อนหรือรัน Python ก่อนก็ได้ — bridge จะลองเชื่อม 127.0.0.1:8766 เอง"}
               </p>
             </div>
             <div className="flex items-center gap-2">
               <span
                 className={`h-2 w-2 rounded-full ${
-                  connected ? "bg-cohere-deep-green animate-pulse-soft" : "bg-cohere-hairline"
+                  connected
+                    ? "bg-cohere-deep-green animate-pulse-soft"
+                    : seeking
+                      ? "bg-cohere-deep-green/40 animate-pulse-soft"
+                      : "bg-cohere-hairline"
                 }`}
               />
               <span className="cohere-mono-label text-[11px]">
-                {connected ? "Bridge online" : "รอ Python bridge"}
+                {connected ? "Bridge online" : seeking ? "รอ Python…" : "ยังไม่เชื่อม"}
               </span>
             </div>
           </div>
 
           {error && (
-            <p className="mt-4 animate-fade-in-only rounded-cohere-sm border border-cohere-error/20 bg-cohere-error/5 px-4 py-2.5 text-xs text-cohere-error">
+            <p
+              className={`mt-4 animate-fade-in-only rounded-cohere-sm px-4 py-2.5 text-xs ${
+                seeking && !connected
+                  ? "border border-cohere-hairline bg-cohere-pale-green text-cohere-ink"
+                  : "border border-cohere-error/20 bg-cohere-error/5 text-cohere-error"
+              }`}
+            >
               {error}
             </p>
           )}
 
-          {!connected && !autoConnect && (
+          {!connected && !seeking && (
             <ol className="mt-5 space-y-2 border-t border-cohere-hairline pt-5 text-sm text-cohere-body-muted">
               <li>1. <code className="font-mono-label text-xs text-cohere-ink">cd rxsmart-local</code></li>
               <li>2. <code className="font-mono-label text-xs text-cohere-ink">pip install -r requirements.txt</code></li>
               <li>3. <code className="font-mono-label text-xs text-cohere-ink">python main.py</code></li>
-              <li>4. กด &quot;เชื่อมต่อเครื่องนี้&quot; ด้านบน</li>
+              <li>4. กด &quot;เชื่อมต่อเครื่องนี้&quot; ด้านบน (หรือเปิดโหมดที่มี auto-connect)</li>
             </ol>
           )}
         </div>

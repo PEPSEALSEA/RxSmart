@@ -425,6 +425,7 @@ export default function UserHome() {
         {dataMode === "camera" && (
           <FadeIn delay={80} className="mb-8 space-y-8">
             <LocalBridgePanel
+              autoConnect
               onConnectChange={handleBridgeConnectChange}
               onFrameUpdate={handleBridgeFrameUpdate}
               onStateUpdate={handleBridgeStateUpdate}
