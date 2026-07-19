@@ -198,6 +198,20 @@ function relativeElevation(raw: number, neutral: number | undefined, restBias = 
   return clampDeg(Math.abs(raw - neutral) + restBias);
 }
 
+/** Bend relative to pose_defaults neutral (same as Python apply_pose_defaults). */
+function relativeBend(absoluteBend: number, neutral: number | undefined): number {
+  if (typeof neutral !== "number") return clampDeg(absoluteBend);
+  return clampDeg(Math.abs(absoluteBend - neutral));
+}
+
+function lowerNeutral(
+  poseDefaults: PoseDefaultProfile | undefined,
+  key: "elbow_left" | "elbow_right" | "knee_left" | "knee_right",
+): number | undefined {
+  const n = poseDefaults?.[key]?.neutral;
+  return typeof n === "number" ? n : undefined;
+}
+
 function applyLegPlanesAndSquat(
   frame: SensorFrame,
   mode: "sitting" | "standing" | undefined,
@@ -292,6 +306,27 @@ export function mapJointsAndSensorsToFrame(
       ? clampDeg(Math.abs(rel.hip_right))
       : relativeElevation(byPose.r_leg_upper ?? 0, upperNeutral(poseDefaults, "leg", "right"));
 
+    // Bends: prefer angles_relative (pose_defaults zero), else Δ from neutral, else absolute
+    const hasRelOrDefaults = Boolean(rel) || Boolean(poseDefaults);
+    if (hasRelOrDefaults) {
+      frame.l_arm_lower.bend =
+        rel?.elbow_left !== undefined
+          ? clampDeg(rel.elbow_left)
+          : relativeBend(frame.l_arm_lower.bend, lowerNeutral(poseDefaults, "elbow_left"));
+      frame.r_arm_lower.bend =
+        rel?.elbow_right !== undefined
+          ? clampDeg(rel.elbow_right)
+          : relativeBend(frame.r_arm_lower.bend, lowerNeutral(poseDefaults, "elbow_right"));
+      frame.l_leg_lower.bend =
+        rel?.knee_left !== undefined
+          ? clampDeg(Math.min(140, rel.knee_left))
+          : Math.min(140, relativeBend(frame.l_leg_lower.bend, lowerNeutral(poseDefaults, "knee_left")));
+      frame.r_leg_lower.bend =
+        rel?.knee_right !== undefined
+          ? clampDeg(Math.min(140, rel.knee_right))
+          : Math.min(140, relativeBend(frame.r_leg_lower.bend, lowerNeutral(poseDefaults, "knee_right")));
+    }
+
     return applyLegPlanesAndSquat(frame, mode);
   }
 
@@ -304,13 +339,25 @@ export function mapJointsAndSensorsToFrame(
   frame.r_arm_upper.elevation = rel
     ? clampDeg((rel.shoulder_right ?? 0) + ARM_REST_ELEV)
     : clampDeg(joints.shoulder_right ?? 0);
-  frame.l_arm_lower.bend = joints.elbow_left;
-  frame.r_arm_lower.bend = joints.elbow_right;
-  frame.l_leg_lower.bend = Math.min(140, Math.max(0, joints.knee_left));
-  frame.r_leg_lower.bend = Math.min(140, Math.max(0, joints.knee_right));
-  // No thigh IMU → leave elevation near 0 (standing); sitting mode floors applied below
-  frame.l_leg_upper.elevation = 0;
-  frame.r_leg_upper.elevation = 0;
+  frame.l_arm_lower.bend =
+    rel?.elbow_left !== undefined
+      ? clampDeg(rel.elbow_left)
+      : relativeBend(joints.elbow_left, lowerNeutral(poseDefaults, "elbow_left"));
+  frame.r_arm_lower.bend =
+    rel?.elbow_right !== undefined
+      ? clampDeg(rel.elbow_right)
+      : relativeBend(joints.elbow_right, lowerNeutral(poseDefaults, "elbow_right"));
+  frame.l_leg_lower.bend =
+    rel?.knee_left !== undefined
+      ? clampDeg(Math.min(140, rel.knee_left))
+      : Math.min(140, relativeBend(joints.knee_left, lowerNeutral(poseDefaults, "knee_left")));
+  frame.r_leg_lower.bend =
+    rel?.knee_right !== undefined
+      ? clampDeg(Math.min(140, rel.knee_right))
+      : Math.min(140, relativeBend(joints.knee_right, lowerNeutral(poseDefaults, "knee_right")));
+  // Hips from relative when present
+  frame.l_leg_upper.elevation = rel?.hip_left !== undefined ? clampDeg(Math.abs(rel.hip_left)) : 0;
+  frame.r_leg_upper.elevation = rel?.hip_right !== undefined ? clampDeg(Math.abs(rel.hip_right)) : 0;
   return applyLegPlanesAndSquat(frame, mode);
 }
 
