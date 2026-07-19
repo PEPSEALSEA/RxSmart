@@ -49,25 +49,11 @@ DEFAULT_CHANNEL_MAP: dict[int, str] = {
 
 CALIBRATION_STEPS: list[str] = [
     "neutral",
-    "raise_left_arm",
-    "raise_right_arm",
-    "raise_left_leg",
-    "raise_right_leg",
+    "move_forearms",
+    "move_shoulders",
+    "move_shins",
+    "move_thighs",
 ]
-
-STEP_TO_PROXIMAL: dict[str, str] = {
-    "raise_left_arm": "l_arm_upper",
-    "raise_right_arm": "r_arm_upper",
-    "raise_left_leg": "l_leg_upper",
-    "raise_right_leg": "r_leg_upper",
-}
-
-STEP_TO_DISTAL: dict[str, str] = {
-    "raise_left_arm": "l_arm_lower",
-    "raise_right_arm": "r_arm_lower",
-    "raise_left_leg": "l_leg_lower",
-    "raise_right_leg": "r_leg_lower",
-}
 
 RAW_TO_DEG = 180.0 / 4095.0
 
@@ -181,43 +167,156 @@ def auto_detect_from_motion(samples: list[list[float]]) -> dict[int, str]:
     return result
 
 
+def _mean_neutral(neutral_rows: list[list[float]]) -> list[float]:
+    return [
+        sum(row[c] for row in neutral_rows) / len(neutral_rows)
+        for c in range(8)
+    ]
+
+
+def _channel_peak_deltas(rows: list[list[float]], neutral: list[float]) -> list[float]:
+    if not rows:
+        return [0.0] * 8
+    return [max(row[c] for row in rows) - neutral[c] for c in range(8)]
+
+
+def _top_movers(
+    deltas: list[float],
+    count: int,
+    exclude: set[int] | None = None,
+) -> list[int]:
+    blocked = exclude or set()
+    ranked = sorted(
+        (c for c in range(8) if c not in blocked),
+        key=lambda c: deltas[c],
+        reverse=True,
+    )
+    return ranked[:count]
+
+
+def _motion_correlation(
+    samples: list[list[float]],
+    ch_a: int,
+    ch_b: int,
+    neutral: list[float],
+) -> float:
+    if len(samples) < 2:
+        return 0.0
+    total = 0.0
+    for row in samples:
+        total += (row[ch_a] - neutral[ch_a]) * (row[ch_b] - neutral[ch_b])
+    return total / len(samples)
+
+
+def _pair_proximal_to_distal(
+    proximal: list[int],
+    distal: list[int],
+    motion_rows: list[list[float]],
+    neutral: list[float],
+) -> list[tuple[int, int]]:
+    """Match each proximal channel to its best-correlated distal channel."""
+    if len(proximal) < 2 or len(distal) < 2:
+        return []
+
+    scores: list[tuple[float, int, int]] = []
+    for p in proximal:
+        for d in distal:
+            scores.append((_motion_correlation(motion_rows, p, d, neutral), p, d))
+    scores.sort(reverse=True)
+
+    used_p: set[int] = set()
+    used_d: set[int] = set()
+    pairs: list[tuple[int, int]] = []
+    for score, p, d in scores:
+        if p in used_p or d in used_d:
+            continue
+        pairs.append((p, d))
+        used_p.add(p)
+        used_d.add(d)
+        if len(pairs) == 2:
+            break
+
+    if len(pairs) < 2:
+        remaining_p = [p for p in proximal if p not in used_p]
+        remaining_d = [d for d in distal if d not in used_d]
+        while remaining_p and remaining_d and len(pairs) < 2:
+            pairs.append((remaining_p.pop(0), remaining_d.pop(0)))
+    return pairs
+
+
+def _assign_left_right_pairs(
+    pairs: list[tuple[int, int]],
+    neutral: list[float],
+) -> tuple[tuple[int, int], tuple[int, int]]:
+    """Return (left_pair, right_pair) using neutral-angle heuristic."""
+    if len(pairs) < 2:
+        fallback = pairs[0] if pairs else (0, 1)
+        return fallback, fallback
+
+    def pair_neutral(pair: tuple[int, int]) -> float:
+        return (neutral[pair[0]] + neutral[pair[1]]) / 2.0
+
+    ordered = sorted(pairs, key=pair_neutral)
+    return ordered[0], ordered[1]
+
+
 def auto_detect_guided(step_samples: dict[str, list[list[float]]]) -> dict[int, str]:
     """
-    Guided calibration: user performs neutral + 4 raise-one-limb steps.
-    step_samples keys: neutral, raise_left_arm, raise_right_arm, …
+    Distal-first guided calibration (both sides together):
+      neutral → move_forearms → move_shoulders → move_shins → move_thighs
+    L/R is inferred from proximal↔distal correlation + neutral angles.
     """
     neutral_rows = step_samples.get("neutral", [])
     if not neutral_rows:
         return dict(DEFAULT_CHANNEL_MAP)
 
-    neutral = [
-        sum(row[c] for row in neutral_rows) / len(neutral_rows)
-        for c in range(8)
-    ]
+    neutral = _mean_neutral(neutral_rows)
+    forearm_rows = step_samples.get("move_forearms", [])
+    shoulder_rows = step_samples.get("move_shoulders", [])
+    shin_rows = step_samples.get("move_shins", [])
+    thigh_rows = step_samples.get("move_thighs", [])
+
+    arm_distal = _top_movers(_channel_peak_deltas(forearm_rows, neutral), 2)
+    arm_proximal = _top_movers(
+        _channel_peak_deltas(shoulder_rows, neutral),
+        2,
+        exclude=set(arm_distal),
+    )
+    used_arms = set(arm_distal) | set(arm_proximal)
+    leg_distal = _top_movers(
+        _channel_peak_deltas(shin_rows, neutral),
+        2,
+        exclude=used_arms,
+    )
+    leg_proximal = _top_movers(
+        _channel_peak_deltas(thigh_rows, neutral),
+        2,
+        exclude=used_arms | set(leg_distal),
+    )
 
     result: dict[int, str] = {}
 
-    for step, prox_key in STEP_TO_PROXIMAL.items():
-        dist_key = STEP_TO_DISTAL[step]
-        rows = step_samples.get(step, [])
-        if not rows:
-            continue
+    arm_pairs = _pair_proximal_to_distal(
+        arm_proximal, arm_distal, shoulder_rows or forearm_rows, neutral
+    )
+    if len(arm_pairs) == 2:
+        left_arm, right_arm = _assign_left_right_pairs(arm_pairs, neutral)
+        result[left_arm[0]] = "l_arm_upper"
+        result[left_arm[1]] = "l_arm_lower"
+        result[right_arm[0]] = "r_arm_upper"
+        result[right_arm[1]] = "r_arm_lower"
 
-        deltas = [
-            max(row[c] for row in rows) - neutral[c]
-            for c in range(8)
-        ]
-        ranked = sorted(range(8), key=lambda c: deltas[c], reverse=True)
-        top = [c for c in ranked if c not in result][:2]
-        if len(top) < 2:
-            continue
-
-        prox_ch, dist_ch = _assign_proximal_distal(rows, top[0], top[1])
-        result[prox_ch] = prox_key
-        result[dist_ch] = dist_key
+    leg_pairs = _pair_proximal_to_distal(
+        leg_proximal, leg_distal, thigh_rows or shin_rows, neutral
+    )
+    if len(leg_pairs) == 2:
+        left_leg, right_leg = _assign_left_right_pairs(leg_pairs, neutral)
+        result[left_leg[0]] = "l_leg_upper"
+        result[left_leg[1]] = "l_leg_lower"
+        result[right_leg[0]] = "r_leg_upper"
+        result[right_leg[1]] = "r_leg_lower"
 
     if len(result) < 8:
-        # Fill missing channels from passive detect on all samples combined
         combined = neutral_rows[:]
         for rows in step_samples.values():
             combined.extend(rows)
@@ -225,6 +324,18 @@ def auto_detect_guided(step_samples: dict[str, list[list[float]]]) -> dict[int, 
         for ch in range(8):
             if ch not in result:
                 result[ch] = fallback.get(ch, DEFAULT_CHANNEL_MAP[ch])
+
+        owned: dict[str, int] = {}
+        duplicates: list[int] = []
+        for ch, key in sorted(result.items()):
+            if key in owned:
+                duplicates.append(ch)
+            else:
+                owned[key] = ch
+        missing_keys = [k for k in POSE_KEYS if k not in owned]
+        for ch, key in zip(duplicates, missing_keys):
+            result[ch] = key
+
     return result
 
 

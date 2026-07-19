@@ -10,8 +10,11 @@ import FadeIn from "@/components/ui/FadeIn";
 import {
   BridgeLiveTelemetry,
   LocalBridgeState,
+  loadBridgeUrl,
+  mapBridgeSessionFeedback,
   mapBridgeToLiveTelemetry,
-  mapLocalJointsToFrame,
+  postBridgeSessionAction,
+  selectBridgeExercise,
 } from "@/lib/local-bridge";
 import { FIRMWARE_SENSOR_TO_POSE, isUpperKey } from "@/lib/pose";
 import {
@@ -19,7 +22,7 @@ import {
   mapSensorsToFrame,
   parseChannelMap,
 } from "@/lib/sensor-mapping";
-import { REHAB_EXERCISES, RehabExercise } from "@/lib/rehab-exercises";
+import { getExerciseById, REHAB_EXERCISES, RehabExercise } from "@/lib/rehab-exercises";
 import {
   RehabSessionEngine,
   SessionFeedback,
@@ -127,25 +130,23 @@ function makeLiveFeedback(exercise: RehabExercise, payload: LiveTelemetry): Sess
   };
 }
 
-function makeCameraFeedback(exercise: RehabExercise, state: LocalBridgeState): SessionFeedback {
+/**
+ * Camera mode no longer computes score/angleOk in the browser — Python
+ * (rxsmart-local/exercise_engine.py) judges pose correctness from the real
+ * camera angles and this just renders that result as-is.
+ */
+function makeCameraFeedback(state: LocalBridgeState): SessionFeedback | null {
+  const mapped = mapBridgeSessionFeedback(state.session_feedback);
+  if (!mapped) return null;
   const joints = state.joints;
-  const frame = mapLocalJointsToFrame(joints);
-  const fb = buildSessionFeedback(
-    frame,
-    exercise.startPose,
-    exercise.phases[0],
-    joints?.rep_count ?? 0,
-    joints?.rep_target ?? exercise.reps,
-    mapSessionState(joints?.session_state),
-  );
   return {
-    ...fb,
+    ...mapped,
     messages: [
-      `Local bridge · ${state.mode.replace("_", " ")}`,
+      ...mapped.messages,
       joints
         ? `confidence ${Math.round(joints.confidence * 100)}% · ${joints.source}`
         : "รอ MediaPipe จับ pose…",
-    ],
+    ].slice(0, 3),
   };
 }
 
@@ -254,11 +255,17 @@ export default function UserHome() {
   }, [useExternalFrame]);
 
   const handleSelectExercise = (next: RehabExercise) => {
-    engineRef.current.setExercise(next);
     setExercise(next);
-    if (isCameraBridge && bridgeState) {
-      setFeedback(makeCameraFeedback(next, bridgeState));
-    } else if (isLive && liveTelemetry) {
+
+    if (isCameraBridge) {
+      // Python owns exercise selection/targets for Camera mode — the
+      // browser just tells it which one to judge against.
+      void selectBridgeExercise(loadBridgeUrl(), next.id).catch(() => undefined);
+      return;
+    }
+
+    engineRef.current.setExercise(next);
+    if (isLive && liveTelemetry) {
       const mappedFrame = mapTelemetryToFrame(liveTelemetry);
       frameRef.current = mappedFrame;
       setFrame(mappedFrame);
@@ -271,15 +278,27 @@ export default function UserHome() {
   };
 
   const handleStart = () => {
+    if (isCameraBridge) {
+      void postBridgeSessionAction(loadBridgeUrl(), "start").catch(() => undefined);
+      return;
+    }
     engineRef.current.start();
     setFeedback(engineRef.current.tick(0, frameRef.current));
   };
 
   const handleStop = () => {
+    if (isCameraBridge) {
+      void postBridgeSessionAction(loadBridgeUrl(), "stop").catch(() => undefined);
+      return;
+    }
     engineRef.current.stop();
   };
 
   const handleReset = () => {
+    if (isCameraBridge) {
+      void postBridgeSessionAction(loadBridgeUrl(), "reset").catch(() => undefined);
+      return;
+    }
     engineRef.current.reset();
     frameRef.current = createNeutralFrame();
     setFrame(createNeutralFrame());
@@ -311,7 +330,12 @@ export default function UserHome() {
         setFeedback(makeLiveFeedback(exercise, telemetry));
       }
     } else if (dataMode === "camera") {
-      setFeedback(makeCameraFeedback(exercise, state));
+      if (state.exercise_id && state.exercise_id !== exercise.id) {
+        const synced = getExerciseById(state.exercise_id);
+        if (synced) setExercise(synced);
+      }
+      const camFeedback = makeCameraFeedback(state);
+      if (camFeedback) setFeedback(camFeedback);
     }
   };
 

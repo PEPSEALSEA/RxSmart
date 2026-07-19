@@ -11,7 +11,9 @@ from typing import Optional, Tuple
 import config
 from camera_pose_engine import CameraPoseEngine
 from data_models import ConnectionStatus, DebugStats, JointData, SystemMode
+from exercise_engine import ExerciseSessionManager, SessionFeedback
 from iot_receiver import IoTReceiver
+from rehab_exercises import exercise_catalog
 
 
 # ---------------------------------------------------------------------------
@@ -65,6 +67,7 @@ class FusionEngine:
             timestamp_ms=time.time() * 1000,
             raw_landmarks=camera.raw_landmarks,
             raw_sensors=iot.raw_sensors,
+            pose_frame=camera.pose_frame,
             # Carry all IoT metadata through to the display
             posture_state=iot.posture_state,
             posture_fault_mask=iot.posture_fault_mask,
@@ -105,6 +108,7 @@ class SystemModeManager:
         self._mode = initial_mode
         self._fusion = FusionEngine()
         self._stats = DebugStats(current_mode=initial_mode)
+        self._exercise = ExerciseSessionManager()
 
         # Track previous statuses to detect transitions for logging
         self._prev_cam_status: Optional[ConnectionStatus] = None
@@ -175,6 +179,29 @@ class SystemModeManager:
                 active = None
 
         return active, cam_frame
+
+    # ------------------------------------------------------------------
+    # Exercise judging — runs entirely on this machine (see exercise_engine.py)
+    # ------------------------------------------------------------------
+
+    def exercise_catalog(self) -> list:
+        return exercise_catalog()
+
+    @property
+    def current_exercise_id(self) -> str:
+        return self._exercise.exercise.id
+
+    def select_exercise(self, exercise_id: str) -> bool:
+        return self._exercise.select_exercise(exercise_id)
+
+    def exercise_session_action(self, action: str) -> bool:
+        return self._exercise.handle_action(action)
+
+    def get_session_feedback(self, joint_data: Optional[JointData]) -> SessionFeedback:
+        pose_frame = None
+        if joint_data is not None and joint_data.source in ("camera", "fused"):
+            pose_frame = joint_data.pose_frame
+        return self._exercise.tick(pose_frame)
 
     # ------------------------------------------------------------------
     # Internal

@@ -31,10 +31,10 @@ const STORAGE_KEY = "rxsmart_sensor_channel_map";
 
 export const CALIBRATION_STEP_LABELS: Record<string, string> = {
   neutral: "ยืนนิ่ง — แขนขาห้อยธรรมชาติ",
-  raise_left_arm: "ยกแขนซ้ายขึ้น",
-  raise_right_arm: "ยกแขนขวาขึ้น",
-  raise_left_leg: "ยกขาซ้าย (เข่างอ)",
-  raise_right_leg: "ยกขาขวา (เข่างอ)",
+  move_forearms: "งอข้อศอกทั้งสองข้าง (ปลายแขนขยับ ไหล่นิ่ง)",
+  move_shoulders: "ยกไหล่ / ยกแขนทั้งสองข้าง",
+  move_shins: "งอเข่าทั้งสองข้าง (ปลายขาขยับ)",
+  move_thighs: "ยกขา / ขยับต้นขาทั้งสองข้าง",
 };
 
 export function calibratedToDegrees(calibrated: number): number {

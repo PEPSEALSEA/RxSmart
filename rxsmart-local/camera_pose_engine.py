@@ -29,6 +29,7 @@ from hand_analysis import (
     create_hand_landmarker,
     draw_hand_skeleton,
 )
+from pose_model import PoseFrameSmoother, compute_pose_frame
 
 _MODEL_DIR = Path(__file__).resolve().parent / "models"
 _MODEL_SPECS = {
@@ -140,6 +141,7 @@ class CameraPoseEngine:
         self._video_ts_ms: int = 0
         self._skeleton_debug: bool = False
         self._pose_count: int = 0
+        self._pose_smoother = PoseFrameSmoother(alpha=config.ANGLE_SMOOTHING_ALPHA)
 
     def start(self) -> None:
         if self._running:
@@ -324,6 +326,8 @@ class CameraPoseEngine:
                 if pose_count > 1 or skeleton_debug:
                     for person_idx, landmarks in enumerate(result.pose_landmarks):
                         self._label_pose(annotated, landmarks, w, h, person_idx + 1)
+            else:
+                self._pose_smoother.reset()
 
             if skeleton_debug:
                 cv2.putText(
@@ -436,6 +440,12 @@ class CameraPoseEngine:
         shoulder_left = _calc_angle(pt(L.LEFT_HIP), pt(L.LEFT_SHOULDER), pt(L.LEFT_ELBOW))
         shoulder_right = _calc_angle(pt(L.RIGHT_HIP), pt(L.RIGHT_SHOULDER), pt(L.RIGHT_ELBOW))
 
+        # Full 8-segment elevation/plane/bend model (matches the exercise
+        # targets 1:1) — smoothed so the exercise engine gets a stable
+        # signal instead of raw per-frame MediaPipe jitter.
+        raw_pose_frame = compute_pose_frame(pt)
+        pose_frame = self._pose_smoother.smooth(raw_pose_frame)
+
         if draw_angles:
             self._annotate_angle(frame, pt(L.LEFT_ELBOW), elbow_left, "EL")
             self._annotate_angle(frame, pt(L.RIGHT_ELBOW), elbow_right, "ER")
@@ -455,6 +465,7 @@ class CameraPoseEngine:
             confidence=confidence,
             timestamp_ms=time.time() * 1000,
             raw_landmarks=landmarks,
+            pose_frame=pose_frame,
         )
 
     @staticmethod

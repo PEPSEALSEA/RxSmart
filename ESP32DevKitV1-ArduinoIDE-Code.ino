@@ -208,6 +208,7 @@ void sendCaptivePortal();
 bool checkInternetWatchdog();
 void checkFirmwareUpdate();
 void registerDevice();
+void ensureDeviceRegistered();
 void sendTelemetryData();
 void checkDeviceCommand();
 String getDeviceId();
@@ -304,7 +305,7 @@ void setup() {
       if (checkInternetWatchdog()) {
         initializeSensors();
         sampleSensors(millis(), false);
-        registerDevice();
+        ensureDeviceRegistered();
         sendTelemetryData();
         // เช็คอัปเดต Firmware จาก Cloudflare Worker
         checkFirmwareUpdate();
@@ -674,8 +675,20 @@ void registerDevice() {
 
   int httpCode = http.POST(jsonOutput);
   if (httpCode > 0) {
+    String response = http.getString();
     Serial.printf("Device registration responded with code: %d\n", httpCode);
-    Serial.println(http.getString());
+    Serial.println(response);
+
+    StaticJsonDocument<256> responseDoc;
+    if (!deserializeJson(responseDoc, response)) {
+      bool created = responseDoc["created"] | false;
+      bool existsBefore = responseDoc["exists_before"] | false;
+      if (created) {
+        Serial.println("Cloudflare: added new device row to Devices sheet.");
+      } else if (existsBefore) {
+        Serial.println("Cloudflare: device row already existed and was refreshed.");
+      }
+    }
   } else {
     Serial.printf("Device registration failed: %s\n", http.errorToString(httpCode).c_str());
   }
@@ -703,6 +716,43 @@ String urlEncode(const String& value) {
   }
 
   return encoded;
+}
+
+void ensureDeviceRegistered() {
+  if (WiFi.status() != WL_CONNECTED) return;
+
+  Serial.println("Checking Devices sheet on Cloudflare...");
+  HTTPClient http;
+  String deviceId = getDeviceId();
+  String checkUrl = CLOUDFLARE_API_URL + "/api/devices/" + urlEncode(deviceId) + "/check";
+  http.begin(checkUrl);
+  int checkCode = http.GET();
+
+  bool exists = false;
+  if (checkCode == 200) {
+    StaticJsonDocument<256> doc;
+    DeserializationError error = deserializeJson(doc, http.getString());
+    if (!error) {
+      exists = doc["exists"] | false;
+    } else {
+      Serial.println("Failed to parse device check response.");
+    }
+  } else {
+    Serial.printf("Device check failed, HTTP error: %d\n", checkCode);
+  }
+  http.end();
+
+  if (exists) {
+    Serial.println("Device already registered in Devices sheet.");
+    return;
+  }
+
+  if (checkCode == 200) {
+    Serial.println("Device not found in Devices sheet — registering as new...");
+  } else {
+    Serial.println("Could not confirm registry status — attempting register anyway...");
+  }
+  registerDevice();
 }
 
 void checkDeviceCommand() {

@@ -19,6 +19,12 @@ MEDIAPIPE_MAX_POSES: int = 4            # max people detected in one frame (1-4)
 MEDIAPIPE_MIN_DETECTION_CONFIDENCE: float = 0.5
 MEDIAPIPE_MIN_TRACKING_CONFIDENCE: float = 0.5
 
+# Exponential smoothing applied to the elevation/plane/bend pose model before
+# it reaches the exercise scoring engine. Lower = smoother but more lag,
+# higher = more responsive but noisier. This is what stops the score from
+# flickering between extremes on raw per-frame landmark jitter.
+ANGLE_SMOOTHING_ALPHA: float = 0.35
+
 # ---------------------------------------------------------------------------
 # MediaPipe Hands — finger skeleton + palm direction check
 # ---------------------------------------------------------------------------
@@ -66,6 +72,13 @@ WEB_BRIDGE_PORT: int = 8766
 
 # Persisted IMU channel → body-segment mapping (auto-calibration)
 SENSOR_MAP_FILE: str = "sensor_map.json"
+
+# ---------------------------------------------------------------------------
+# Exercise scoring (rehab_exercises.py / exercise_engine.py)
+# ---------------------------------------------------------------------------
+# Extra smoothing applied to the final aggregate score across ticks, on top
+# of the per-joint ANGLE_SMOOTHING_ALPHA above.
+EXERCISE_SCORE_SMOOTHING_ALPHA: float = 0.25
 
 # ---------------------------------------------------------------------------
 # Sensor Fusion (Complementary Filter)

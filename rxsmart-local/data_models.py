@@ -37,6 +37,10 @@ class JointData:
     raw_sensors: Optional[dict] = field(default=None, repr=False)
     sensor_channels: Optional[list] = field(default=None, repr=False)
 
+    # Smoothed 8-segment elevation/plane/bend model (camera source only),
+    # consumed by exercise_engine.ExerciseSessionManager for pose scoring.
+    pose_frame: Optional[dict] = field(default=None, repr=False)
+
     # IoT-specific metadata (populated only when source is "iot" or "fused")
     posture_state: str = "unknown"
     posture_fault_mask: int = 0

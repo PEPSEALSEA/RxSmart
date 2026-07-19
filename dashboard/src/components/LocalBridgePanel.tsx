@@ -359,7 +359,7 @@ export default function LocalBridgePanel({
               <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
                 <div>
                   <p className="cohere-mono-label text-[11px]">
-                    Sensor mapping · auto-calibrate
+                    Sensor mapping · distal-first setup
                   </p>
                   <p className="mt-2 text-sm text-cohere-body-muted">
                     confidence{" "}
@@ -367,6 +367,9 @@ export default function LocalBridgePanel({
                     {mapping?.calibration_step && mapping.calibration_step !== "idle"
                       ? ` · ขั้นตอน: ${CALIBRATION_STEP_LABELS[mapping.calibration_step] ?? mapping.calibration_step}`
                       : ""}
+                  </p>
+                  <p className="mt-1 text-xs text-cohere-muted">
+                    ขยับทั้งสองข้างพร้อมกัน — ระบบเดาซ้าย–ขวาให้
                   </p>
                 </div>
                 <div className="flex flex-wrap gap-2">

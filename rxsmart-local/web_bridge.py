@@ -154,6 +154,7 @@ def _apply_sensor_mapping(
         raw_hands=joint_data.raw_hands,
         raw_sensors=joint_data.raw_sensors,
         sensor_channels=joint_data.sensor_channels,
+        pose_frame=joint_data.pose_frame,
         posture_state=joint_data.posture_state,
         posture_fault_mask=joint_data.posture_fault_mask,
         rep_count=joint_data.rep_count,
@@ -255,6 +256,7 @@ class WebBridgeServer:
             stats = bridge._manager.stats
 
             mapped_joints = _apply_sensor_mapping(joint_data, bridge._mapper)
+            session_feedback = bridge._manager.get_session_feedback(mapped_joints)
 
             payload: dict[str, Any] = {
                 "ok": True,
@@ -277,6 +279,8 @@ class WebBridgeServer:
                 if mapped_joints
                 else None,
                 "sensor_mapping": bridge._mapper.to_api_dict(),
+                "exercise_id": bridge._manager.current_exercise_id,
+                "session_feedback": session_feedback.to_dict(),
             }
             return jsonify(payload)
 
@@ -345,6 +349,43 @@ class WebBridgeServer:
                 "ok": True,
                 "skeleton_debug": bridge._manager.skeleton_debug,
             })
+
+        @app.route("/api/exercises", methods=["GET", "OPTIONS"])
+        def exercises():
+            if request.method == "OPTIONS":
+                return _cors(Response(status=204))
+            return jsonify({
+                "ok": True,
+                "exercises": bridge._manager.exercise_catalog(),
+                "current": bridge._manager.current_exercise_id,
+            })
+
+        @app.route("/api/exercise", methods=["POST", "OPTIONS"])
+        def select_exercise():
+            if request.method == "OPTIONS":
+                return _cors(Response(status=204))
+
+            body = request.get_json(force=True, silent=True) or {}
+            exercise_id = str(body.get("id", ""))
+            if not bridge._manager.select_exercise(exercise_id):
+                return jsonify({"ok": False, "error": f"unknown exercise: {exercise_id}"}), 400
+
+            return jsonify({"ok": True, "current": bridge._manager.current_exercise_id})
+
+        @app.route("/api/session", methods=["POST", "OPTIONS"])
+        def session_action():
+            if request.method == "OPTIONS":
+                return _cors(Response(status=204))
+
+            body = request.get_json(force=True, silent=True) or {}
+            action = str(body.get("action", "")).lower()
+            if not bridge._manager.exercise_session_action(action):
+                return jsonify({
+                    "ok": False,
+                    "error": "action must be start, stop, or reset",
+                }), 400
+
+            return jsonify({"ok": True, "action": action})
 
         @app.route("/api/sensor-map", methods=["GET", "POST", "OPTIONS"])
         def sensor_map():

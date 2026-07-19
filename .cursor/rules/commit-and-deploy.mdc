@@ -1,0 +1,20 @@
+---
+description: After code changes, commit/push to GitHub and deploy Cloudflare Worker when needed
+alwaysApply: true
+---
+
+# Commit, push, and deploy after edits
+
+When you finish a round of work that modifies project files, do this before ending (unless the user says not to commit/deploy):
+
+1. **Commit** meaningful source changes (never `__pycache__`, `*.pyc`, secrets, `.env`, large binaries, or `*.tmp`).
+2. **Push** to `origin` on the current branch (`git push -u origin HEAD` if needed).
+3. **Cloudflare Worker** — if any file under `cloudflare-worker/` changed in this round:
+   ```bash
+   cd cloudflare-worker
+   npx wrangler deploy
+   ```
+4. **Dashboard** — push alone is enough; GitHub Actions (`.github/workflows/nextjs.yml`) deploys Pages. Do not invent a local dashboard deploy unless the user asks.
+5. Tell the user the commit SHA/URL and whether wrangler deploy ran (and its result).
+
+Do not force-push `main`/`master`. Do not amend unless the usual amend safety rules allow it.

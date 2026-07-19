@@ -10,6 +10,12 @@
 #include <Wire.h>
 #include <math.h>
 
+// BLE debug console — enable Tools -> IP/BT Stack -> + Bluetooth (arduino-pico >= 5.5)
+#if __has_include(<BLE.h>)
+#define RXSMART_HAS_BLE 1
+#include <BLE.h>
+#endif
+
 // ---------------------------------------------------------
 // Configuration / การตั้งค่าระบบ  (Raspberry Pi Pico 2 W / RP2350 build)
 // ---------------------------------------------------------
@@ -134,7 +140,32 @@ bool mpuPresent[SENSOR_COUNT] = {};
 bool mpuReadOk[SENSOR_COUNT] = {};
 
 const char* WIFI_CONFIG_PATH = "/wifi.json";
+const char* BUILD_STAMP_PATH = "/build_stamp.txt";
+const char* FIRMWARE_BUILD_STAMP = __DATE__ " " __TIME__;
+// Set false before shipping so WiFi survives firmware updates.
+const bool CLEAR_WIFI_ON_NEW_UPLOAD = true;
 bool littleFsReady = false;
+
+struct DebugState {
+  int lastTelemetryHttpCode = 0;
+  String lastTelemetryError;
+  String lastTelemetryResponse;
+  unsigned long lastTelemetryMs = 0;
+  int lastCfPingCode = 0;
+  String lastCfPingError;
+  unsigned long lastCfPingMs = 0;
+  int lastRegisterHttpCode = 0;
+  String lastRegisterError;
+};
+
+DebugState debugState;
+String bleInputLine;
+
+#ifdef RXSMART_HAS_BLE
+BLEServiceUART bleUart;
+BLEServiceBattery bleBattery;
+bool bleReady = false;
+#endif
 
 // ---------------------------------------------------------
 // HTML สำหรับหน้า Captive Portal
@@ -235,15 +266,16 @@ const char index_html[] PROGMEM = R"rawliteral(
   <div class="card">
     <div class="eyebrow">Device Setup</div>
     <h2>RxSmart Setup</h2>
-    <p class="sub">Enter your WiFi credentials to connect the board to the internet.</p>
+    <p class="sub">On your phone, join the open network <strong>RxSmart-Setup</strong> (no password). Then enter your home WiFi details below.</p>
     <form id="wifiForm">
       <label for="ssid">WiFi Name (SSID)</label>
       <input type="text" id="ssid" name="ssid" placeholder="e.g. MyHomeWiFi" required autocomplete="off">
-      <label for="pass">Password</label>
-      <input type="password" id="pass" name="pass" placeholder="Leave blank if open network" autocomplete="off">
+      <label for="pass">Home WiFi password (optional)</label>
+      <input type="password" id="pass" name="pass" placeholder="Leave blank for open / free WiFi" autocomplete="off">
       <button type="submit" id="btn">Save &amp; Connect</button>
     </form>
     <div id="status"></div>
+    <p style="margin-top:20px;text-align:center;font-size:13px;"><a href="/debug" style="color:#9b60aa;">WiFi / Cloudflare debug</a></p>
     <div class="footnote">RxSmart Rehab Device</div>
   </div>
   <script>
@@ -278,6 +310,84 @@ const char index_html[] PROGMEM = R"rawliteral(
 </html>
 )rawliteral";
 
+const char debug_html[] PROGMEM = R"rawliteral(
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>RxSmart Debug</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { font-family: Inter, Arial, sans-serif; background: #eeece7; color: #212121; min-height: 100vh; padding: 20px; }
+    .card { max-width: 420px; margin: 0 auto; background: #fff; border: 1px solid #e5e7eb; border-radius: 22px; padding: 28px 24px; }
+    h2 { font-size: 24px; font-weight: 500; margin-bottom: 8px; }
+    p.sub { font-size: 14px; color: #75758a; margin-bottom: 20px; line-height: 1.4; }
+    pre { background: #f6f6f8; border: 1px solid #e5e7eb; border-radius: 12px; padding: 14px; font-size: 12px; line-height: 1.5; overflow-x: auto; white-space: pre-wrap; word-break: break-word; }
+    .actions { display: flex; flex-direction: column; gap: 10px; margin-top: 20px; }
+    button, a.btn { display: block; text-align: center; padding: 12px 18px; border-radius: 9999px; font-size: 14px; text-decoration: none; border: none; cursor: pointer; }
+    .primary { background: #17171c; color: #fff; }
+    .danger { background: #fff; color: #b30000; border: 1px solid #ffad9b; }
+    .secondary { background: #f6f6f8; color: #17171c; border: 1px solid #d9d9dd; }
+    #msg { margin-top: 14px; font-size: 13px; color: #003c33; display: none; }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <h2>Debug</h2>
+    <p class="sub">Check WiFi, LittleFS, and Cloudflare status while connected to this hotspot.</p>
+    <pre id="out">Loading...</pre>
+    <div class="actions">
+      <button class="primary" onclick="refresh()">Refresh</button>
+      <button class="secondary" onclick="pingCf()">Test Cloudflare</button>
+      <button class="danger" onclick="clearWifi()">Clear saved WiFi &amp; restart</button>
+      <a class="btn secondary" href="/">Back to setup</a>
+    </div>
+    <div id="msg"></div>
+  </div>
+  <script>
+    async function refresh() {
+      const out = document.getElementById('out');
+      out.textContent = 'Loading...';
+      try {
+        const res = await fetch('/api/debug/status');
+        out.textContent = JSON.stringify(await res.json(), null, 2);
+      } catch (e) {
+        out.textContent = 'Could not reach board at /api/debug/status';
+      }
+    }
+    async function pingCf() {
+      const msg = document.getElementById('msg');
+      msg.style.display = 'block';
+      msg.textContent = 'Pinging Cloudflare...';
+      try {
+        const res = await fetch('/api/debug/ping-cf', { method: 'POST' });
+        const json = await res.json();
+        msg.textContent = json.ok ? ('Cloudflare OK (HTTP ' + json.http_code + ')') : ('Cloudflare failed: ' + (json.error || json.http_code));
+        refresh();
+      } catch (e) {
+        msg.textContent = 'Request failed — are you still on 192.168.4.1?';
+      }
+    }
+    async function clearWifi() {
+      if (!confirm('Delete saved WiFi and restart into setup mode?')) return;
+      const msg = document.getElementById('msg');
+      msg.style.display = 'block';
+      msg.textContent = 'Clearing...';
+      try {
+        const res = await fetch('/api/debug/clear-wifi', { method: 'POST' });
+        const json = await res.json();
+        msg.textContent = json.success ? 'WiFi cleared — board restarting...' : (json.error || 'Failed');
+      } catch (e) {
+        msg.textContent = 'Request failed';
+      }
+    }
+    refresh();
+  </script>
+</body>
+</html>
+)rawliteral";
+
 // ---------------------------------------------------------
 // Function Declarations
 // ---------------------------------------------------------
@@ -286,8 +396,10 @@ void handleRoot();
 void handleSave();
 void sendCaptivePortal();
 bool checkInternetWatchdog();
+bool beginCloudflareHttp(HTTPClient& http, const String& url, unsigned long timeoutMs = 15000);
 void checkFirmwareUpdate();
 void registerDevice();
+void ensureDeviceRegistered();
 void sendTelemetryData();
 void checkDeviceCommand();
 String getDeviceId();
@@ -317,7 +429,20 @@ void tcaDisableAll();
 bool loadWifiCredentials(String& ssidOut, String& passOut);
 bool saveWifiCredentials(const String& ssid, const String& pass);
 void clearWifiCredentials();
+void clearWifiIfNewUpload();
 const char* resetReasonToString(RP2040::resetReason_t reason);
+void setupBleDebug();
+void pollBleDebug();
+void handleDebugPage();
+void handleDebugStatusApi();
+void handleDebugPingCf();
+void handleDebugClearWifi();
+String buildDebugStatusJson();
+void executeBleCommand(const String& line);
+void blePrint(const String& text);
+void blePrintln(const String& text);
+bool pingCloudflareWorker(int& httpCodeOut, String& errorOut);
+const char* wifiStatusLabel(uint8_t status);
 
 // ---------------------------------------------------------
 // Setup Function
@@ -338,11 +463,15 @@ void setup() {
     Serial.println("!!! then re-upload. A 'no FS' flash layout cannot store settings.");
   }
 
+  clearWifiIfNewUpload();
+
   String savedSSID, savedPass;
   bool hasCreds = loadWifiCredentials(savedSSID, savedPass);
 
   Serial.println("\n--- Pico 2 W Booting ---");
   Serial.println("Current Version: " + CURRENT_VERSION);
+
+  setupBleDebug();
 
   if (!hasCreds) {
     Serial.println("No WiFi credentials found. Starting Captive Portal.");
@@ -363,6 +492,7 @@ void setup() {
 
   Serial.print("Attempting to connect to: ");
   Serial.println(savedSSID);
+  Serial.println("(To enter setup again: hold GPIO16 at boot, or clear saved WiFi via /debug)");
 
   WiFi.mode(WIFI_STA);
   WiFi.begin(savedSSID.c_str(), savedPass.c_str());
@@ -383,7 +513,7 @@ void setup() {
     if (checkInternetWatchdog()) {
       initializeSensors();
       sampleSensors(millis(), false);
-      registerDevice();
+      ensureDeviceRegistered();
       sendTelemetryData();
       // เช็คอัปเดต Firmware จาก Cloudflare Worker
       checkFirmwareUpdate();
@@ -404,6 +534,8 @@ void setup() {
 // Loop Function
 // ---------------------------------------------------------
 void loop() {
+  pollBleDebug();
+
   if (inAPMode || WiFi.getMode() == WIFI_AP || WiFi.getMode() == WIFI_AP_STA) {
     dnsServer.processNextRequest();
     server.handleClient();
@@ -468,18 +600,26 @@ void setupAPMode() {
   WiFi.disconnect(true);
   WiFi.mode(WIFI_AP);
   WiFi.softAPConfig(apIP, apIP, IPAddress(255, 255, 255, 0));
-  WiFi.softAP("RxSmart-Setup-open-setup.local"); // setup WiFi name includes fallback URL
+  if (!WiFi.softAP("RxSmart-Setup")) {
+    Serial.println("!!! softAP FAILED — setup hotspot could not start !!!");
+  }
+  Serial.print("AP IP: ");
+  Serial.println(WiFi.softAPIP());
 
-  // ตั้งค่า DNS ให้ wildcard ทุก domain ชี้มาที่ IP ของบอร์ด
   dnsServer.start(DNS_PORT, "*", apIP);
 
-  // Web Server Routes
   server.on("/", HTTP_GET, handleRoot);
   server.on("/save", HTTP_POST, handleSave);
   server.on("/setup", HTTP_GET, sendCaptivePortal);
   server.on("/wifi", HTTP_GET, sendCaptivePortal);
+  server.on("/debug", HTTP_GET, handleDebugPage);
+  server.on("/api/debug/status", HTTP_GET, handleDebugStatusApi);
+  server.on("/api/debug/ping-cf", HTTP_POST, handleDebugPingCf);
+  server.on("/api/debug/clear-wifi", HTTP_POST, handleDebugClearWifi);
+  server.on("/health", HTTP_GET, []() {
+    server.send(200, "text/plain", "ok");
+  });
 
-  // --- Captive Portal Detection Endpoints ---
   server.on("/hotspot-detect.html", HTTP_GET, sendCaptivePortal);      // iOS / macOS
   server.on("/library/test/success.html", HTTP_GET, sendCaptivePortal);
   server.on("/generate_204", HTTP_GET, sendCaptivePortal);             // Android
@@ -496,11 +636,50 @@ void setupAPMode() {
   server.onNotFound(sendCaptivePortal);
 
   server.begin();
-  Serial.println("AP Mode started. Connect to 'RxSmart-Setup-open-setup.local'. If no popup appears, open http://setup.local or http://192.168.4.1");
+  Serial.println("AP Mode started. SSID: RxSmart-Setup (open, no password)");
+  Serial.println("On your phone: join RxSmart-Setup, then open http://192.168.4.1 in the browser");
+  Serial.println("Captive portal popup may not appear — type the URL manually if needed");
+  Serial.println("Debug: http://192.168.4.1/debug");
+  Serial.println("BLE: pair phone with 'RxSmart-Debug' and send HELP (requires Tools -> IP/BT Stack -> + Bluetooth)");
 }
 
-void handleRoot() {
-  sendCaptivePortal();
+void handleDebugPage() {
+  server.sendHeader("Cache-Control", "no-store");
+  server.send(200, "text/html", debug_html);
+}
+
+void handleDebugStatusApi() {
+  server.sendHeader("Cache-Control", "no-store");
+  server.send(200, "application/json", buildDebugStatusJson());
+}
+
+void handleDebugPingCf() {
+  int code = 0;
+  String err;
+  bool ok = pingCloudflareWorker(code, err);
+  debugState.lastCfPingCode = code;
+  debugState.lastCfPingError = err;
+  debugState.lastCfPingMs = millis();
+
+  JsonDocument doc;
+  doc["ok"] = ok;
+  doc["http_code"] = code;
+  if (err.length() > 0) doc["error"] = err;
+
+  String out;
+  serializeJson(doc, out);
+  server.send(ok ? 200 : 502, "application/json", out);
+}
+
+void handleDebugClearWifi() {
+  clearWifiCredentials();
+  JsonDocument doc;
+  doc["success"] = true;
+  String out;
+  serializeJson(doc, out);
+  server.send(200, "application/json", out);
+  delay(500);
+  rp2040.restart();
 }
 
 void sendCaptivePortal() {
@@ -513,8 +692,24 @@ void sendCaptivePortal() {
   server.sendHeader("Cache-Control", "no-store, no-cache, must-revalidate, max-age=0");
   server.sendHeader("Pragma", "no-cache");
   server.sendHeader("Expires", "0");
-  server.sendHeader("Location", "http://192.168.4.1", true);
+
+  String host = server.hostHeader();
+  host.toLowerCase();
+  const bool directPortalVisit =
+    host.length() == 0 ||
+    host == "192.168.4.1" ||
+    host == apIP.toString() ||
+    host.startsWith("192.168.4.1:");
+
+  if (!directPortalVisit) {
+    server.sendHeader("Location", "http://192.168.4.1/", true);
+  }
+
   server.send(200, "text/html", index_html);
+}
+
+void handleRoot() {
+  sendCaptivePortal();
 }
 
 void handleSave() {
@@ -605,6 +800,53 @@ void clearWifiCredentials() {
   }
 }
 
+bool readBuildStamp(String& stampOut) {
+  if (!LittleFS.exists(BUILD_STAMP_PATH)) return false;
+
+  File f = LittleFS.open(BUILD_STAMP_PATH, "r");
+  if (!f) return false;
+
+  stampOut = f.readString();
+  stampOut.trim();
+  f.close();
+  return stampOut.length() > 0;
+}
+
+bool writeBuildStamp(const char* stamp) {
+  if (!littleFsReady) return false;
+
+  File f = LittleFS.open(BUILD_STAMP_PATH, "w");
+  if (!f) return false;
+
+  f.print(stamp);
+  f.close();
+  return true;
+}
+
+void clearWifiIfNewUpload() {
+  if (!CLEAR_WIFI_ON_NEW_UPLOAD || !littleFsReady) return;
+
+  String savedStamp;
+  const bool hasStamp = readBuildStamp(savedStamp);
+  const String currentStamp = FIRMWARE_BUILD_STAMP;
+
+  if (hasStamp && savedStamp == currentStamp) {
+    Serial.println("Same firmware build — keeping saved WiFi credentials.");
+    return;
+  }
+
+  Serial.println("New firmware upload detected — clearing saved WiFi credentials.");
+  clearWifiCredentials();
+  writeBuildStamp(currentStamp.c_str());
+}
+
+// Pico W HTTPS requires setInsecure() before begin(); plain http.begin(url) only works for HTTP.
+bool beginCloudflareHttp(HTTPClient& http, const String& url, unsigned long timeoutMs) {
+  http.setInsecure();
+  http.setTimeout(timeoutMs);
+  return http.begin(url);
+}
+
 // ---------------------------------------------------------
 // Internet Watchdog Function
 // ---------------------------------------------------------
@@ -636,7 +878,10 @@ void checkFirmwareUpdate() {
   HTTPClient http;
   String url = CLOUDFLARE_API_URL + "/api/firmware-version?platform=pico2w";
 
-  http.begin(url);
+  if (!beginCloudflareHttp(http, url)) {
+    Serial.println("Update check failed: could not begin HTTPS request.");
+    return;
+  }
   int httpCode = http.GET();
 
   if (httpCode == 200) {
@@ -653,9 +898,8 @@ void checkFirmwareUpdate() {
       if (String(latest_version) != CURRENT_VERSION) {
         Serial.printf("New version found! (%s). Updating...\n", latest_version);
 
-        // สั่งอัปเดตผ่าน OTA
         WiFiClientSecure client;
-        client.setInsecure(); // ยอมรับทุก Certificate สำหรับ OTA
+        client.setInsecure();
         t_httpUpdate_return ret = httpUpdate.update(client, bin_url);
 
         switch (ret) {
@@ -689,7 +933,10 @@ void sendTelemetryData() {
   HTTPClient http;
   String url = CLOUDFLARE_API_URL + "/api/telemetry";
 
-  http.begin(url);
+  if (!beginCloudflareHttp(http, url)) {
+    Serial.println("Telemetry failed: could not begin HTTPS request.");
+    return;
+  }
   http.addHeader("Content-Type", "application/json");
 
   sampleSensors(millis(), calibrationDone);
@@ -748,12 +995,17 @@ void sendTelemetryData() {
 
   int httpCode = http.POST(jsonOutput);
 
+  debugState.lastTelemetryMs = millis();
+  debugState.lastTelemetryHttpCode = httpCode;
   if (httpCode > 0) {
     Serial.printf("Telemetry Sent, Server responded with code: %d\n", httpCode);
-    String response = http.getString();
-    Serial.println(response);
+    debugState.lastTelemetryResponse = http.getString();
+    debugState.lastTelemetryError = "";
+    Serial.println(debugState.lastTelemetryResponse);
   } else {
-    Serial.printf("Telemetry Failed, Error: %s\n", http.errorToString(httpCode).c_str());
+    debugState.lastTelemetryError = http.errorToString(httpCode);
+    debugState.lastTelemetryResponse = "";
+    Serial.printf("Telemetry Failed, Error: %s\n", debugState.lastTelemetryError.c_str());
   }
 
   http.end();
@@ -766,7 +1018,10 @@ void registerDevice() {
   HTTPClient http;
   String url = CLOUDFLARE_API_URL + "/api/devices/register";
 
-  http.begin(url);
+  if (!beginCloudflareHttp(http, url)) {
+    Serial.println("Device registration failed: could not begin HTTPS request.");
+    return;
+  }
   http.addHeader("Content-Type", "application/json");
 
   JsonDocument doc;
@@ -778,11 +1033,26 @@ void registerDevice() {
   serializeJson(doc, jsonOutput);
 
   int httpCode = http.POST(jsonOutput);
+  debugState.lastRegisterHttpCode = httpCode;
   if (httpCode > 0) {
+    String response = http.getString();
+    debugState.lastRegisterError = "";
     Serial.printf("Device registration responded with code: %d\n", httpCode);
-    Serial.println(http.getString());
+    Serial.println(response);
+
+    JsonDocument responseDoc;
+    if (!deserializeJson(responseDoc, response)) {
+      bool created = responseDoc["created"] | false;
+      bool existsBefore = responseDoc["exists_before"] | false;
+      if (created) {
+        Serial.println("Cloudflare: added new device row to Devices sheet.");
+      } else if (existsBefore) {
+        Serial.println("Cloudflare: device row already existed and was refreshed.");
+      }
+    }
   } else {
-    Serial.printf("Device registration failed: %s\n", http.errorToString(httpCode).c_str());
+    debugState.lastRegisterError = http.errorToString(httpCode);
+    Serial.printf("Device registration failed: %s\n", debugState.lastRegisterError.c_str());
   }
 
   http.end();
@@ -810,12 +1080,56 @@ String urlEncode(const String& value) {
   return encoded;
 }
 
+void ensureDeviceRegistered() {
+  if (WiFi.status() != WL_CONNECTED) return;
+
+  Serial.println("Checking Devices sheet on Cloudflare...");
+  HTTPClient http;
+  String deviceId = getDeviceId();
+  String checkUrl = CLOUDFLARE_API_URL + "/api/devices/" + urlEncode(deviceId) + "/check";
+  if (!beginCloudflareHttp(http, checkUrl)) {
+    Serial.println("Device check failed: could not begin HTTPS request.");
+    registerDevice();
+    return;
+  }
+  int checkCode = http.GET();
+
+  bool exists = false;
+  if (checkCode == 200) {
+    JsonDocument doc;
+    DeserializationError error = deserializeJson(doc, http.getString());
+    if (!error) {
+      exists = doc["exists"] | false;
+    } else {
+      Serial.println("Failed to parse device check response.");
+    }
+  } else {
+    Serial.printf("Device check failed, HTTP error: %d\n", checkCode);
+  }
+  http.end();
+
+  if (exists) {
+    Serial.println("Device already registered in Devices sheet.");
+    return;
+  }
+
+  if (checkCode == 200) {
+    Serial.println("Device not found in Devices sheet — registering as new...");
+  } else {
+    Serial.println("Could not confirm registry status — attempting register anyway...");
+  }
+  registerDevice();
+}
+
 void checkDeviceCommand() {
   if (WiFi.status() != WL_CONNECTED) return;
 
   HTTPClient http;
   String url = CLOUDFLARE_API_URL + "/api/commands?device_id=" + urlEncode(getDeviceId());
-  http.begin(url);
+  if (!beginCloudflareHttp(http, url)) {
+    Serial.printf("Command check failed: could not begin HTTPS request.\n");
+    return;
+  }
   int httpCode = http.GET();
 
   if (httpCode != 200) {
@@ -1235,5 +1549,239 @@ void printRealtimeDebug(unsigned long nowMs) {
     Serial.printf("  CH%u [%-16s] raw=%.1f cal=%.1f %s\n",
       i, sensors[i].key, sensors[i].raw, sensors[i].calibrated,
       mpuReadOk[i] ? "OK" : (mpuPresent[i] ? "ERR" : "NA"));
+  }
+}
+
+const char* wifiStatusLabel(uint8_t status) {
+  switch (status) {
+    case WL_IDLE_STATUS: return "IDLE";
+    case WL_NO_SSID_AVAIL: return "NO_SSID";
+    case WL_SCAN_COMPLETED: return "SCAN_DONE";
+    case WL_CONNECTED: return "CONNECTED";
+    case WL_CONNECT_FAILED: return "CONNECT_FAILED";
+    case WL_CONNECTION_LOST: return "CONNECTION_LOST";
+    case WL_DISCONNECTED: return "DISCONNECTED";
+    default: return "UNKNOWN";
+  }
+}
+
+bool pingCloudflareWorker(int& httpCodeOut, String& errorOut) {
+  httpCodeOut = 0;
+  errorOut = "";
+
+  if (WiFi.status() != WL_CONNECTED) {
+    errorOut = "WiFi not connected";
+    return false;
+  }
+
+  HTTPClient http;
+  String url = CLOUDFLARE_API_URL + "/api/firmware-version?platform=pico2w";
+  if (!beginCloudflareHttp(http, url, 15000)) {
+    errorOut = "could not begin HTTPS request";
+    return false;
+  }
+  httpCodeOut = http.GET();
+
+  if (httpCodeOut > 0) {
+    http.getString();
+    http.end();
+    return httpCodeOut == 200;
+  }
+
+  errorOut = http.errorToString(httpCodeOut);
+  http.end();
+  return false;
+}
+
+String buildDebugStatusJson() {
+  String savedSsid, savedPass;
+  const bool hasSaved = loadWifiCredentials(savedSsid, savedPass);
+
+  JsonDocument doc;
+  doc["firmware_version"] = CURRENT_VERSION;
+  doc["build_stamp"] = FIRMWARE_BUILD_STAMP;
+  doc["device_id"] = getDeviceId();
+  doc["mac"] = WiFi.macAddress();
+  doc["littlefs_ready"] = littleFsReady;
+  doc["clear_wifi_on_upload"] = CLEAR_WIFI_ON_NEW_UPLOAD;
+  doc["in_ap_mode"] = inAPMode;
+  doc["wifi_mode"] = (int)WiFi.getMode();
+  doc["wifi_status"] = wifiStatusLabel(WiFi.status());
+  doc["wifi_status_code"] = (int)WiFi.status();
+  doc["connected_ssid"] = WiFi.SSID();
+  doc["local_ip"] = WiFi.localIP().toString();
+  doc["ap_ip"] = WiFi.softAPIP().toString();
+  doc["ap_clients"] = WiFi.softAPgetStationNum();
+  doc["saved_wifi_exists"] = hasSaved;
+  doc["saved_wifi_ssid"] = hasSaved ? savedSsid : "";
+  doc["saved_wifi_pass_len"] = hasSaved ? (int)savedPass.length() : 0;
+  doc["internet_ok"] = (WiFi.status() == WL_CONNECTED) ? checkInternetWatchdog() : false;
+  doc["cloudflare_url"] = CLOUDFLARE_API_URL;
+
+  JsonObject telemetry = doc["last_telemetry"].to<JsonObject>();
+  telemetry["http_code"] = debugState.lastTelemetryHttpCode;
+  telemetry["error"] = debugState.lastTelemetryError;
+  if (debugState.lastTelemetryResponse.length() > 200) {
+    telemetry["response"] = debugState.lastTelemetryResponse.substring(0, 200) + "...";
+  } else {
+    telemetry["response"] = debugState.lastTelemetryResponse;
+  }
+  telemetry["age_ms"] = debugState.lastTelemetryMs > 0 ? (millis() - debugState.lastTelemetryMs) : 0;
+
+  JsonObject cfPing = doc["last_cf_ping"].to<JsonObject>();
+  cfPing["http_code"] = debugState.lastCfPingCode;
+  cfPing["error"] = debugState.lastCfPingError;
+  cfPing["age_ms"] = debugState.lastCfPingMs > 0 ? (millis() - debugState.lastCfPingMs) : 0;
+
+  JsonObject reg = doc["last_register"].to<JsonObject>();
+  reg["http_code"] = debugState.lastRegisterHttpCode;
+  reg["error"] = debugState.lastRegisterError;
+
+#ifdef RXSMART_HAS_BLE
+  doc["ble_ready"] = bleReady;
+  doc["ble_connected"] = bleReady && bleUart.connected();
+  doc["ble_name"] = "RxSmart-Debug";
+#else
+  doc["ble_ready"] = false;
+  doc["ble_hint"] = "Enable Tools -> IP/BT Stack -> + Bluetooth and re-upload";
+#endif
+
+  doc["debug_urls"]["setup"] = "http://192.168.4.1/";
+  doc["debug_urls"]["debug_page"] = "http://192.168.4.1/debug";
+  doc["debug_urls"]["status_api"] = "http://192.168.4.1/api/debug/status";
+
+  String out;
+  serializeJson(doc, out);
+  return out;
+}
+
+void blePrint(const String& text) {
+#ifdef RXSMART_HAS_BLE
+  if (bleReady && bleUart.connected()) bleUart.print(text);
+#endif
+  Serial.print(text);
+}
+
+void blePrintln(const String& text) {
+#ifdef RXSMART_HAS_BLE
+  if (bleReady && bleUart.connected()) bleUart.println(text);
+#endif
+  Serial.println(text);
+}
+
+void executeBleCommand(const String& rawLine) {
+  String line = rawLine;
+  line.trim();
+  line.toUpperCase();
+  if (line.length() == 0) return;
+
+  if (line == "HELP" || line == "?") {
+    blePrintln("RxSmart BLE debug commands:");
+    blePrintln("  STATUS       full JSON status");
+    blePrintln("  WIFI         WiFi summary");
+    blePrintln("  PING_NET     test internet (generate_204)");
+    blePrintln("  PING_CF      test Cloudflare worker");
+    blePrintln("  CLEAR_WIFI   delete saved WiFi + restart AP");
+    blePrintln("  REBOOT       restart board");
+    return;
+  }
+
+  if (line == "STATUS") {
+    blePrintln(buildDebugStatusJson());
+    return;
+  }
+
+  if (line == "WIFI") {
+    String ssid, pass;
+    const bool hasSaved = loadWifiCredentials(ssid, pass);
+    blePrintln("mode=" + String((int)WiFi.getMode()) +
+      " status=" + String(wifiStatusLabel(WiFi.status())) +
+      " ssid=" + WiFi.SSID() +
+      " ip=" + WiFi.localIP().toString() +
+      " ap_ip=" + WiFi.softAPIP().toString() +
+      " saved=" + String(hasSaved ? ssid : "(none)"));
+    return;
+  }
+
+  if (line == "PING_NET") {
+    const bool ok = checkInternetWatchdog();
+    blePrintln(ok ? "internet=OK" : "internet=FAIL");
+    return;
+  }
+
+  if (line == "PING_CF") {
+    int code = 0;
+    String err;
+    const bool ok = pingCloudflareWorker(code, err);
+    debugState.lastCfPingCode = code;
+    debugState.lastCfPingError = err;
+    debugState.lastCfPingMs = millis();
+    if (ok) {
+      blePrintln("cloudflare=OK http=" + String(code));
+    } else {
+      blePrintln("cloudflare=FAIL http=" + String(code) + " err=" + err);
+    }
+    return;
+  }
+
+  if (line == "CLEAR_WIFI") {
+    blePrintln("clearing WiFi credentials...");
+    clearWifiCredentials();
+    delay(300);
+    rp2040.restart();
+    return;
+  }
+
+  if (line == "REBOOT") {
+    blePrintln("rebooting...");
+    delay(200);
+    rp2040.restart();
+    return;
+  }
+
+  blePrintln("unknown command: " + line + " (send HELP)");
+}
+
+void setupBleDebug() {
+#ifdef RXSMART_HAS_BLE
+  BLE.begin("RxSmart-Debug");
+  BLE.server()->addService(&bleBattery);
+  BLE.server()->addService(&bleUart);
+  BLE.startAdvertising();
+  bleUart.setAutoflush(50);
+  bleReady = true;
+  blePrintln("BLE debug ready — connect with nRF Connect / Serial Bluetooth Terminal");
+#else
+  Serial.println("BLE debug disabled — enable Tools -> IP/BT Stack -> + Bluetooth");
+#endif
+}
+
+void pollBleDebug() {
+#ifdef RXSMART_HAS_BLE
+  if (!bleReady) return;
+
+  while (bleUart.available()) {
+    char c = (char)bleUart.read();
+    if (c == '\n' || c == '\r') {
+      if (bleInputLine.length() > 0) {
+        executeBleCommand(bleInputLine);
+        bleInputLine = "";
+      }
+    } else if (bleInputLine.length() < 120) {
+      bleInputLine += c;
+    }
+  }
+#endif
+
+  while (Serial.available()) {
+    char c = (char)Serial.read();
+    if (c == '\n' || c == '\r') {
+      if (bleInputLine.length() > 0) {
+        executeBleCommand(bleInputLine);
+        bleInputLine = "";
+      }
+    } else if (bleInputLine.length() < 120) {
+      bleInputLine += c;
+    }
   }
 }

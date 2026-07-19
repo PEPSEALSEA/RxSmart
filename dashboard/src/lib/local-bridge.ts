@@ -1,5 +1,6 @@
-import { createNeutralFrame, SensorFrame } from "@/lib/pose-physics";
+import { createNeutralFrame, JointFeedback, SensorFrame, SessionFeedback, SessionStatus } from "@/lib/pose-physics";
 import type { MediaPipeHandSet, MediaPipeLandmark } from "@/lib/mediapipe-pose";
+import { PoseKey } from "@/lib/pose";
 import {
   ChannelMap,
   mapJointsAndSensorsToFrame,
@@ -9,6 +10,31 @@ import {
 } from "@/lib/sensor-mapping";
 
 export type { MediaPipeHandSet, MediaPipeLandmark } from "@/lib/mediapipe-pose";
+
+/**
+ * Shape returned by rxsmart-local's exercise_engine.SessionFeedback.to_dict()
+ * — pose correctness + score is judged entirely on the local Python machine
+ * (see web_bridge.py `/api/state`). The dashboard only renders this, it does
+ * not compute score/angleOk itself for Camera mode anymore.
+ */
+export type BridgeSessionFeedback = {
+  score: number;
+  messages: string[];
+  phaseLabel: string;
+  rep: number;
+  totalReps: number;
+  status: string;
+  activeJoints: PoseKey[];
+  jointFeedback: Record<PoseKey, JointFeedback>;
+};
+
+export type BridgeExerciseSummary = {
+  id: string;
+  name: string;
+  description: string;
+  category: string;
+  reps: number;
+};
 
 export type LocalBridgeMode = "CAMERA_ONLY" | "IOT_ONLY" | "FUSION";
 
@@ -62,6 +88,8 @@ export type LocalBridgeState = {
   hand_landmarks: MediaPipeHandSet[];
   joints: LocalJointData | null;
   sensor_mapping?: SensorMappingState;
+  exercise_id?: string;
+  session_feedback?: BridgeSessionFeedback | null;
 };
 
 const STORAGE_KEY = "rxsmart_local_bridge_url";
@@ -184,6 +212,57 @@ export function mapBridgeToLiveTelemetry(state: LocalBridgeState): BridgeLiveTel
     sensors: joints.sensors,
     sensor_map: joints.sensor_map,
   };
+}
+
+/**
+ * Converts the bridge's session_feedback JSON into the same SessionFeedback
+ * shape RehabPanel/SensorReadout already know how to render — the score,
+ * angleOk, phase/rep state, everything was computed on the Python machine.
+ */
+export function mapBridgeSessionFeedback(payload: BridgeSessionFeedback | null | undefined): SessionFeedback | null {
+  if (!payload) return null;
+  return {
+    score: payload.score,
+    messages: payload.messages,
+    phaseLabel: payload.phaseLabel,
+    rep: payload.rep,
+    totalReps: payload.totalReps,
+    status: payload.status as SessionStatus,
+    activeJoints: payload.activeJoints,
+    jointFeedback: payload.jointFeedback,
+  };
+}
+
+export async function fetchExerciseCatalog(baseUrl: string): Promise<{ exercises: BridgeExerciseSummary[]; current: string }> {
+  const res = await fetch(`${normalizeBase(baseUrl)}/api/exercises`, {
+    method: "GET",
+    cache: "no-store",
+  });
+  const data = await res.json();
+  if (!res.ok) throw new Error(data.error || "โหลดรายการท่าฝึกไม่สำเร็จ");
+  return { exercises: data.exercises ?? [], current: data.current };
+}
+
+export async function selectBridgeExercise(baseUrl: string, exerciseId: string) {
+  const res = await fetch(`${normalizeBase(baseUrl)}/api/exercise`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ id: exerciseId }),
+  });
+  const data = await res.json();
+  if (!res.ok) throw new Error(data.error || "เลือกท่าฝึกไม่สำเร็จ");
+  return data;
+}
+
+export async function postBridgeSessionAction(baseUrl: string, action: "start" | "stop" | "reset") {
+  const res = await fetch(`${normalizeBase(baseUrl)}/api/session`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ action }),
+  });
+  const data = await res.json();
+  if (!res.ok) throw new Error(data.error || "ควบคุมเซสชันไม่สำเร็จ");
+  return data;
 }
 
 export async function fetchSensorMapping(baseUrl: string): Promise<SensorMappingState> {
