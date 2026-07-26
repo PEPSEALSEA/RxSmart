@@ -239,18 +239,15 @@ Do not change when adding MPU #9
   - Do not leave mux #2 A0 floating — tie it to 3V3
 
 --------------------------------------------------------------------------------
-SOFTWARE STATUS — still expects exactly 8 sensors
+SOFTWARE STATUS — Pico2W.ino supports 9; rest of stack catching up
 --------------------------------------------------------------------------------
 
-  Wiring for MPU #9 can be done now. Firmware and the rest of the stack still
-  assume SENSOR_COUNT = 8 until a follow-up code change. Until then the board
-  will keep reporting 8/8 and will ignore mux 0x71.
+  Pico2W.ino (v1.0.2+) reads:
+    mux 0x70 CH0–7  →  limbs (keys unchanged)
+    mux 0x71 CH0    →  center
 
-  Follow-up touch points (not done in this wiring-doc pass):
-    - Pico2W.ino          SENSOR_COUNT, tcaSelect for 0x71, sensors[] entry
-    - sensor_mapper.py    channel → body segment map
-    - iot_receiver.py     completion / channel count
-    - cloudflare-worker   telemetry-v2 length check (currently !== 8)
-    - dashboard pose.ts   DEFAULT_CHANNEL_TO_POSE / wizard maps
+  Cloudflare Worker telemetry-v2 accepts 8 or 9 sensors.
+  Python mapper / dashboard pose maps still default to 8 limb channels;
+  the center key is carried in telemetry but not yet mapped into pose joints.
 
 ================================================================================

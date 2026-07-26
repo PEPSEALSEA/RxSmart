@@ -5,6 +5,7 @@ export type PostureState = "correct" | "incorrect";
 export interface TelemetrySensorV2 {
   key: string;
   pin: number;
+  mux_addr?: number;
   raw: number;
   zero_offset: number;
   calibrated: number;
@@ -79,13 +80,14 @@ export function parseTelemetryV2(input: unknown): TelemetryPayloadV2 | null {
   if (!input || typeof input !== "object") return null;
   const body = input as Record<string, unknown>;
   const sensorsRaw = Array.isArray(body.sensors) ? body.sensors : [];
-  if (sensorsRaw.length !== 8) return null;
+  if (sensorsRaw.length !== 8 && sensorsRaw.length !== 9) return null;
 
   const sensors: TelemetrySensorV2[] = sensorsRaw.map((item) => {
     const sensor = item && typeof item === "object" ? (item as Record<string, unknown>) : {};
     return {
       key: asString(sensor.key, ""),
       pin: asNumber(sensor.pin),
+      mux_addr: asNumber(sensor.mux_addr),
       raw: asNumber(sensor.raw),
       zero_offset: asNumber(sensor.zero_offset),
       calibrated: asNumber(sensor.calibrated),

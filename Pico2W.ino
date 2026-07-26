@@ -19,7 +19,7 @@
 // ---------------------------------------------------------
 // Configuration / การตั้งค่าระบบ  (Raspberry Pi Pico 2 W / RP2350 build)
 // ---------------------------------------------------------
-const String CURRENT_VERSION = "1.0.1";
+const String CURRENT_VERSION = "1.0.2";
 const String CLOUDFLARE_API_URL = "https://rxsmart-worker.sealseapep.workers.dev"; // URL ของ Cloudflare Workers
 
 // ตั้งค่า AP & Captive Portal
@@ -39,7 +39,7 @@ const long watchdogInterval = 60000; // ตรวจสอบอินเทอ�
 bool inAPMode = false; // ติดตามว่าอยู่ใน AP mode ไหม
 bool setupComplete = false;
 
-const size_t SENSOR_COUNT = 8;
+const size_t SENSOR_COUNT = 9; // 8 limbs on mux 0x70 + center on mux 0x71 CH0
 const unsigned long MOTION_SAMPLE_INTERVAL_MS = 50;
 const unsigned long CALIBRATION_WINDOW_MS = 3000;
 const float RAW_TO_DEGREE = 360.0f / 4095.0f;
@@ -73,7 +73,7 @@ const bool ENABLE_REALTIME_SERIAL_DEBUG = true;
 const unsigned long SERIAL_DEBUG_INTERVAL_MS = 500;
 
 // ---- I2C bus pins (Wire = I2C0 on RP2350) ----
-// Primary bus: GP4 (SDA) / GP5 (SCL) -> TCA9548A -> 8x MPU6050
+// Primary bus: GP4 (SDA) / GP5 (SCL) -> TCA9548A #1 (0x70) + optional #2 (0x71)
 const uint8_t I2C_SDA_PIN = 4;
 const uint8_t I2C_SCL_PIN = 5;
 // Fallback bus if the mux isn't found on I2C0: use the second hardware I2C
@@ -81,7 +81,8 @@ const uint8_t I2C_SCL_PIN = 5;
 const uint8_t I2C_SDA_FALLBACK_PIN = 6;
 const uint8_t I2C_SCL_FALLBACK_PIN = 7;
 
-const uint8_t TCA9548A_ADDR = 0x70;             // A0=A1=A2=GND
+const uint8_t TCA9548A_ADDR_0 = 0x70;           // A0=A1=A2=GND — limbs CH0–7
+const uint8_t TCA9548A_ADDR_1 = 0x71;           // A0=3V3, A1=A2=GND — center CH0
 const uint8_t MPU6050_ADDR = 0x68;              // AD0 -> GND (ทุกตัว)
 const uint8_t MPU6050_REG_SMPLRT_DIV = 0x19;
 const uint8_t MPU6050_REG_CONFIG = 0x1A;
@@ -99,7 +100,8 @@ enum SessionState {
 
 struct SensorDataPoint {
   const char* key;
-  uint8_t pin; // TCA9548A channel index (0-7), NOT a GPIO on this board
+  uint8_t muxAddr; // TCA9548A I2C address (0x70 or 0x71)
+  uint8_t pin;     // channel index on that mux (0-7), NOT a GPIO
   float raw;
   float zeroOffset;
   float calibrated;
@@ -123,14 +125,15 @@ struct MotionMetrics {
 };
 
 SensorDataPoint sensors[SENSOR_COUNT] = {
-  {"left_upper_arm", 0, 0, 0, 0, 0},
-  {"right_upper_arm", 1, 0, 0, 0, 0},
-  {"left_forearm", 2, 0, 0, 0, 0},
-  {"right_forearm", 3, 0, 0, 0, 0},
-  {"left_thigh", 4, 0, 0, 0, 0},
-  {"right_thigh", 5, 0, 0, 0, 0},
-  {"left_shin", 6, 0, 0, 0, 0},
-  {"right_shin", 7, 0, 0, 0, 0}
+  {"left_upper_arm", TCA9548A_ADDR_0, 0, 0, 0, 0, 0},
+  {"right_upper_arm", TCA9548A_ADDR_0, 1, 0, 0, 0, 0},
+  {"left_forearm", TCA9548A_ADDR_0, 2, 0, 0, 0, 0},
+  {"right_forearm", TCA9548A_ADDR_0, 3, 0, 0, 0, 0},
+  {"left_thigh", TCA9548A_ADDR_0, 4, 0, 0, 0, 0},
+  {"right_thigh", TCA9548A_ADDR_0, 5, 0, 0, 0, 0},
+  {"left_shin", TCA9548A_ADDR_0, 6, 0, 0, 0, 0},
+  {"right_shin", TCA9548A_ADDR_0, 7, 0, 0, 0, 0},
+  {"center", TCA9548A_ADDR_1, 0, 0, 0, 0, 0}
 };
 
 MotionMetrics motion = {0, 0, 0, 0, 0, 0, true, 0, 0, 0, false, "none", 0};
@@ -447,8 +450,9 @@ float updateImuFilter(size_t index, float accelAngleDeg, float gyroPitchDps, uns
 void printRealtimeDebug(unsigned long nowMs);
 bool probeI2CAddress(uint8_t address);
 bool configureI2CForMPU(TwoWire& bus, uint8_t sdaPin, uint8_t sclPin);
-void tcaSelect(uint8_t channel);
+void tcaSelect(uint8_t muxAddr, uint8_t channel);
 void tcaDisableAll();
+void tcaDisable(uint8_t muxAddr);
 bool loadWifiCredentials(String& ssidOut, String& passOut);
 bool saveWifiCredentials(const String& ssid, const String& pass);
 void clearWifiCredentials();
@@ -985,6 +989,7 @@ void sendTelemetryData() {
   for (size_t i = 0; i < SENSOR_COUNT; i++) {
     JsonObject s = sensorArray.add<JsonObject>();
     s["key"] = sensors[i].key;
+    s["mux_addr"] = sensors[i].muxAddr;
     s["pin"] = sensors[i].pin;
     s["raw"] = sensors[i].raw;
     s["zero_offset"] = sensors[i].zeroOffset;
@@ -1233,10 +1238,12 @@ void initializeSensors() {
     } else {
       uint8_t count = 0;
       for (uint8_t i = 0; i < SENSOR_COUNT; i++) if (mpuPresent[i]) count++;
-      Serial.printf("TCA9548A ready on SDA=GP%u SCL=GP%u -> %u/8 MPU6050 found\n",
-        activeI2CSdaPin, activeI2CSclPin, count);
+      Serial.printf("TCA9548A ready on SDA=GP%u SCL=GP%u -> %u/%u MPU6050 found\n",
+        activeI2CSdaPin, activeI2CSclPin, count, (unsigned)SENSOR_COUNT);
       for (uint8_t i = 0; i < SENSOR_COUNT; i++) {
-        Serial.printf("  CH%u [%-16s]: %s\n", i, sensors[i].key, mpuPresent[i] ? "OK" : "MISS");
+        Serial.printf("  mux=0x%02X CH%u [%-16s]: %s\n",
+          sensors[i].muxAddr, sensors[i].pin, sensors[i].key,
+          mpuPresent[i] ? "OK" : "MISS");
       }
     }
     return;
@@ -1308,7 +1315,7 @@ void sampleSensors(unsigned long nowMs, bool applyCalibration) {
     for (size_t i = 0; i < SENSOR_COUNT; i++) {
       int16_t ax = 0, ay = 0, az = 0, gx = 0, gy = 0, gz = 0;
       if (mpuPresent[i]) {
-        tcaSelect(i);
+        tcaSelect(sensors[i].muxAddr, sensors[i].pin);
         mpuReadOk[i] = readMPU6050(MPU6050_ADDR, ax, ay, az, gx, gy, gz);
       } else {
         mpuReadOk[i] = false;
@@ -1599,15 +1606,21 @@ bool configureI2CForMPU(TwoWire& bus, uint8_t sdaPin, uint8_t sclPin) {
 
   activeWire = &bus;
 
-  if (!probeI2CAddress(TCA9548A_ADDR)) return false;
+  // Mux #1 (0x70) is required for the 8 limb sensors.
+  if (!probeI2CAddress(TCA9548A_ADDR_0)) return false;
+  const bool hasMux1 = probeI2CAddress(TCA9548A_ADDR_1);
 
   bool anyFound = false;
-  for (uint8_t ch = 0; ch < SENSOR_COUNT; ch++) {
-    tcaSelect(ch);
+  for (uint8_t i = 0; i < SENSOR_COUNT; i++) {
+    if (sensors[i].muxAddr == TCA9548A_ADDR_1 && !hasMux1) {
+      mpuPresent[i] = false;
+      continue;
+    }
+    tcaSelect(sensors[i].muxAddr, sensors[i].pin);
     delay(2);
     bool found = probeI2CAddress(MPU6050_ADDR);
-    mpuPresent[ch] = found && initMPU6050(MPU6050_ADDR);
-    if (mpuPresent[ch]) anyFound = true;
+    mpuPresent[i] = found && initMPU6050(MPU6050_ADDR);
+    if (mpuPresent[i]) anyFound = true;
   }
   tcaDisableAll();
 
@@ -1618,17 +1631,28 @@ bool configureI2CForMPU(TwoWire& bus, uint8_t sdaPin, uint8_t sclPin) {
   return anyFound;
 }
 
-void tcaSelect(uint8_t channel) {
+void tcaSelect(uint8_t muxAddr, uint8_t channel) {
   if (channel > 7) return;
-  activeWire->beginTransmission(TCA9548A_ADDR);
+  // Close the other mux first so two channels never share the bus.
+  if (muxAddr == TCA9548A_ADDR_0) {
+    tcaDisable(TCA9548A_ADDR_1);
+  } else if (muxAddr == TCA9548A_ADDR_1) {
+    tcaDisable(TCA9548A_ADDR_0);
+  }
+  activeWire->beginTransmission(muxAddr);
   activeWire->write(1 << channel);
   activeWire->endTransmission();
 }
 
-void tcaDisableAll() {
-  activeWire->beginTransmission(TCA9548A_ADDR);
+void tcaDisable(uint8_t muxAddr) {
+  activeWire->beginTransmission(muxAddr);
   activeWire->write(0x00);
   activeWire->endTransmission();
+}
+
+void tcaDisableAll() {
+  tcaDisable(TCA9548A_ADDR_0);
+  tcaDisable(TCA9548A_ADDR_1);
 }
 
 const char* resetReasonToString(RP2040::resetReason_t reason) {
@@ -1661,8 +1685,9 @@ void printRealtimeDebug(unsigned long nowMs) {
   Serial.printf("  angles: elbowL=%.1f elbowR=%.1f kneeL=%.1f kneeR=%.1f\n",
     motion.elbowLeft, motion.elbowRight, motion.kneeLeft, motion.kneeRight);
   for (uint8_t i = 0; i < SENSOR_COUNT; i++) {
-    Serial.printf("  CH%u [%-16s] raw=%.1f cal=%.1f %s\n",
-      i, sensors[i].key, sensors[i].raw, sensors[i].calibrated,
+    Serial.printf("  mux=0x%02X CH%u [%-16s] raw=%.1f cal=%.1f %s\n",
+      sensors[i].muxAddr, sensors[i].pin, sensors[i].key,
+      sensors[i].raw, sensors[i].calibrated,
       mpuReadOk[i] ? "OK" : (mpuPresent[i] ? "ERR" : "NA"));
   }
 }
