@@ -1,8 +1,54 @@
 ================================================================================
   RxSmart — Hardware Wiring Guide (Production Setup)
-  TCA9548A I2C Multiplexer x 1  +  MPU6050 (GY-521) x 8
   Raspberry Pi Pico 2 W (RP2350, Arduino-Pico core by Earle Philhower)
+
+  LOCKED BASELINE (current firmware):
+    TCA9548A I2C Multiplexer x 1 @ 0x70  +  MPU6050 (GY-521) x 8
+
+  EXPANSION (hardware ready; software follow-up required):
+    + TCA9548A x 1 @ 0x71  +  MPU6050 #9 (center / trunk) on mux#2 CH0
 ================================================================================
+
+--------------------------------------------------------------------------------
+LOCKED ARCHITECTURE — 8 MPU baseline (do not rewire)
+--------------------------------------------------------------------------------
+
+  One I2C master bus on the Pico 2 W, one multiplexer, eight identical IMUs.
+
+      Pico 2 W
+        GP4 (SDA) ──┐
+        GP5 (SCL) ──┼──► TCA9548A #1 @ 0x70
+        3V3 / GND ──┘         │
+                              ├── CH0 SD0/SC0 ► MPU6050 #0  left_upper_arm
+                              ├── CH1 SD1/SC1 ► MPU6050 #1  right_upper_arm
+                              ├── CH2 SD2/SC2 ► MPU6050 #2  left_forearm
+                              ├── CH3 SD3/SC3 ► MPU6050 #3  right_forearm
+                              ├── CH4 SD4/SC4 ► MPU6050 #4  left_thigh
+                              ├── CH5 SD5/SC5 ► MPU6050 #5  right_thigh
+                              ├── CH6 SD6/SC6 ► MPU6050 #6  left_shin
+                              └── CH7 SD7/SC7 ► MPU6050 #7  right_shin
+
+  Piece summary:
+    MCU          Pico 2 W — Pico2W.ino
+    Master I2C   GP4 = SDA, GP5 = SCL
+                 (fallback GP6/GP7 unused unless primary fails)
+    Mux #1       TCA9548A at 0x70  (A0=A1=A2=GND)
+    Sensors      MPU6050 x 8, all at 0x68 (AD0=GND), one per mux channel 0–7
+    Power        Shared 3V3(OUT) + GND
+
+  Firmware map (SENSOR_COUNT = 8 in Pico2W.ino):
+    CH0 = left_upper_arm   (ต้นแขนซ้าย)
+    CH1 = right_upper_arm  (ต้นแขนขวา)
+    CH2 = left_forearm     (แขนท่อนล่างซ้าย)
+    CH3 = right_forearm    (แขนท่อนล่างขวา)
+    CH4 = left_thigh       (ต้นขาซ้าย)
+    CH5 = right_thigh      (ต้นขาขวา)
+    CH6 = left_shin        (หน้าแข้งซ้าย)
+    CH7 = right_shin       (หน้าแข้งขวา)
+
+  I2C Addresses (baseline):
+    TCA9548A #1 = 0x70
+    MPU6050 x8  = 0x68  (all — separated by TCA channel)
 
 --------------------------------------------------------------------------------
 What changed vs. the old ESP32 DevKit V1 wiring
@@ -22,6 +68,9 @@ What changed vs. the old ESP32 DevKit V1 wiring
   on the RP2350. Everything else (the TCA9548A and all 8 MPU6050 modules) is
   wired IDENTICALLY to before — only the 2 wires that plug into the
   microcontroller board itself change pin numbers.
+
+  ESP32 wiring lives in hardware_connection.txt — leave it alone if you are
+  on Pico 2 W.
 
 --------------------------------------------------------------------------------
 Pico 2 W pins used (what your "7 wires" become)
@@ -50,7 +99,7 @@ Pico 2 W pins used (what your "7 wires" become)
     the CLEAR_WIFI/SET_WIFI dashboard command.
 
 --------------------------------------------------------------------------------
-TCA9548A -- wiring (UNCHANGED from the ESP32 setup)
+TCA9548A #1 -- wiring (LOCKED baseline @ 0x70)
 --------------------------------------------------------------------------------
 
   ┌──────────┬──────────────────────────────────────────────────────────────┐
@@ -75,32 +124,15 @@ TCA9548A -- wiring (UNCHANGED from the ESP32 setup)
   └──────────┴──────────────────────────────────────────────────────────────┘
 
 --------------------------------------------------------------------------------
-MPU6050 (GY-521) -- wiring (UNCHANGED, identical for all 8 units)
+MPU6050 (GY-521) -- wiring (identical for all units on mux #1)
 --------------------------------------------------------------------------------
 
   VCC  -> 3.3V (from Pico 2 W 3V3(OUT), shared rail)
   GND  -> GND (shared rail)
-  SDA  -> TCA9548A SDx (channel matching the body position)
-  SCL  -> TCA9548A SCx (channel matching the body position)
+  SDA  -> TCA9548A #1 SDx (channel matching the body position)
+  SCL  -> TCA9548A #1 SCx (channel matching the body position)
   AD0  -> GND   (I2C address = 0x68 for all — separated by TCA channel)
   INT, XDA, XCL -> not connected
-
---------------------------------------------------------------------------------
-Firmware Channel Map (sensor key -> TCA channel) -- UNCHANGED
---------------------------------------------------------------------------------
-
-  CH0 = left_upper_arm   (ต้นแขนซ้าย)
-  CH1 = right_upper_arm  (ต้นแขนขวา)
-  CH2 = left_forearm     (แขนท่อนล่างซ้าย)
-  CH3 = right_forearm    (แขนท่อนล่างขวา)
-  CH4 = left_thigh       (ต้นขาซ้าย)
-  CH5 = right_thigh      (ต้นขาขวา)
-  CH6 = left_shin        (หน้าแข้งซ้าย)
-  CH7 = right_shin       (หน้าแข้งขวา)
-
-  I2C Addresses:
-    TCA9548A    = 0x70
-    MPU6050 x8  = 0x68  (all — separated by TCA channel)
 
 --------------------------------------------------------------------------------
 Pull-up Resistors
@@ -109,7 +141,7 @@ Pull-up Resistors
   - GY-521 boards already have 4.7k pull-ups on SDA/SCL — sufficient for the
     TCA9548A <-> MPU6050 side.
   - Pico 2 W <-> TCA9548A: the RP2350 has weak internal pull-ups, but for a
-    reliable bus with a mux + 8 downstream devices, add external 4.7k
+    reliable bus with mux(es) + downstream devices, add external 4.7k
     pull-ups from GP4 -> 3V3 and GP5 -> 3V3 (same recommendation as before).
 
 --------------------------------------------------------------------------------
@@ -124,7 +156,7 @@ Software/Library differences you should know about (Pico 2 W vs ESP32)
   - No onboard BOOT-style button GPIO — wire your own to GP16 (see above).
 
 --------------------------------------------------------------------------------
-Serial Debug — example output you should see
+Serial Debug — example output you should see (baseline 8/8)
 --------------------------------------------------------------------------------
 
   TCA9548A ready on SDA=GP4 SCL=GP5 -> 8/8 MPU6050 found
@@ -139,4 +171,86 @@ Serial Debug — example output you should see
 
   If you see MISS -> check: wrong wiring, AD0 not tied to GND, VCC not
   reaching the sensor.
+
+================================================================================
+ADDING MPU #9 (center) — second TCA9548A
+================================================================================
+
+  Why a second mux is required:
+    TCA9548A has only 8 channels. CH7 is already used (right_shin).
+    A 9th MPU needs a second TCA9548A on the SAME Pico I2C bus (GP4/GP5),
+    at a DIFFERENT address.
+
+  Keep mux #1 and all 8 existing MPUs exactly as they are. Add only:
+
+      Pico 2 W GP4/GP5
+            │
+            ├──► TCA9548A #1 @ 0x70  →  MPU #0–#7 unchanged (CH0–CH7)
+            │
+            └──► TCA9548A #2 @ 0x71  →  MPU #9 center on CH0 (SD0/SC0)
+
+--------------------------------------------------------------------------------
+TCA9548A #2 -- wiring (mux #2 @ 0x71)
+--------------------------------------------------------------------------------
+
+  ┌──────────┬──────────────────────────────────────────────────────────────┐
+  │ ขา TCA  │ ต่อไปที่                                                     │
+  ├──────────┼──────────────────────────────────────────────────────────────┤
+  │ VCC      │ Pico 2 W 3V3(OUT)  (same rail as mux #1)                     │
+  │ GND      │ Pico 2 W GND                                                 │
+  │ SDA      │ Pico 2 W GP4  (same master bus as mux #1)                   │
+  │ SCL      │ Pico 2 W GP5  (same master bus as mux #1)                   │
+  │ RESET    │ 3V3                                                          │
+  │ A0       │ 3V3  ← THIS is the address change (must not float)           │
+  │ A1       │ GND                                                          │
+  │ A2       │ GND                                                          │
+  │ SD0/SC0  │ MPU6050 #9  (center / trunk)  SDA/SCL                       │
+  │ SD1–SD7  │ unused for now                                               │
+  └──────────┴──────────────────────────────────────────────────────────────┘
+
+  Address result: mux #2 = 0x71  (mux #1 stays 0x70 with A0=A1=A2=GND).
+
+--------------------------------------------------------------------------------
+MPU6050 #9 (center / trunk) -- wiring
+--------------------------------------------------------------------------------
+
+  ┌──────────┬──────────────────────────────────────────────────────────────┐
+  │ ขา MPU  │ ต่อไปที่                                                     │
+  ├──────────┼──────────────────────────────────────────────────────────────┤
+  │ VCC      │ 3V3                                                          │
+  │ GND      │ GND                                                          │
+  │ SDA      │ TCA9548A #2  SD0                                             │
+  │ SCL      │ TCA9548A #2  SC0                                             │
+  │ AD0      │ GND  (still 0x68 — OK because it is behind mux #2 CH0)       │
+  │ INT      │ not connected                                                │
+  │ XDA/XCL  │ not connected                                                │
+  └──────────┴──────────────────────────────────────────────────────────────┘
+
+  Logical address for software later:
+    mux 0x71 / channel 0  →  body key "center" / "trunk"
+
+--------------------------------------------------------------------------------
+Do not change when adding MPU #9
+--------------------------------------------------------------------------------
+
+  - Do not rewire the existing 8 MPUs
+  - Do not change mux #1 A0/A1/A2 (must stay 0x70)
+  - Do not put two MPUs on the same mux channel
+  - Do not leave mux #2 A0 floating — tie it to 3V3
+
+--------------------------------------------------------------------------------
+SOFTWARE STATUS — still expects exactly 8 sensors
+--------------------------------------------------------------------------------
+
+  Wiring for MPU #9 can be done now. Firmware and the rest of the stack still
+  assume SENSOR_COUNT = 8 until a follow-up code change. Until then the board
+  will keep reporting 8/8 and will ignore mux 0x71.
+
+  Follow-up touch points (not done in this wiring-doc pass):
+    - Pico2W.ino          SENSOR_COUNT, tcaSelect for 0x71, sensors[] entry
+    - sensor_mapper.py    channel → body segment map
+    - iot_receiver.py     completion / channel count
+    - cloudflare-worker   telemetry-v2 length check (currently !== 8)
+    - dashboard pose.ts   DEFAULT_CHANNEL_TO_POSE / wizard maps
+
 ================================================================================
