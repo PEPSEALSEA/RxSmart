@@ -183,11 +183,14 @@ class IoTReceiver:
             if changed:
                 self._serial_port = port
                 self._force_serial_reconnect = True
-                # New auto pick (not user lock) clears a previous soft auto choice only
             elif lock:
-                # Same COM re-applied — still lock so auto cannot steal it later
                 pass
         if changed:
+            with self._lock:
+                self._last_received_ts = 0.0
+                self._latest = None
+            self._serial_opened_at = 0.0
+            self._status = ConnectionStatus.DISCONNECTED
             print(f"[IoTReceiver] Serial port changed -> {port}" + (" (locked)" if lock else ""))
         elif lock:
             print(f"[IoTReceiver] Serial port locked -> {port}")
@@ -198,6 +201,13 @@ class IoTReceiver:
                 return False
             self._force_serial_reconnect = False
             return True
+
+    def _reset_rx_watchdog(self) -> None:
+        with self._lock:
+            self._last_received_ts = 0.0
+            self._latest = None
+        self._serial_opened_at = 0.0
+        self._dbg_block = None
 
     def _current_serial_port(self) -> str:
         with self._port_lock:
@@ -271,14 +281,15 @@ class IoTReceiver:
                 no_packet_grace_s = max(no_packet_grace_s, 15.0)
         raw_log_left = 12
         while self._running:
-            if self._take_serial_reconnect() and ser is not None:
-                try:
-                    ser.close()
-                except Exception:
-                    pass
-                ser = None
+            if self._take_serial_reconnect():
+                if ser is not None:
+                    try:
+                        ser.close()
+                    except Exception:
+                        pass
+                    ser = None
                 self._status = ConnectionStatus.DISCONNECTED
-                self._dbg_block = None
+                self._reset_rx_watchdog()
                 raw_log_left = 12
 
             # --- Establish / re-establish connection ---
@@ -319,7 +330,27 @@ class IoTReceiver:
                 ser = None
                 self._status = ConnectionStatus.TIMEOUT
                 self._try_auto_repick_port("no_telemetry")
-                self._serial_opened_at = 0.0
+                self._reset_rx_watchdog()
+                time.sleep(1.0)
+                continue
+
+            # Had packets, then silence past watchdog -> drop and reconnect (don't stick on TIMEOUT)
+            if (
+                self._last_received_ts > 0
+                and time.time() - self._last_received_ts > config.IOT_WATCHDOG_TIMEOUT_S
+            ):
+                print(
+                    f"[IoTReceiver] Telemetry silence on {self._current_serial_port()} "
+                    f"> {config.IOT_WATCHDOG_TIMEOUT_S:.0f}s - reconnecting..."
+                )
+                try:
+                    ser.close()
+                except Exception:
+                    pass
+                ser = None
+                self._status = ConnectionStatus.TIMEOUT
+                self._try_auto_repick_port("telemetry_silence")
+                self._reset_rx_watchdog()
                 time.sleep(1.0)
                 continue
 
@@ -351,6 +382,7 @@ class IoTReceiver:
                 except Exception:
                     pass
                 ser = None
+                self._reset_rx_watchdog()
                 time.sleep(1.0)
 
         if ser and ser.is_open:
