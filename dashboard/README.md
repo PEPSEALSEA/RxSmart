@@ -18,6 +18,10 @@ Open [http://localhost:3000](http://localhost:3000) with your browser to see the
 
 You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
 
+## Next.js MCP (coding agents)
+
+With `next-devtools-mcp` configured at the repo root (`.cursor/mcp.json` / `.mcp.json`), coding agents can read live errors, routes, and logs while the dev server is running. Start `npm run dev` here, then enable/refresh **next-devtools** under Cursor Settings → Tools & MCP.
+
 This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
 
 ## Learn More
