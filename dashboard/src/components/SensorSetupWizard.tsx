@@ -14,6 +14,9 @@ import {
   POSE_PROFILE_LABELS,
   saveStoredChannelMap,
   SensorMappingState,
+  swapArmSides,
+  swapLegSides,
+  UNILATERAL_STEP_TO_POSE,
 } from "@/lib/sensor-mapping";
 
 type WizardPhase = "intro" | "guided" | "review" | "poses" | "done";
@@ -30,70 +33,45 @@ type SensorSetupWizardProps = {
 
 const GUIDED_ORDER = [
   "neutral",
-  "move_forearms",
-  "move_shoulders",
-  "move_shins",
-  "move_thighs",
-  "arms_down",
-  "arms_up_down",
+  "l_elbow",
+  "l_shoulder",
+  "r_elbow",
+  "r_shoulder",
+  "l_knee",
+  "l_hip",
+  "r_knee",
+  "r_hip",
+  "standing_hold",
 ] as const;
 
 type GuidedStep = (typeof GUIDED_ORDER)[number];
 
-type LockedInfo = { step: string; label: string };
+type LockedInfo = { step: string; label: string; poseKey?: PoseKey };
 
-/** Steps that claim top-2 free channels when advancing. */
-const LOCK_ON_ADVANCE = new Set<string>([
-  "move_forearms",
-  "move_shoulders",
-  "move_shins",
-  "move_thighs",
-]);
+const LOCK_ON_ADVANCE = new Set<string>(Object.keys(UNILATERAL_STEP_TO_POSE));
 
 const LOCK_LABELS: Record<string, string> = {
-  move_forearms: "ปลายแขน / ศอก",
-  move_shoulders: "ต้นแขน / ไหล่",
-  move_shins: "ปลายขา / เข่า",
-  move_thighs: "ต้นขา",
+  l_elbow: "ปลายแขนซ้าย / ศอก",
+  l_shoulder: "ต้นแขนซ้าย / ไหล่",
+  r_elbow: "ปลายแขนขวา / ศอก",
+  r_shoulder: "ต้นแขนขวา / ไหล่",
+  l_knee: "ปลายขาซ้าย / เข่า",
+  l_hip: "ต้นขาซ้าย",
+  r_knee: "ปลายขาขวา / เข่า",
+  r_hip: "ต้นขาขวา",
 };
 
-/** Wizard lock step → body-segment role (L/R assigned from baseline). */
-const STEP_TO_PAIR: Record<
-  string,
-  { left: PoseKey; right: PoseKey }
-> = {
-  move_forearms: { left: "l_arm_lower", right: "r_arm_lower" },
-  move_shoulders: { left: "l_arm_upper", right: "r_arm_upper" },
-  move_shins: { left: "l_leg_lower", right: "r_leg_lower" },
-  move_thighs: { left: "l_leg_upper", right: "r_leg_upper" },
-};
-
-function buildChannelMapFromLocks(
-  locked: Record<number, LockedInfo>,
-  baseline: number[],
-): ChannelMap | null {
-  const byStep: Record<string, number[]> = {};
-  for (const [chStr, info] of Object.entries(locked)) {
-    const ch = Number(chStr);
-    if (ch === CENTER_CHANNEL) continue;
-    if (!STEP_TO_PAIR[info.step]) continue;
-    (byStep[info.step] ??= []).push(ch);
-  }
-
+function buildChannelMapFromLocks(locked: Record<number, LockedInfo>): ChannelMap | null {
   const map: ChannelMap = { ...DEFAULT_CHANNEL_TO_POSE };
   const usedKeys = new Set<PoseKey>();
 
-  for (const [step, pair] of Object.entries(STEP_TO_PAIR)) {
-    const chs = byStep[step];
-    if (!chs || chs.length !== 2) return null;
-    // Lower neutral reading → left (matches Python _assign_left_right_pairs)
-    const sorted = [...chs].sort(
-      (a, b) => (baseline[a] ?? 0) - (baseline[b] ?? 0),
-    );
-    map[sorted[0]] = pair.left;
-    map[sorted[1]] = pair.right;
-    usedKeys.add(pair.left);
-    usedKeys.add(pair.right);
+  for (const [chStr, info] of Object.entries(locked)) {
+    const ch = Number(chStr);
+    if (ch === CENTER_CHANNEL) continue;
+    const poseKey = info.poseKey ?? UNILATERAL_STEP_TO_POSE[info.step];
+    if (!poseKey || !isPoseKey(poseKey)) continue;
+    map[ch] = poseKey;
+    usedKeys.add(poseKey);
   }
 
   if (usedKeys.size !== LIMB_CHANNEL_COUNT) return null;
@@ -102,7 +80,7 @@ function buildChannelMapFromLocks(
 
 const ACTIVE_DELTA_DEG = 6;
 const BAR_FULL_SCALE_DEG = 12;
-const TOP_N = 2;
+const TOP_N = 1;
 
 function degreesFromSources(
   sensors: SensorChannelReading[] | null | undefined,
@@ -162,8 +140,8 @@ function ChannelActivityBars({
   return (
     <div className="space-y-2">
       <p className="cohere-mono-label text-[10px]">
-        Live CH0–CH8 · top {TOP_N} จากช่องแขนขาที่ยังไม่ล็อก (Δ≥{ACTIVE_DELTA_DEG}°) · CH8 =
-        center (อ้างอิงลำตัว) · ล็อกแล้ว = ใช้ไปแล้ว
+        Live CH0–CH8 · top {TOP_N} จากช่องแขนขาที่ยังไม่ล็อก (Δ≥{ACTIVE_DELTA_DEG}°) · ขยับทีละข้าง ·
+        CH8 = center (อ้างอิงลำตัว) · ล็อกแล้ว = ใช้ไปแล้ว
       </p>
       {degrees.map((deg, ch) => {
         const lock = locked[ch];
@@ -309,7 +287,7 @@ export default function SensorSetupWizard({
     }
   }, [mapping?.channel_map]);
 
-  // Peak-hold vs neutral baseline; locked limb channels stay at 0 for ranking
+  // Peak-hold vs neutral baseline; locked limb channels stay at 0 for ranking (guided only)
   useEffect(() => {
     if (phase !== "guided" && phase !== "review") return;
     const base = neutralBaseline;
@@ -318,7 +296,7 @@ export default function SensorSetupWizard({
     const instant = degrees.map((d, i) => Math.abs(d - (base[i] ?? d)));
     setPeakDeltas((prev) =>
       prev.map((peak, i) => {
-        if (i !== CENTER_CHANNEL && lockedRef.current[i]) return 0;
+        if (phase === "guided" && i !== CENTER_CHANNEL && lockedRef.current[i]) return 0;
         const now = instant[i] ?? 0;
         if (now >= peak) return now;
         return Math.max(0, peak - 0.8);
@@ -345,9 +323,42 @@ export default function SensorSetupWizard({
     [onMappingChange],
   );
 
+  const sensorAliveCount = useMemo(() => {
+    if (sensors && sensors.length > 0) {
+      const chs = new Set<number>();
+      for (let i = 0; i < sensors.length; i++) {
+        const s = sensors[i];
+        const ch = typeof s.channel === "number" ? s.channel : i;
+        if (ch >= 0 && ch < SENSOR_COUNT) chs.add(ch);
+      }
+      return chs.size;
+    }
+    if (channelDegrees && channelDegrees.length >= LIMB_CHANNEL_COUNT) {
+      return Math.min(SENSOR_COUNT, channelDegrees.length);
+    }
+    if (mapping?.channel_degrees && mapping.channel_degrees.length >= LIMB_CHANNEL_COUNT) {
+      return Math.min(SENSOR_COUNT, mapping.channel_degrees.length);
+    }
+    return 0;
+  }, [sensors, channelDegrees, mapping?.channel_degrees]);
+
+  const centerAlive = degrees.length > CENTER_CHANNEL;
+
+  const retryCurrentStep = () => {
+    setPeakDeltas(Array.from({ length: SENSOR_COUNT }, () => 0));
+    setMessage("รีเซ็ต Δ ของขั้นนี้แล้ว — ขยับใหม่ให้ชัด แล้วกดขั้นถัดไป");
+  };
+
   const startGuided = async () => {
     setBusy("start");
     setMessage("");
+    if (sensorAliveCount < SENSOR_COUNT) {
+      setMessage(
+        `ยังไม่ครบ ${SENSOR_COUNT} เซ็นเซอร์ (เห็น ${sensorAliveCount}) — ปิด Serial Monitor · restart main.py · รอ board calibrate ~3 วิ`,
+      );
+      setBusy("");
+      return;
+    }
     resetWizardLocal();
     try {
       const data = await postSensorMappingAction(bridgeUrl, "calibrate_start");
@@ -367,67 +378,72 @@ export default function SensorSetupWizard({
     try {
       const current = step;
 
-      // Step 1 → capture neutral baseline for all later steps
       if (current === "neutral") {
+        if (!centerAlive) {
+          setMessage("ยังไม่เห็น CH8 (center) — ตรวจ mux 0x71 / รอสัญญาณครบ 9 ช่อง");
+          setBusy("");
+          return;
+        }
         setNeutralBaseline([...degrees]);
         setPeakDeltas(Array.from({ length: SENSOR_COUNT }, () => 0));
       }
 
-      // Steps 2–5 → lock top-2 free limb channels before advancing
       if (current && LOCK_ON_ADVANCE.has(current)) {
+        const poseKey = UNILATERAL_STEP_TO_POSE[current];
         const free = Array.from({ length: LIMB_CHANNEL_COUNT }, (_, i) => i).filter(
           (i) => !lockedRef.current[i],
         );
         let picks = pickTopFree(peakRef.current, lockedRef.current);
 
-        // Last mapping step: assign whatever free channels remain (หลังตัดขั้น 4)
-        if (current === "move_thighs" && free.length <= TOP_N) {
+        if (current === "r_hip" && free.length === 1 && picks.length === 0) {
           picks = free;
         }
 
-        if (picks.length < Math.min(TOP_N, free.length) || picks.length === 0) {
+        if (picks.length < 1) {
           setMessage(
-            `ยังไม่พอ — ต้องมีอย่างน้อย ${Math.min(TOP_N, free.length)} ช่องที่ Δ≥${ACTIVE_DELTA_DEG}° จาก ${free.length} ช่องแขนขาที่ยังไม่ล็อก`,
+            `ยังไม่พอ — ขยับเฉพาะข้างที่ระบุให้ Δ≥${ACTIVE_DELTA_DEG}° บนช่องที่ยังไม่ล็อก (เหลือ ${free.length} ช่อง) หรือกดทำซ้ำขั้นนี้`,
           );
           setBusy("");
           return;
         }
 
+        const ch = picks[0];
         const nextLocked: Record<number, LockedInfo> = {
           ...centerLocked(),
           ...lockedRef.current,
-        };
-        for (const ch of picks) {
-          nextLocked[ch] = {
+          [ch]: {
             step: current,
             label: LOCK_LABELS[current] ?? current,
-          };
-        }
+            poseKey,
+          },
+        };
         setLocked(nextLocked);
         lockedRef.current = nextLocked;
         setMessage(
-          `ล็อก CH${picks.join(", CH")} เป็น ${LOCK_LABELS[current] ?? current}`,
+          `ล็อก CH${ch} → ${poseKey ? (isPoseKey(poseKey) ? POSE_LABELS[poseKey] : poseKey) : current}`,
         );
       }
 
       const data = await postSensorMappingAction(bridgeUrl, "calibrate_next");
       applyMappingResult(data);
 
-      // calibrate_next may overwrite map via auto_detect — re-apply wizard locks
-      if (current === "move_thighs") {
-        const baseline = neutralBaseline ?? degrees;
-        const built = buildChannelMapFromLocks(lockedRef.current, baseline);
+      if (current === "r_hip") {
+        const built = buildChannelMapFromLocks(lockedRef.current);
         if (built) {
           const setData = await postSensorMappingAction(bridgeUrl, "set", {
             channelMap: channelMapToRecord(built),
           });
           applyMappingResult(setData);
+          setEditMap(built);
+          saveStoredChannelMap(built);
+        } else {
+          setMessage((prev) => `${prev} · แมปยังไม่ครบ 8 แขนขา — ตรวจในหน้า review`);
         }
       }
 
       if (data.step === "complete") {
         setPhase("review");
-        setMessage("บันทึก channel_map + pose_defaults ลง sensor_map.json แล้ว — ตรวจแมปด้านล่าง");
+        setMessage("บันทึก channel_map + pose_defaults ลง sensor_map.json แล้ว — ตรวจแมป / สลับซ้ายขวาได้ด้านล่าง");
       } else {
         const label = CALIBRATION_STEP_LABELS[data.step as string] ?? String(data.step);
         const idx = GUIDED_ORDER.indexOf(data.step as GuidedStep);
@@ -441,6 +457,25 @@ export default function SensorSetupWizard({
       }
     } catch (err) {
       setMessage(err instanceof Error ? err.message : "ขั้นถัดไปไม่สำเร็จ");
+    } finally {
+      setBusy("");
+    }
+  };
+
+  const applySideSwap = async (kind: "arms" | "legs") => {
+    setBusy(`swap:${kind}`);
+    setMessage("");
+    try {
+      const next = kind === "arms" ? swapArmSides(editMap) : swapLegSides(editMap);
+      setEditMap(next);
+      const data = await postSensorMappingAction(bridgeUrl, "set", {
+        channelMap: channelMapToRecord(next),
+      });
+      applyMappingResult(data);
+      saveStoredChannelMap(next);
+      setMessage(kind === "arms" ? "สลับแมปแขนซ้าย ↔ ขวาแล้ว" : "สลับแมปขาซ้าย ↔ ขวาแล้ว");
+    } catch (err) {
+      setMessage(err instanceof Error ? err.message : "สลับข้างไม่สำเร็จ");
     } finally {
       setBusy("");
     }
@@ -522,8 +557,8 @@ export default function SensorSetupWizard({
             Setup Wizard
           </h2>
           <p className="mt-1 text-xs text-cohere-muted">
-            บันทึก <span className="font-mono-label">rxsmart-local/sensor_map.json</span> · ขั้น 2+
-            อิง baseline จากขั้น 1 · CH0–7 ล็อกแขนขา · CH8 = center อ้างอิงคำนวณมุม + เอนตัว
+            บันทึก <span className="font-mono-label">rxsmart-local/sensor_map.json</span> ·
+            ขยับทีละข้างทีละข้อ · CH8 = center อ้างอิงมุม + เอนตัว
           </p>
         </div>
         <button
@@ -539,24 +574,23 @@ export default function SensorSetupWizard({
         {phase === "intro" && (
           <div className="mx-auto max-w-2xl space-y-4 text-sm text-cohere-body-muted">
             <p>
-              จับว่า board CH ไหนคือแขน/ขา โดยดูการขยับ — ขั้น 1 ยืนนิ่งเป็น baseline แล้วขั้นต่อๆ
-              ไปเทียบจากค่านั้น
+              จับว่า board CH ไหนคือแขน/ขา โดยขยับ<strong>ทีละข้าง ทีละข้อ</strong> — คำสั่งซ้าย/ขวาคือ
+              ground truth ไม่เดาจากมุม
             </p>
             <p className="rounded-cohere-sm border border-cohere-hairline bg-white px-3 py-2 text-xs">
-              Firmware กรองมุมด้วย accel+gyro แล้ว — ขยับช้าๆ ให้ชัดก็พอ · ยังวัดได้แค่ elevation/bend
-              (ไม่มี plane / แยก abduction vs flexion)
+              Preflight: ปิด Arduino Serial Monitor · รัน main.py · ยืนนิ่งตอน board calibrate ~3 วิ ·
+              ตอนนี้เห็นเซ็นเซอร์ {sensorAliveCount}/{SENSOR_COUNT}
+              {centerAlive ? " · CH8 ok" : " · ยังไม่เห็น CH8"}
             </p>
             <ul className="list-disc space-y-2 pl-5">
-              <li>ก่อน wizard: ยืนนิ่งตอน board calibrate (ประมาณ 3 วินาที) ให้ gyro bias นิ่ง</li>
-              <li>ขั้น 2 (งอศอก): เลือก top 2 CH → ล็อก</li>
-              <li>ขั้น 3 (ยกไหล่): เลือก top 2 จาก CH ที่ยังไม่ล็อก</li>
-              <li>ขั้น 4 (งอเข่า): เลือก top 2 จากที่เหลือ</li>
-              <li>ขั้น 5 (ต้นขา): เลือกจากที่เหลือหลังขั้น 4</li>
-              <li>CH8 (MPU #9 / center) อ้างอิงลำตัว — คำนวณมุมไหล่/สะโพกเทียบ CH8 และเอนตัวในเกม</li>
+              <li>ขั้น 1: ยืนนิ่ง (baseline + ตรวจ CH8)</li>
+              <li>ขั้น 2–5: ศอกซ้าย → ไหล่ซ้าย → ศอกขวา → ไหล่ขวา (ล็อก top 1 ต่อขั้น)</li>
+              <li>ขั้น 6–9: เข่าซ้าย → ต้นขาซ้าย → เข่าขวา → ต้นขาขวา</li>
+              <li>ขั้น 10: ยืนห้อยแขนนิ่ง → บันทึก pose_defaults</li>
+              <li>หน้า review: ตรวจแมป / สลับแขนหรือขาทั้งข้างถ้าหุ่นกลับด้าน</li>
             </ul>
             <p className="rounded-cohere-sm bg-cohere-primary/5 px-3 py-2 text-xs">
-              บล็อกสีเทา = LOCKED ใช้ไปแล้ว ระบบจะไม่เลือกซ้ำ · บันทึก 9 ช่องลง sensor_map.json
-              บนเครื่องนี้ (Python / เกมโหลดต่อได้)
+              ขยับเฉพาะข้างที่ระบุ · ข้างอื่นนิ่ง · บล็อกสีเทา = LOCKED แล้วจะไม่เลือกซ้ำ
             </p>
           </div>
         )}
@@ -573,27 +607,44 @@ export default function SensorSetupWizard({
               </p>
               <p className="text-xs text-cohere-muted">
                 {step === "neutral"
-                  ? "ยืนนิ่ง — ค่านี้จะเป็น baseline ให้ขั้น 2 เป็นต้นไป"
-                  : neutralBaseline
-                    ? "กำลังเทียบกับ baseline ขั้น 1 (ยืนนิ่ง) · CH ที่ล็อกแล้วถูกตัดออก"
-                    : "รอ baseline จากขั้น 1"}
+                  ? "ยืนนิ่ง — ค่านี้จะเป็น baseline ให้ขั้นถัดไป · ตรวจ CH8"
+                  : step === "standing_hold"
+                    ? "ยืนห้อยแขนนิ่ง 2–3 วินาที แล้วกดถัดไปเพื่อบันทึก pose_defaults"
+                    : neutralBaseline
+                      ? "ขยับเฉพาะข้างที่ระบุ · ข้างอื่นนิ่ง · เทียบ baseline ขั้น 1"
+                      : "รอ baseline จากขั้น 1"}
               </p>
               <p className="text-xs text-cohere-muted">
                 {step
                   ? CALIBRATION_STEP_SAVE_HINTS[step] ?? "กำลังเก็บตัวอย่างในหน่วยความจำ"
                   : ""}
               </p>
-              <p className="rounded-cohere-sm border border-dashed border-cohere-hairline px-3 py-2 text-xs text-cohere-body-muted">
-                ขยับช้าๆ ให้ชัด — มุมกรองแล้ว · ให้ Δ ≥ {ACTIVE_DELTA_DEG}° บนช่องที่ยังไม่ล็อก
-                แล้วกดขั้นถัดไป — ระบบจะล็อก top {TOP_N} ของขั้นนี้
-              </p>
+              {step && LOCK_ON_ADVANCE.has(step) && (
+                <p className="rounded-cohere-sm border border-dashed border-cohere-hairline px-3 py-2 text-xs text-cohere-body-muted">
+                  ให้ Δ ≥ {ACTIVE_DELTA_DEG}° บนช่องที่ยังไม่ล็อก แล้วกดขั้นถัดไป — ระบบล็อก top{" "}
+                  {TOP_N} ของขั้นนี้
+                  {topCandidates.length > 0
+                    ? ` · candidate: CH${topCandidates[0]}`
+                    : " · ยังไม่เห็น candidate"}
+                </p>
+              )}
               {lockedLimbCount > 0 && (
                 <div className="rounded-cohere-sm bg-neutral-100 px-3 py-2 text-xs text-neutral-600">
                   ล็อกแล้ว:{" "}
                   {Object.entries(locked)
+                    .filter(([ch]) => Number(ch) !== CENTER_CHANNEL)
                     .map(([ch, info]) => `CH${ch} (${info.label})`)
                     .join(" · ")}
                 </div>
+              )}
+              {step && step !== "neutral" && (
+                <button
+                  type="button"
+                  className="cohere-btn-pill-outline text-xs"
+                  onClick={retryCurrentStep}
+                >
+                  ทำซ้ำขั้นนี้ (รีเซ็ต Δ)
+                </button>
               )}
             </div>
             <ChannelActivityBars
@@ -612,8 +663,26 @@ export default function SensorSetupWizard({
             <div>
               <p className="text-sm text-cohere-ink">ตรวจ / แก้แมป CH → ข้อต่อ</p>
               <p className="mt-1 text-xs text-cohere-muted">
-                ถ้ายกแขนแล้วขาตาม ให้เปลี่ยน dropdown แล้วกดบันทึกแมป
+                ถ้ายกแขนซ้ายแล้วหุ่นยกขวา ให้กดสลับแขน · หรือแก้ dropdown รายช่องแล้วบันทึก
               </p>
+            </div>
+            <div className="flex flex-wrap gap-2">
+              <button
+                type="button"
+                disabled={Boolean(busy)}
+                onClick={() => void applySideSwap("arms")}
+                className="cohere-btn-pill-outline text-xs disabled:opacity-50"
+              >
+                {busy === "swap:arms" ? "…" : "สลับแขนซ้าย ↔ ขวา"}
+              </button>
+              <button
+                type="button"
+                disabled={Boolean(busy)}
+                onClick={() => void applySideSwap("legs")}
+                className="cohere-btn-pill-outline text-xs disabled:opacity-50"
+              >
+                {busy === "swap:legs" ? "…" : "สลับขาซ้าย ↔ ขวา"}
+              </button>
             </div>
             <div className="grid gap-6 lg:grid-cols-2">
               <div className="space-y-2">
@@ -667,15 +736,15 @@ export default function SensorSetupWizard({
               </div>
               <div>
                 <p className="mb-2 text-xs text-cohere-muted">
-                  Verify — เทียบกับ baseline ขั้น 1 (หรือตั้งใหม่)
+                  Verify live Δ — เทียบ baseline (หรือตั้งใหม่) · ขยับทีละข้างเพื่อเช็กแมป
                 </p>
                 <ChannelActivityBars
                   degrees={degrees}
                   baseline={neutralBaseline}
                   map={editMap}
-                  locked={{}}
+                  locked={centerLocked()}
                   peakDeltas={peakDeltas}
-                  topCandidates={pickTopFree(peakDeltas, {})}
+                  topCandidates={pickTopFree(peakDeltas, centerLocked())}
                 />
                 <button
                   type="button"
@@ -771,7 +840,7 @@ export default function SensorSetupWizard({
                 : step
                   ? CALIBRATION_STEP_SAVE_HINTS[step]
                   : "")}
-          {phase === "review" && "แก้แมปแล้วกดบันทึก หรือไปขั้นท่ายืน/นั่ง"}
+          {phase === "review" && "แก้แมป / สลับข้าง แล้วกดบันทึก หรือไปขั้นท่ายืน/นั่ง"}
           {phase === "poses" && "บันทึกท่าจะเขียน pose_profiles"}
           {phase === "done" && "ปิดได้เมื่อพร้อม"}
         </div>

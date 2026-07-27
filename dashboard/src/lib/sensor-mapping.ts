@@ -50,25 +50,74 @@ export const POSE_PROFILE_LABELS: Record<string, string> = {
 };
 
 export const CALIBRATION_STEP_LABELS: Record<string, string> = {
-  neutral: "ยืนนิ่ง — แขนขาห้อยธรรมชาติ",
-  move_forearms: "งอข้อศอกทั้งสองข้าง (ปลายแขนขยับ ไหล่นิ่ง) — ดู top 2 CH ที่ Δ≥10°",
-  move_shoulders: "ยกไหล่ / ยกแขนทั้งสองข้าง",
-  move_shins: "งอเข่าทั้งสองข้าง (ปลายขาขยับ)",
-  move_thighs: "ยกขา / ขยับต้นขาทั้งสองข้าง",
-  arms_down: "ห้อยแขนทั้งสองข้าง — จับค่า default (baseline)",
-  arms_up_down: "ยกแขนขึ้น–ลงช้าๆ ทั้งสองข้าง — จับช่วง default",
+  neutral: "ยืนนิ่ง — แขนขาห้อยธรรมชาติ (baseline + ตรวจ CH8)",
+  l_elbow: "งอข้อศอกซ้ายอย่างเดียว (ข้างขวานิ่ง)",
+  l_shoulder: "ยกแขนซ้ายอย่างเดียว",
+  r_elbow: "งอข้อศอกขวาอย่างเดียว (ข้างซ้ายนิ่ง)",
+  r_shoulder: "ยกแขนขวาอย่างเดียว",
+  l_knee: "งอเข่าซ้ายอย่างเดียว",
+  l_hip: "ยกขา / ต้นขาซ้ายอย่างเดียว",
+  r_knee: "งอเข่าขวาอย่างเดียว",
+  r_hip: "ยกขา / ต้นขาขวาอย่างเดียว",
+  standing_hold: "ยืนห้อยแขนนิ่ง — จับ pose_defaults (standing + center)",
 };
 
-/** What the wizard is collecting / when it writes disk for each guided step. */
 export const CALIBRATION_STEP_SAVE_HINTS: Record<string, string> = {
-  neutral: "ยืนนิ่ง — ค่านี้จะเป็น baseline ให้ขั้นถัดไปทั้งหมด (ยังไม่เขียนไฟล์)",
-  move_forearms: "เทียบ baseline ขั้น 1 · ล็อก top 2 CH ที่ขยับ (Δ≥10°) ตอนกดถัดไป",
-  move_shoulders: "ตัด CH ที่ล็อกจากขั้น 2 ออก · เลือก top 2 จากที่เหลือ",
-  move_shins: "ตัด CH ที่ล็อกแล้วออก · เลือก top 2 จากที่เหลือ",
-  move_thighs: "ตัด CH จากขั้น 4 ออก · ล็อกที่เหลือ แล้วเขียน channel_map (+ CH8 center อ้างอิง)",
-  arms_down: "กำลังเก็บมุม baseline แขนห้อย (เทียบ CH8) — ยังไม่เขียน pose_defaults",
-  arms_up_down: "หลังกดถัดไปจะเขียน pose_defaults (standing) + center ลง sensor_map.json",
+  neutral: "ยืนนิ่ง — baseline ให้ขั้นถัดไป · ตรวจว่ามีเซ็นเซอร์ครบ 9 รวม CH8",
+  l_elbow: "ล็อก top 1 CH ที่ขยับ → ปลายแขนซ้าย (l_arm_lower)",
+  l_shoulder: "ล็อก top 1 จากที่เหลือ → ต้นแขนซ้าย (l_arm_upper)",
+  r_elbow: "ล็อก top 1 → ปลายแขนขวา (r_arm_lower)",
+  r_shoulder: "ล็อก top 1 → ต้นแขนขวา (r_arm_upper)",
+  l_knee: "ล็อก top 1 → ปลายขาซ้าย (l_leg_lower)",
+  l_hip: "ล็อก top 1 → ต้นขาซ้าย (l_leg_upper)",
+  r_knee: "ล็อก top 1 → ปลายขาขวา (r_leg_lower)",
+  r_hip: "ล็อก top 1 → ต้นขาขวา แล้วเขียน channel_map (+ CH8 center)",
+  standing_hold: "หลังกดถัดไปจะเขียน pose_defaults (standing) + center ลง sensor_map.json",
 };
+
+export const UNILATERAL_STEP_TO_POSE: Record<string, PoseKey> = {
+  l_elbow: "l_arm_lower",
+  l_shoulder: "l_arm_upper",
+  r_elbow: "r_arm_lower",
+  r_shoulder: "r_arm_upper",
+  l_knee: "l_leg_lower",
+  l_hip: "l_leg_upper",
+  r_knee: "r_leg_lower",
+  r_hip: "r_leg_upper",
+};
+
+export function swapPoseSidePairs(
+  map: ChannelMap,
+  pairs: [PoseKey, PoseKey][],
+): ChannelMap {
+  const next = ensureCenterInMap({ ...map });
+  for (const [a, b] of pairs) {
+    let chA: number | undefined;
+    let chB: number | undefined;
+    for (let ch = 0; ch < SENSOR_COUNT; ch++) {
+      if (next[ch] === a) chA = ch;
+      if (next[ch] === b) chB = ch;
+    }
+    if (chA === undefined || chB === undefined) continue;
+    next[chA] = b;
+    next[chB] = a;
+  }
+  return next;
+}
+
+export function swapArmSides(map: ChannelMap): ChannelMap {
+  return swapPoseSidePairs(map, [
+    ["l_arm_upper", "r_arm_upper"],
+    ["l_arm_lower", "r_arm_lower"],
+  ]);
+}
+
+export function swapLegSides(map: ChannelMap): ChannelMap {
+  return swapPoseSidePairs(map, [
+    ["l_leg_upper", "r_leg_upper"],
+    ["l_leg_lower", "r_leg_lower"],
+  ]);
+}
 
 export function calibratedToDegrees(calibrated: number): number {
   return Math.max(0, Math.min(180, Math.abs(calibrated) * (180 / 4095)));

@@ -54,24 +54,30 @@ DEFAULT_CHANNEL_MAP: dict[int, str] = {
     8: CENTER_KEY,
 }
 
+# Unilateral guided steps: user motion side = L/R ground truth (top-1 CH each).
+UNILATERAL_STEP_TO_POSE: dict[str, str] = {
+    "l_elbow": "l_arm_lower",
+    "l_shoulder": "l_arm_upper",
+    "r_elbow": "r_arm_lower",
+    "r_shoulder": "r_arm_upper",
+    "l_knee": "l_leg_lower",
+    "l_hip": "l_leg_upper",
+    "r_knee": "r_leg_lower",
+    "r_hip": "r_leg_upper",
+}
+
 CALIBRATION_STEPS: list[str] = [
     "neutral",
-    "move_forearms",
-    "move_shoulders",
-    "move_shins",
-    "move_thighs",
-    "arms_down",
-    "arms_up_down",
+    *UNILATERAL_STEP_TO_POSE.keys(),
+    "standing_hold",
 ]
 
-# Steps used only for channel→segment mapping (before personal defaults).
 MAPPING_STEPS: list[str] = [
     "neutral",
-    "move_forearms",
-    "move_shoulders",
-    "move_shins",
-    "move_thighs",
+    *UNILATERAL_STEP_TO_POSE.keys(),
 ]
+
+UNILATERAL_MIN_DELTA_DEG = 3.0
 
 POSE_DEFAULT_ANGLE_KEYS: list[str] = [
     "shoulder_left",
@@ -311,85 +317,42 @@ def _assign_left_right_pairs(
     return ordered[0], ordered[1]
 
 
-def auto_detect_guided(step_samples: dict[str, list[list[float]]]) -> dict[int, str]:
+def auto_detect_unilateral(step_samples: dict[str, list[list[float]]]) -> dict[int, str]:
     """
-    Distal-first guided calibration (both sides together):
-      neutral → move_forearms → move_shoulders → move_shins → move_thighs
-    L/R is inferred from proximal↔distal correlation + neutral angles.
+    Unilateral guided calibration: each step moves one joint on one side.
+    L/R comes from the step id (not neutral-angle guessing).
     """
     neutral_rows = step_samples.get("neutral", [])
     if not neutral_rows:
         return dict(DEFAULT_CHANNEL_MAP)
 
     neutral = _mean_neutral(neutral_rows)
-    forearm_rows = step_samples.get("move_forearms", [])
-    shoulder_rows = step_samples.get("move_shoulders", [])
-    shin_rows = step_samples.get("move_shins", [])
-    thigh_rows = step_samples.get("move_thighs", [])
-
-    arm_distal = _top_movers(_channel_peak_deltas(forearm_rows, neutral), 2)
-    arm_proximal = _top_movers(
-        _channel_peak_deltas(shoulder_rows, neutral),
-        2,
-        exclude=set(arm_distal),
-    )
-    used_arms = set(arm_distal) | set(arm_proximal)
-    leg_distal = _top_movers(
-        _channel_peak_deltas(shin_rows, neutral),
-        2,
-        exclude=used_arms,
-    )
-    leg_proximal = _top_movers(
-        _channel_peak_deltas(thigh_rows, neutral),
-        2,
-        exclude=used_arms | set(leg_distal),
-    )
-
+    used: set[int] = set()
     result: dict[int, str] = {}
 
-    arm_pairs = _pair_proximal_to_distal(
-        arm_proximal, arm_distal, shoulder_rows or forearm_rows, neutral
-    )
-    if len(arm_pairs) == 2:
-        left_arm, right_arm = _assign_left_right_pairs(arm_pairs, neutral)
-        result[left_arm[0]] = "l_arm_upper"
-        result[left_arm[1]] = "l_arm_lower"
-        result[right_arm[0]] = "r_arm_upper"
-        result[right_arm[1]] = "r_arm_lower"
+    for step, pose_key in UNILATERAL_STEP_TO_POSE.items():
+        rows = step_samples.get(step, [])
+        deltas = _channel_peak_deltas(rows, neutral)
+        picks = _top_movers(deltas, 1, exclude=used)
+        if not picks:
+            continue
+        ch = picks[0]
+        if float(deltas[ch]) < UNILATERAL_MIN_DELTA_DEG:
+            continue
+        result[ch] = pose_key
+        used.add(ch)
 
-    leg_pairs = _pair_proximal_to_distal(
-        leg_proximal, leg_distal, thigh_rows or shin_rows, neutral
-    )
-    if len(leg_pairs) == 2:
-        left_leg, right_leg = _assign_left_right_pairs(leg_pairs, neutral)
-        result[left_leg[0]] = "l_leg_upper"
-        result[left_leg[1]] = "l_leg_lower"
-        result[right_leg[0]] = "r_leg_upper"
-        result[right_leg[1]] = "r_leg_lower"
-
-    if len(result) < LIMB_CHANNEL_COUNT:
-        combined = neutral_rows[:]
-        for rows in step_samples.values():
-            combined.extend(rows)
-        fallback = auto_detect_from_motion(combined)
-        for ch in range(LIMB_CHANNEL_COUNT):
-            if ch not in result:
-                result[ch] = fallback.get(ch, DEFAULT_CHANNEL_MAP[ch])
-
-        owned: dict[str, int] = {}
-        duplicates: list[int] = []
-        for ch, key in sorted(result.items()):
-            if key == CENTER_KEY:
-                continue
-            if key in owned:
-                duplicates.append(ch)
-            else:
-                owned[key] = ch
-        missing_keys = [k for k in POSE_KEYS if k not in owned]
-        for ch, key in zip(duplicates, missing_keys):
-            result[ch] = key
+    owned = {k: ch for ch, k in result.items()}
+    missing_keys = [k for k in POSE_KEYS if k not in owned]
+    free = [c for c in range(LIMB_CHANNEL_COUNT) if c not in used]
+    for ch, key in zip(free, missing_keys):
+        result[ch] = key
 
     return ensure_center_in_map(result)
+
+
+def auto_detect_guided(step_samples: dict[str, list[list[float]]]) -> dict[int, str]:
+    return auto_detect_unilateral(step_samples)
 
 
 def mapping_confidence(
@@ -583,11 +546,15 @@ def compute_pose_defaults(
     channel_map: dict[int, str],
 ) -> dict[str, dict[str, float]]:
     """
-    Personal arm defaults after channel mapping:
-      arms_down  → neutral baseline
-      arms_up_down → min/max ROM while raising/lowering
+    Personal defaults after channel mapping:
+      standing_hold / arms_down / neutral → neutral baseline
+      arms_up_down (optional) → min/max ROM
     """
-    down_rows = step_samples.get("arms_down", []) or step_samples.get("neutral", [])
+    down_rows = (
+        step_samples.get("standing_hold", [])
+        or step_samples.get("arms_down", [])
+        or step_samples.get("neutral", [])
+    )
     move_rows = step_samples.get("arms_up_down", [])
 
     result: dict[str, dict[str, float]] = {}
@@ -598,7 +565,6 @@ def compute_pose_defaults(
         if not rows:
             return {}
         totals = {k: 0.0 for k in POSE_DEFAULT_ANGLE_KEYS}
-        # also need knees for completeness but defaults focus on arms
         totals.update(
             {
                 "knee_left": 0.0,
@@ -630,7 +596,6 @@ def compute_pose_defaults(
         n_val = float(neutral.get(key, mins.get(key, 0.0)))
         mn = float(mins.get(key, n_val))
         mx = float(maxs.get(key, n_val))
-        # Ensure max is at least neutral (raised should go above hang)
         if mx < n_val:
             mx = n_val
         if mn > n_val:
@@ -820,7 +785,7 @@ class SensorMappingManager:
 
     def _commit_channel_map_from_guided(self) -> None:
         mapping_buf = {k: self._guided_buffer.get(k, []) for k in MAPPING_STEPS}
-        new_map = auto_detect_guided(mapping_buf)
+        new_map = auto_detect_unilateral(mapping_buf)
         conf = mapping_confidence(self._flatten_guided(MAPPING_STEPS), new_map)
         self.set_map(new_map, conf)
 
@@ -832,17 +797,20 @@ class SensorMappingManager:
         idx = CALIBRATION_STEPS.index(self.calibration_step)
         if idx + 1 < len(CALIBRATION_STEPS):
             nxt = CALIBRATION_STEPS[idx + 1]
-            # After body-segment mapping steps, lock channel map before pose defaults.
-            if self.calibration_step == "move_thighs" and nxt == "arms_down":
+            if self.calibration_step == "r_hip" and nxt == "standing_hold":
                 self._commit_channel_map_from_guided()
             self.calibration_step = nxt
             return self.calibration_step
 
-        # Final step (arms_up_down) → personal defaults, then done
         limb_keys = {v for v in self.channel_map.values() if v in POSE_KEYS}
         if len(limb_keys) < LIMB_CHANNEL_COUNT:
             self._commit_channel_map_from_guided()
         defaults = compute_pose_defaults(self._guided_buffer, self.channel_map)
+        if not defaults:
+            hold = self._guided_buffer.get("standing_hold", []) or self._guided_buffer.get(
+                "neutral", []
+            )
+            defaults = defaults_from_samples(hold[-20:], self.channel_map)
         self.set_pose_defaults(defaults)
         conf = mapping_confidence(
             self._flatten_guided(MAPPING_STEPS),
