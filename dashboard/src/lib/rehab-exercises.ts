@@ -8,6 +8,7 @@ import {
 } from "@/lib/pose";
 
 export type ExerciseCategory = "arm" | "leg" | "bilateral" | "assessment";
+export type ExerciseSupport = "camera_only" | "both";
 
 export interface ExercisePhase {
   id: string;
@@ -23,6 +24,7 @@ export interface RehabExercise {
   name: string;
   description: string;
   category: ExerciseCategory;
+  support: ExerciseSupport;
   startPose: ResolvedPose;
   phases: ExercisePhase[];
   reps: number;
@@ -37,6 +39,7 @@ export const REHAB_EXERCISES: RehabExercise[] = [
     name: "ยกแขนซ้ายไปข้างหน้า",
     description: "ยกแขนซ้ายขึ้นไปข้างหน้า แล้วค้างไว้",
     category: "arm",
+    support: "both",
     startPose: { ...REST },
     phases: [
       {
@@ -72,6 +75,7 @@ export const REHAB_EXERCISES: RehabExercise[] = [
     name: "ยกแขนซ้ายไปข้างๆ (T-pose)",
     description: "ยกแขนซ้ายออกไปข้างตัว แล้วค้างไว้",
     category: "arm",
+    support: "camera_only",
     startPose: { ...REST },
     phases: [
       {
@@ -107,6 +111,7 @@ export const REHAB_EXERCISES: RehabExercise[] = [
     name: "หมุนแขนซ้าย (ท่าว่ายน้ำ)",
     description: "วนแขนซ้ายเป็นวงกลมเหมือนว่ายน้ำ",
     category: "arm",
+    support: "camera_only",
     startPose: { ...REST },
     phases: [
       {
@@ -158,6 +163,7 @@ export const REHAB_EXERCISES: RehabExercise[] = [
     name: "หมุนแขนขวา (ท่าว่ายน้ำ)",
     description: "วนแขนขวาเป็นวงกลมเหมือนว่ายน้ำ",
     category: "arm",
+    support: "camera_only",
     startPose: { ...REST },
     phases: [
       {
@@ -209,6 +215,7 @@ export const REHAB_EXERCISES: RehabExercise[] = [
     name: "งอข้อศอกซ้าย",
     description: "งอข้อศอกซ้ายเข้าหาตัว แล้วเหยียดออก",
     category: "arm",
+    support: "both",
     startPose: resolvePose(REST, { l_arm_upper: { elevation: 25, plane: 90 } }),
     phases: [
       {
@@ -244,6 +251,7 @@ export const REHAB_EXERCISES: RehabExercise[] = [
     name: "ยกขาซ้ายไปข้างหน้า",
     description: "ยกขาซ้ายขึ้นไปข้างหน้า แล้วค้างไว้",
     category: "leg",
+    support: "both",
     startPose: { ...REST },
     phases: [
       {
@@ -279,6 +287,7 @@ export const REHAB_EXERCISES: RehabExercise[] = [
     name: "ยกขาซ้ายไปข้าง",
     description: "ยกขาซ้ายออกไปข้าง แล้วค้างไว้",
     category: "leg",
+    support: "camera_only",
     startPose: { ...REST },
     phases: [
       {
@@ -314,6 +323,7 @@ export const REHAB_EXERCISES: RehabExercise[] = [
     name: "นั่งยอง",
     description: "งอเข่าทั้งสองข้างลงช้าๆ แล้วยืนขึ้น",
     category: "bilateral",
+    support: "both",
     startPose: { ...REST },
     phases: [
       {
@@ -364,6 +374,7 @@ export const REHAB_EXERCISES: RehabExercise[] = [
     name: "ยกแขนสองข้าง",
     description: "ยกแขนซ้ายและขวาขึ้นพร้อมกัน แล้วค้างไว้",
     category: "bilateral",
+    support: "both",
     startPose: { ...REST },
     phases: [
       {
@@ -401,4 +412,8 @@ export const REHAB_EXERCISES: RehabExercise[] = [
 
 export function getExerciseById(id: string): RehabExercise | undefined {
   return REHAB_EXERCISES.find((e) => e.id === id);
+}
+
+export function supportsImuExercise(exercise: RehabExercise): boolean {
+  return exercise.support === "both";
 }
