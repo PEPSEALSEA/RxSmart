@@ -17,8 +17,8 @@ import { stripImuUnreachablePlane } from "@/lib/sensor-mapping";
 const GamePoseCanvas = dynamic(() => import("@/components/game/GamePoseCanvas"), {
   ssr: false,
   loading: () => (
-    <div className="flex h-full min-h-[420px] items-center justify-center bg-[#0b1220] text-sm text-slate-400">
-      กำลังโหลดเวทีเกม 3D…
+    <div className="flex h-full min-h-[420px] items-center justify-center bg-[var(--rx-stage)] font-game text-lg text-white/80">
+      กำลังโหลดเวทีฝึก…
     </div>
   ),
 });
@@ -69,7 +69,7 @@ function useCombo(feedback: SessionFeedback): number {
 
     if (feedback.status === "moving" && !activeOk) {
       missTicks.current += 1;
-      if (missTicks.current > 60) {
+      if (missTicks.current > 45) {
         setCombo(0);
         missTicks.current = 0;
       }
@@ -131,6 +131,36 @@ function useGhostFrame(
   return ghost;
 }
 
+/** Approximate hold fill from status + phase holdSeconds (visual tension only). */
+function useHoldProgress(feedback: SessionFeedback, exercise: RehabExercise): number {
+  const [progress, setProgress] = useState(0);
+  const holdStarted = useRef<number | null>(null);
+
+  const holdSeconds = useMemo(() => {
+    const phase = exercise.phases.find((p) => p.label === feedback.phaseLabel);
+    return phase?.holdSeconds ?? 0;
+  }, [exercise.phases, feedback.phaseLabel]);
+
+  useEffect(() => {
+    if (feedback.status !== "holding" || holdSeconds <= 0) {
+      holdStarted.current = null;
+      setProgress(0);
+      return;
+    }
+    if (holdStarted.current == null) holdStarted.current = performance.now();
+    let raf = 0;
+    const tick = (now: number) => {
+      const started = holdStarted.current ?? now;
+      setProgress(Math.min(1, (now - started) / (holdSeconds * 1000)));
+      raf = requestAnimationFrame(tick);
+    };
+    raf = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(raf);
+  }, [feedback.status, feedback.phaseLabel, holdSeconds]);
+
+  return progress;
+}
+
 export default function GameStage({
   frame,
   feedback,
@@ -144,42 +174,64 @@ export default function GameStage({
 }: GameStageProps) {
   const combo = useCombo(feedback);
   const ghostFrame = useGhostFrame(exercise, feedback, imuMode);
+  const holdProgress = useHoldProgress(feedback, exercise);
   const { muted, toggleMute } = useGameAudio(feedback, true);
   const playerFrame = imuMode ? stripImuUnreachablePlane(frame) : frame;
   const safeFeedback = feedback;
+  const inSession =
+    feedback.status === "moving" ||
+    feedback.status === "holding" ||
+    feedback.status === "rest" ||
+    feedback.status === "complete";
 
   return (
-    <section className="overflow-hidden rounded-3xl border border-slate-700/80 bg-[#0b1220] shadow-[0_0_60px_rgba(34,211,238,0.08)]">
+    <section className="rx-game overflow-hidden rounded-[28px] border-2 border-[var(--rx-line)] bg-[var(--rx-sand)] shadow-[0_18px_50px_rgba(26,35,50,0.12)]">
+      <div className="border-b border-[var(--rx-line)] bg-[var(--rx-sand-deep)] px-5 py-4 sm:px-6">
+        <p className="font-game text-2xl font-bold text-[var(--rx-ink)] sm:text-3xl">ฝึกท่า Live IMU</p>
+        <p className="mt-1 max-w-2xl text-base text-[var(--rx-ink-soft)]">
+          เลือกท่า → ดูขั้นตอน → เริ่มฝึก ใช้ได้ทั้งโหมดทดลองและโหมดบอร์ดจริง
+        </p>
+      </div>
+
       <div className="grid lg:grid-cols-12">
-        <div className="relative min-h-[520px] lg:col-span-8 xl:col-span-9">
+        <div className="relative min-h-[520px] lg:col-span-7 xl:col-span-8">
           <GamePoseCanvas
             frame={playerFrame}
             ghostFrame={ghostFrame}
             activeJoints={safeFeedback.activeJoints}
             showGhost
             imuMode={imuMode}
+            tension={
+              safeFeedback.status === "holding"
+                ? "hold"
+                : safeFeedback.status === "moving"
+                  ? "move"
+                  : "idle"
+            }
           />
-          <GameHud
-            feedback={safeFeedback}
-            combo={combo}
-            exerciseName={exercise.name}
-            muted={muted}
-            onToggleMute={toggleMute}
-            imuMode={imuMode}
-            sourceLabel={sourceLabel}
-          />
-          <div className="pointer-events-none absolute bottom-4 left-4 z-20 flex gap-3 text-[10px] uppercase tracking-wider text-slate-400">
-            <span className="rounded-full bg-slate-950/70 px-2 py-1">คุณ</span>
-            <span className="rounded-full bg-cyan-500/20 px-2 py-1 text-cyan-200">โค้ช (ท่าเป้าหมาย)</span>
-            {imuMode && (
-              <span className="rounded-full bg-slate-950/70 px-2 py-1 text-slate-300">
-                IMU · elev/bend
-              </span>
-            )}
+          {inSession && (
+            <GameHud
+              feedback={safeFeedback}
+              combo={combo}
+              exerciseName={exercise.name}
+              muted={muted}
+              onToggleMute={toggleMute}
+              imuMode={imuMode}
+              sourceLabel={sourceLabel}
+              holdProgress={holdProgress}
+            />
+          )}
+          <div className="pointer-events-none absolute bottom-4 left-4 z-20 flex flex-wrap gap-2 text-sm font-semibold">
+            <span className="rounded-xl border-2 border-[var(--rx-line)] bg-[var(--rx-sand)] px-3 py-1.5 text-[var(--rx-ink)]">
+              คุณ
+            </span>
+            <span className="rounded-xl border-2 border-[var(--rx-focus)] bg-[var(--rx-focus-soft)] px-3 py-1.5 text-[var(--rx-focus)]">
+              โค้ช · ท่าเป้าหมาย
+            </span>
           </div>
         </div>
 
-        <aside className="border-t border-white/10 bg-slate-950/90 p-5 lg:col-span-4 xl:col-span-3 lg:border-l lg:border-t-0">
+        <aside className="border-t border-[var(--rx-line)] bg-[var(--rx-sand)] p-5 lg:col-span-5 xl:col-span-4 lg:border-l lg:border-t-0">
           <GameControls
             exercise={exercise}
             feedback={safeFeedback}
@@ -187,6 +239,7 @@ export default function GameStage({
             onStart={onStart}
             onStop={onStop}
             onReset={onReset}
+            sourceLabel={sourceLabel}
           />
         </aside>
       </div>

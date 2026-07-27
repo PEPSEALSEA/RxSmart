@@ -285,3 +285,88 @@ body {
     animation: none;
   }
 }
+
+/* Live IMU game — high-contrast, elderly-readable, Thai game type */
+.rx-game {
+  --rx-ink: #1a2332;
+  --rx-ink-soft: #3d4a5c;
+  --rx-sand: #f6f1e8;
+  --rx-sand-deep: #ebe4d6;
+  --rx-stage: #2a3544;
+  --rx-stage-deep: #1e2733;
+  --rx-line: #c9c0b0;
+  --rx-ok: #1f7a4c;
+  --rx-ok-soft: #d8f0e4;
+  --rx-warn: #c45c12;
+  --rx-warn-soft: #ffe2c8;
+  --rx-danger: #b42318;
+  --rx-danger-soft: #fde2e0;
+  --rx-focus: #0f6a62;
+  --rx-focus-soft: #d5f0ec;
+  --rx-gold: #c98500;
+  color: var(--rx-ink);
+  font-family: var(--font-game-body), Sarabun, Tahoma, sans-serif;
+  font-size: 17px;
+  line-height: 1.45;
+}
+
+.rx-game .font-game {
+  font-family: var(--font-game), Kanit, Sarabun, sans-serif;
+}
+
+@keyframes rx-hold-pulse {
+  0%,
+  100% {
+    transform: scale(1);
+    box-shadow: 0 0 0 0 rgba(201, 133, 0, 0.35);
+  }
+  50% {
+    transform: scale(1.03);
+    box-shadow: 0 0 0 12px rgba(201, 133, 0, 0);
+  }
+}
+
+@keyframes rx-tension-flash {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.72;
+  }
+}
+
+@keyframes rx-countdown-pop {
+  0% {
+    transform: scale(0.6);
+    opacity: 0;
+  }
+  40% {
+    transform: scale(1.12);
+    opacity: 1;
+  }
+  100% {
+    transform: scale(1);
+    opacity: 1;
+  }
+}
+
+.rx-hold-pulse {
+  animation: rx-hold-pulse 1.1s ease-in-out infinite;
+}
+
+.rx-tension-flash {
+  animation: rx-tension-flash 0.7s ease-in-out infinite;
+}
+
+.rx-countdown-pop {
+  animation: rx-countdown-pop 0.45s cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .rx-hold-pulse,
+  .rx-tension-flash,
+  .rx-countdown-pop {
+    animation: none;
+  }
+}

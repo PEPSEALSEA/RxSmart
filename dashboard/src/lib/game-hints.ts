@@ -23,7 +23,7 @@ function imuReasonHint(feedback: SessionFeedback): DirectionHint | null {
       joint,
       label,
       arrow: "up",
-      tip: "ขยับบอร์ดที่แมปไว้ใน Wizard — บอร์ดอื่นนำอยู่",
+      tip: "ขยับบอร์ดที่ตั้งไว้ — ตอนนี้บอร์ดอื่นขยับอยู่",
     };
   }
   if (reason === "speed") {
@@ -31,7 +31,7 @@ function imuReasonHint(feedback: SessionFeedback): DirectionHint | null {
       joint,
       label,
       arrow: "ok",
-      tip: "ช้า/เร็วเกินไป — ปรับความเร็วให้นุ่ม",
+      tip: "ช้าหรือเร็วเกินไป — ขยับให้นุ่มขึ้น",
     };
   }
   if (reason === "accel") {
@@ -39,7 +39,7 @@ function imuReasonHint(feedback: SessionFeedback): DirectionHint | null {
       joint,
       label,
       arrow: "ok",
-      tip: "กระตุกแรง — เคลื่อนไหวต่อเนื่อง",
+      tip: "กระตุกแรงไป — ขยับต่อเนื่องช้าๆ",
     };
   }
   if (reason === "delta_height") {
@@ -47,7 +47,7 @@ function imuReasonHint(feedback: SessionFeedback): DirectionHint | null {
       joint,
       label,
       arrow: "up",
-      tip: "Δ ยังไม่ถึงเป้า — ยก/งอให้สูงขึ้นตามบอร์ดที่แมป",
+      tip: "ยังไม่ถึงเป้า — ยกหรืองอให้สูงขึ้นอีก",
     };
   }
   return null;
@@ -65,8 +65,8 @@ function upperHint(
       label: POSE_LABELS[key],
       arrow: "ok",
       tip: options?.ignorePlane
-        ? `Δ ${Math.round(fb.delta ?? fb.elevation)}° — มุมถูกต้อง`
-        : "มุมถูกต้อง — ค้างท่า",
+        ? `มุมถูกแล้ว · ${Math.round(fb.delta ?? fb.elevation)}°`
+        : "มุมถูกแล้ว — ค้างท่าไว้",
     };
   }
   if (fb.elevationError > 12) {
@@ -76,8 +76,8 @@ function upperHint(
       label: POSE_LABELS[key],
       arrow: needUp ? "up" : "down",
       tip: needUp
-        ? `ยกขึ้นอีก ~${Math.round(fb.elevationError)}° (Δ ${Math.round(fb.delta ?? fb.elevation)}°)`
-        : `ลดลงอีก ~${Math.round(fb.elevationError)}° (Δ ${Math.round(fb.delta ?? fb.elevation)}°)`,
+        ? `ยกขึ้นอีกประมาณ ${Math.round(fb.elevationError)} องศา`
+        : `ลดลงอีกประมาณ ${Math.round(fb.elevationError)} องศา`,
     };
   }
   if (!options?.ignorePlane && fb.planeError > 18) {
@@ -113,8 +113,8 @@ function lowerHint(key: PoseKey, fb: JointFeedback, options?: DirectionHintOptio
       label: POSE_LABELS[key],
       arrow: "ok",
       tip: options?.ignorePlane
-        ? `Δ ${Math.round(fb.delta ?? fb.bend)}° — งอได้ตามเป้า`
-        : "งอได้ตามเป้า",
+        ? `งอถูกแล้ว · ${Math.round(fb.delta ?? fb.bend)}°`
+        : "งอถูกแล้ว",
     };
   }
   const needMore = fb.targetBend > fb.bend;
@@ -123,8 +123,8 @@ function lowerHint(key: PoseKey, fb: JointFeedback, options?: DirectionHintOptio
     label: POSE_LABELS[key],
     arrow: needMore ? "bend-more" : "bend-less",
     tip: needMore
-      ? `งออีก ~${Math.round(fb.bendError)}° (Δ ${Math.round(fb.delta ?? fb.bend)}°)`
-      : `เหยียดอีก ~${Math.round(fb.bendError)}° (Δ ${Math.round(fb.delta ?? fb.bend)}°)`,
+      ? `งออีกประมาณ ${Math.round(fb.bendError)} องศา`
+      : `เหยียดอีกประมาณ ${Math.round(fb.bendError)} องศา`,
   };
 }
 

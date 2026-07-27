@@ -1,4 +1,4 @@
-type SfxKind = "start" | "hold" | "miss" | "rep" | "complete" | "click";
+type SfxKind = "start" | "hold" | "miss" | "rep" | "complete" | "click" | "tick";
 
 let audioCtx: AudioContext | null = null;
 let bgmNodes: { osc: OscillatorNode; gain: GainNode; lfo: OscillatorNode } | null = null;
@@ -68,12 +68,16 @@ export function playSfx(kind: SfxKind) {
       tone(440, 0.18, "sine", 0.05, 0.16);
       break;
     case "hold":
-      tone(520, 0.1, "sine", 0.07);
-      tone(780, 0.12, "triangle", 0.05, 0.06);
+      tone(392, 0.08, "sine", 0.06);
+      tone(523, 0.1, "triangle", 0.055, 0.05);
+      tone(659, 0.14, "sine", 0.045, 0.1);
       break;
     case "miss":
-      tone(160, 0.16, "sawtooth", 0.035);
-      tone(120, 0.2, "sawtooth", 0.025, 0.05);
+      tone(180, 0.12, "triangle", 0.04);
+      tone(140, 0.18, "sine", 0.03, 0.06);
+      break;
+    case "tick":
+      tone(660, 0.06, "square", 0.035);
       break;
     case "rep":
       tone(392, 0.1, "square", 0.045);

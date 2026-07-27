@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { playSfx, unlockGameAudio } from "@/lib/game-audio";
 import { ExerciseCategory, RehabExercise, REHAB_EXERCISES } from "@/lib/rehab-exercises";
 import { SessionFeedback } from "@/lib/pose-physics";
@@ -12,7 +12,10 @@ interface GameControlsProps {
   onStart: () => void;
   onStop: () => void;
   onReset: () => void;
+  sourceLabel?: string;
 }
+
+type Screen = "select" | "brief" | "play";
 
 const CATEGORY_TABS: { id: ExerciseCategory | "all"; label: string }[] = [
   { id: "all", label: "ทั้งหมด" },
@@ -21,6 +24,22 @@ const CATEGORY_TABS: { id: ExerciseCategory | "all"; label: string }[] = [
   { id: "bilateral", label: "ทั้งตัว" },
 ];
 
+const CATEGORY_NAME: Record<ExerciseCategory, string> = {
+  arm: "แขน",
+  leg: "ขา",
+  bilateral: "ทั้งตัว",
+  assessment: "ประเมิน",
+};
+
+function thaiDescription(exercise: RehabExercise): string {
+  const plain = exercise.description
+    .replace(/\s*—\s*.*$/, "")
+    .replace(/\b(Shoulder|Elbow|Hip|Freestyle|Abduction|flexion)\b/gi, "")
+    .trim();
+  if (plain.length >= 8) return plain;
+  return `${exercise.phases.length} ขั้นตอน · ${exercise.reps} ครั้ง`;
+}
+
 export default function GameControls({
   exercise,
   feedback,
@@ -28,10 +47,17 @@ export default function GameControls({
   onStart,
   onStop,
   onReset,
+  sourceLabel,
 }: GameControlsProps) {
   const [category, setCategory] = useState<ExerciseCategory | "all">("all");
-  const [listOpen, setListOpen] = useState(false);
+  const [screen, setScreen] = useState<Screen>("select");
+  const [countdown, setCountdown] = useState<number | null>(null);
+  const onStartRef = useRef(onStart);
+  onStartRef.current = onStart;
+
   const isRunning = feedback.status !== "idle" && feedback.status !== "complete";
+  const isComplete = feedback.status === "complete";
+  const isDebug = Boolean(sourceLabel?.startsWith("DEBUG"));
 
   const filtered = useMemo(
     () =>
@@ -41,92 +67,293 @@ export default function GameControls({
     [category],
   );
 
-  const handleStart = () => {
+  const phaseIndex = useMemo(() => {
+    const idx = exercise.phases.findIndex((p) => p.label === feedback.phaseLabel);
+    return idx >= 0 ? idx : 0;
+  }, [exercise.phases, feedback.phaseLabel]);
+
+  useEffect(() => {
+    if (isRunning || isComplete) setScreen("play");
+  }, [isRunning, isComplete]);
+
+  useEffect(() => {
+    if (countdown == null) return;
+    if (countdown === 0) {
+      setCountdown(null);
+      onStartRef.current();
+      return;
+    }
+    playSfx("tick");
+    const t = window.setTimeout(() => setCountdown((c) => (c == null ? null : c - 1)), 700);
+    return () => window.clearTimeout(t);
+  }, [countdown]);
+
+  const handlePick = (item: RehabExercise) => {
+    onSelectExercise(item);
+    setScreen("brief");
+    playSfx("click");
+  };
+
+  const handleBeginCountdown = () => {
     void unlockGameAudio().then(() => playSfx("click"));
-    onStart();
+    setCountdown(3);
+  };
+
+  const handleStop = () => {
+    onStop();
+    setScreen("brief");
+    setCountdown(null);
+  };
+
+  const handleReset = () => {
+    onReset();
+    setCountdown(null);
+    setScreen("brief");
+  };
+
+  const handleChooseAnother = () => {
+    onReset();
+    setCountdown(null);
+    setScreen("select");
   };
 
   return (
-    <div className="flex h-full flex-col gap-4 text-slate-100">
-      <div>
-        <p className="text-[10px] font-medium uppercase tracking-[0.16em] text-cyan-300/80">
-          เลือกด่าน
-        </p>
-        <button
-          type="button"
-          onClick={() => setListOpen((o) => !o)}
-          className="mt-2 w-full rounded-xl border border-white/15 bg-white/5 px-3 py-2.5 text-left text-sm hover:bg-white/10"
-        >
-          <span className="font-medium text-white">{exercise.name}</span>
-          <span className="mt-0.5 block text-xs text-slate-400">{exercise.description}</span>
-        </button>
+    <div className="flex h-full flex-col gap-4">
+      <div className="flex items-center justify-between gap-2">
+        <div>
+          <p className="font-game text-[13px] font-semibold tracking-wide text-[var(--rx-ink-soft)]">
+            ฝึกท่าทีละขั้น
+          </p>
+          <p className="mt-0.5 text-sm text-[var(--rx-ink-soft)]">
+            {isDebug ? "โหมดทดลอง · ไม่ต้องมีบอร์ด" : "โหมดจริง · บอร์ด IMU"}
+          </p>
+        </div>
+        {screen !== "select" && !isRunning && countdown == null && (
+          <button
+            type="button"
+            onClick={handleChooseAnother}
+            className="rounded-xl border border-[var(--rx-line)] bg-white px-3 py-2 text-sm font-medium text-[var(--rx-ink)]"
+          >
+            เลือกท่าใหม่
+          </button>
+        )}
       </div>
 
-      {listOpen && (
-        <div className="max-h-56 space-y-2 overflow-y-auto rounded-xl border border-white/10 bg-slate-950/80 p-2">
-          <div className="mb-2 flex flex-wrap gap-1">
+      {screen === "select" && (
+        <div className="flex min-h-0 flex-1 flex-col gap-3">
+          <p className="font-game text-xl font-semibold text-[var(--rx-ink)] sm:text-2xl">
+            1. เลือกท่าที่จะฝึก
+          </p>
+          <div className="flex flex-wrap gap-2">
             {CATEGORY_TABS.map((tab) => (
               <button
                 key={tab.id}
                 type="button"
                 onClick={() => setCategory(tab.id)}
-                className={`rounded-full px-2.5 py-1 text-[11px] ${
+                className={`min-h-11 rounded-xl px-4 text-base font-medium ${
                   category === tab.id
-                    ? "bg-cyan-500/30 text-cyan-100"
-                    : "bg-white/5 text-slate-400"
+                    ? "bg-[var(--rx-focus)] text-white"
+                    : "border border-[var(--rx-line)] bg-white text-[var(--rx-ink)]"
                 }`}
               >
                 {tab.label}
               </button>
             ))}
           </div>
-          {filtered.map((item) => (
-            <button
-              key={item.id}
-              type="button"
-              onClick={() => {
-                onSelectExercise(item);
-                setListOpen(false);
-                playSfx("click");
-              }}
-              className={`block w-full rounded-lg px-2.5 py-2 text-left text-xs ${
-                item.id === exercise.id
-                  ? "bg-cyan-500/25 text-cyan-50"
-                  : "text-slate-300 hover:bg-white/5"
-              }`}
-            >
-              {item.name}
-            </button>
-          ))}
+          <div className="max-h-[28rem] space-y-2 overflow-y-auto pr-1">
+            {filtered.map((item, i) => (
+              <button
+                key={item.id}
+                type="button"
+                onClick={() => handlePick(item)}
+                className={`block w-full rounded-2xl border px-4 py-3.5 text-left transition ${
+                  item.id === exercise.id
+                    ? "border-[var(--rx-focus)] bg-[var(--rx-focus-soft)]"
+                    : "border-[var(--rx-line)] bg-white hover:border-[var(--rx-focus)]"
+                }`}
+              >
+                <span className="flex items-start gap-3">
+                  <span className="font-game flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-[var(--rx-sand-deep)] text-lg font-bold text-[var(--rx-ink)]">
+                    {i + 1}
+                  </span>
+                  <span className="min-w-0">
+                    <span className="font-game block text-lg font-semibold text-[var(--rx-ink)]">
+                      {item.name}
+                    </span>
+                    <span className="mt-1 block text-sm text-[var(--rx-ink-soft)]">
+                      {CATEGORY_NAME[item.category]} · {item.phases.length} ขั้น · {item.reps} ครั้ง
+                    </span>
+                    <span className="mt-1 block text-sm text-[var(--rx-ink-soft)]">
+                      {thaiDescription(item)}
+                    </span>
+                  </span>
+                </span>
+              </button>
+            ))}
+          </div>
         </div>
       )}
 
-      <div className="mt-auto flex flex-col gap-2">
-        {!isRunning ? (
-          <button
-            type="button"
-            onClick={handleStart}
-            className="rounded-xl bg-gradient-to-r from-cyan-400 to-emerald-400 px-4 py-3 text-sm font-semibold text-slate-950 shadow-lg shadow-cyan-500/20"
-          >
-            {feedback.status === "complete" ? "เล่นอีกครั้ง" : "เริ่มฝึก"}
-          </button>
-        ) : (
-          <button
-            type="button"
-            onClick={onStop}
-            className="rounded-xl border border-rose-400/40 bg-rose-500/20 px-4 py-3 text-sm font-semibold text-rose-100"
-          >
-            หยุด
-          </button>
-        )}
-        <button
-          type="button"
-          onClick={onReset}
-          className="rounded-xl border border-white/15 bg-white/5 px-4 py-2.5 text-sm text-slate-200 hover:bg-white/10"
-        >
-          รีเซ็ต
-        </button>
-      </div>
+      {screen === "brief" && (
+        <div className="flex min-h-0 flex-1 flex-col gap-4">
+          <div>
+            <p className="font-game text-xl font-semibold text-[var(--rx-ink)] sm:text-2xl">
+              2. ดูขั้นตอนก่อนเริ่ม
+            </p>
+            <p className="mt-2 font-game text-lg font-medium text-[var(--rx-focus)]">
+              {exercise.name}
+            </p>
+            <p className="mt-1 text-base text-[var(--rx-ink-soft)]">{thaiDescription(exercise)}</p>
+          </div>
+
+          <ol className="space-y-2">
+            {exercise.phases.map((phase, index) => (
+              <li
+                key={phase.id}
+                className="flex items-center gap-3 rounded-2xl border border-[var(--rx-line)] bg-white px-3 py-3"
+              >
+                <span className="font-game flex h-11 w-11 shrink-0 items-center justify-center rounded-full bg-[var(--rx-sand-deep)] text-lg font-bold">
+                  {index + 1}
+                </span>
+                <span className="min-w-0">
+                  <span className="font-game block text-lg font-semibold text-[var(--rx-ink)]">
+                    {phase.label}
+                  </span>
+                  <span className="text-sm text-[var(--rx-ink-soft)]">
+                    {phase.holdSeconds > 0
+                      ? `ค้างประมาณ ${phase.holdSeconds} วินาที`
+                      : "เคลื่อนไหวไปยังท่านี้"}
+                  </span>
+                </span>
+              </li>
+            ))}
+          </ol>
+
+          <p className="rounded-xl bg-[var(--rx-warn-soft)] px-3 py-2 text-sm text-[var(--rx-warn)]">
+            ทำทีละขั้นตามลำดับ · ทำครบ {exercise.reps} ครั้ง
+          </p>
+
+          <div className="mt-auto flex flex-col gap-2">
+            {countdown != null ? (
+              <div className="flex min-h-14 items-center justify-center rounded-2xl bg-[var(--rx-ink)] text-white">
+                <span className="rx-countdown-pop font-game text-4xl font-bold tabular-nums">
+                  {countdown === 0 ? "เริ่ม!" : countdown}
+                </span>
+              </div>
+            ) : (
+              <button
+                type="button"
+                onClick={handleBeginCountdown}
+                className="min-h-14 rounded-2xl bg-[var(--rx-focus)] px-4 text-lg font-semibold text-white shadow-md"
+              >
+                3. เริ่มฝึก
+              </button>
+            )}
+            <button
+              type="button"
+              onClick={handleChooseAnother}
+              className="min-h-12 rounded-2xl border border-[var(--rx-line)] bg-white px-4 text-base font-medium text-[var(--rx-ink)]"
+            >
+              กลับไปเลือกท่า
+            </button>
+          </div>
+        </div>
+      )}
+
+      {screen === "play" && (
+        <div className="flex min-h-0 flex-1 flex-col gap-4">
+          <div>
+            <p className="font-game text-xl font-semibold text-[var(--rx-ink)]">
+              {isComplete ? "เสร็จแล้ว!" : "กำลังฝึก"}
+            </p>
+            <p className="mt-1 font-game text-lg text-[var(--rx-focus)]">{exercise.name}</p>
+          </div>
+
+          <ol className="space-y-2">
+            {exercise.phases.map((phase, index) => {
+              const done = isComplete || index < phaseIndex;
+              const current = !isComplete && index === phaseIndex;
+              return (
+                <li
+                  key={phase.id}
+                  className={`flex items-center gap-3 rounded-2xl border px-3 py-3 ${
+                    current
+                      ? "border-[var(--rx-gold)] bg-[var(--rx-warn-soft)] rx-tension-flash"
+                      : done
+                        ? "border-[var(--rx-ok)] bg-[var(--rx-ok-soft)]"
+                        : "border-[var(--rx-line)] bg-white"
+                  }`}
+                >
+                  <span
+                    className={`font-game flex h-11 w-11 shrink-0 items-center justify-center rounded-full text-lg font-bold ${
+                      current
+                        ? "bg-[var(--rx-gold)] text-white"
+                        : done
+                          ? "bg-[var(--rx-ok)] text-white"
+                          : "bg-[var(--rx-sand-deep)] text-[var(--rx-ink)]"
+                    }`}
+                  >
+                    {done && !current ? "✓" : index + 1}
+                  </span>
+                  <span className="font-game text-lg font-semibold text-[var(--rx-ink)]">
+                    {phase.label}
+                    {current && feedback.status === "holding" ? " · ค้างไว้!" : ""}
+                  </span>
+                </li>
+              );
+            })}
+          </ol>
+
+          <div className="rounded-2xl border border-[var(--rx-line)] bg-white px-4 py-3">
+            <p className="text-sm text-[var(--rx-ink-soft)]">รอบที่</p>
+            <p className="font-game text-3xl font-bold tabular-nums text-[var(--rx-ink)]">
+              {Math.min(feedback.rep || 1, feedback.totalReps)}
+              <span className="text-xl font-medium text-[var(--rx-ink-soft)]">
+                {" "}
+                / {feedback.totalReps}
+              </span>
+            </p>
+          </div>
+
+          <div className="mt-auto flex flex-col gap-2">
+            {isComplete ? (
+              <>
+                <button
+                  type="button"
+                  onClick={handleBeginCountdown}
+                  className="min-h-14 rounded-2xl bg-[var(--rx-focus)] px-4 text-lg font-semibold text-white"
+                >
+                  เล่นอีกครั้ง
+                </button>
+                <button
+                  type="button"
+                  onClick={handleChooseAnother}
+                  className="min-h-12 rounded-2xl border border-[var(--rx-line)] bg-white px-4 text-base font-medium"
+                >
+                  เลือกท่าอื่น
+                </button>
+              </>
+            ) : (
+              <>
+                <button
+                  type="button"
+                  onClick={handleStop}
+                  className="min-h-14 rounded-2xl border-2 border-[var(--rx-danger)] bg-[var(--rx-danger-soft)] px-4 text-lg font-semibold text-[var(--rx-danger)]"
+                >
+                  หยุด
+                </button>
+                <button
+                  type="button"
+                  onClick={handleReset}
+                  className="min-h-12 rounded-2xl border border-[var(--rx-line)] bg-white px-4 text-base font-medium"
+                >
+                  เริ่มรอบใหม่
+                </button>
+              </>
+            )}
+          </div>
+        </div>
+      )}
     </div>
   );
 }

@@ -104,6 +104,12 @@ export function useGameAudio(feedback: SessionFeedback, enabled: boolean) {
   ]);
 
   useEffect(() => {
+    if (!enabled || feedback.status !== "holding") return;
+    const id = window.setInterval(() => playSfx("tick"), 900);
+    return () => window.clearInterval(id);
+  }, [enabled, feedback.status, feedback.phaseLabel]);
+
+  useEffect(() => {
     return () => {
       if (missTimer.current) clearTimeout(missTimer.current);
     };

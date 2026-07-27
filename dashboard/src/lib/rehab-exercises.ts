@@ -35,7 +35,7 @@ export const REHAB_EXERCISES: RehabExercise[] = [
   {
     id: "shoulder_flex_l",
     name: "ยกแขนซ้ายไปข้างหน้า",
-    description: "Shoulder flexion — elevation + plane ไปข้างหน้า",
+    description: "ยกแขนซ้ายขึ้นไปข้างหน้า แล้วค้างไว้",
     category: "arm",
     startPose: { ...REST },
     phases: [
@@ -70,7 +70,7 @@ export const REHAB_EXERCISES: RehabExercise[] = [
   {
     id: "shoulder_abduct_l",
     name: "ยกแขนซ้ายไปข้างๆ (T-pose)",
-    description: "Abduction — ยกแขนไปข้าง ใช้ plane ข้างตัว",
+    description: "ยกแขนซ้ายออกไปข้างตัว แล้วค้างไว้",
     category: "arm",
     startPose: { ...REST },
     phases: [
@@ -105,7 +105,7 @@ export const REHAB_EXERCISES: RehabExercise[] = [
   {
     id: "arm_swim_l",
     name: "หมุนแขนซ้าย (ท่าว่ายน้ำ)",
-    description: "Freestyle — วงจรแขนรอบนอกลำตัว (entry → pull → recovery)",
+    description: "วนแขนซ้ายเป็นวงกลมเหมือนว่ายน้ำ",
     category: "arm",
     startPose: { ...REST },
     phases: [
@@ -156,7 +156,7 @@ export const REHAB_EXERCISES: RehabExercise[] = [
   {
     id: "arm_swim_r",
     name: "หมุนแขนขวา (ท่าว่ายน้ำ)",
-    description: "Freestyle แขนขวา — วงจรรอบนอกลำตัว",
+    description: "วนแขนขวาเป็นวงกลมเหมือนว่ายน้ำ",
     category: "arm",
     startPose: { ...REST },
     phases: [
@@ -207,7 +207,7 @@ export const REHAB_EXERCISES: RehabExercise[] = [
   {
     id: "elbow_flex_l",
     name: "งอข้อศอกซ้าย",
-    description: "Elbow flexion — ข้อศอกงอเข้าหาตัว",
+    description: "งอข้อศอกซ้ายเข้าหาตัว แล้วเหยียดออก",
     category: "arm",
     startPose: resolvePose(REST, { l_arm_upper: { elevation: 25, plane: 90 } }),
     phases: [
@@ -242,7 +242,7 @@ export const REHAB_EXERCISES: RehabExercise[] = [
   {
     id: "hip_flex_l",
     name: "ยกขาซ้ายไปข้างหน้า",
-    description: "Hip flexion — สะโพกยกขาไปหน้า",
+    description: "ยกขาซ้ายขึ้นไปข้างหน้า แล้วค้างไว้",
     category: "leg",
     startPose: { ...REST },
     phases: [
@@ -277,7 +277,7 @@ export const REHAB_EXERCISES: RehabExercise[] = [
   {
     id: "hip_abduct_l",
     name: "ยกขาซ้ายไปข้าง",
-    description: "Hip abduction — ยกขาไปข้าง (plane ข้างตัว)",
+    description: "ยกขาซ้ายออกไปข้าง แล้วค้างไว้",
     category: "leg",
     startPose: { ...REST },
     phases: [
@@ -312,7 +312,7 @@ export const REHAB_EXERCISES: RehabExercise[] = [
   {
     id: "mini_squat",
     name: "นั่งยอง",
-    description: "งอเข่าทั้งสองข้าง — sensor ขา 4 จุด",
+    description: "งอเข่าทั้งสองข้างลงช้าๆ แล้วยืนขึ้น",
     category: "bilateral",
     startPose: { ...REST },
     phases: [
@@ -362,7 +362,7 @@ export const REHAB_EXERCISES: RehabExercise[] = [
   {
     id: "bilateral_arm",
     name: "ยกแขนสองข้าง",
-    description: "ยกแขนซ้าย-ขวาไปข้างหน้าพร้อมกัน",
+    description: "ยกแขนซ้ายและขวาขึ้นพร้อมกัน แล้วค้างไว้",
     category: "bilateral",
     startPose: { ...REST },
     phases: [

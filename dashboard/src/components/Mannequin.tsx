@@ -9,10 +9,10 @@ import { applyElbowBend, computeSquatTransform, orientUpperLimb, ROOT_BASE_Y } f
 import { NEUTRAL_POSE, PoseKey, UPPER_KEYS, shortestPlaneDelta } from "@/lib/pose";
 import { SensorFrame } from "@/lib/pose-physics";
 
-const SKIN = "#e8f4fc";
-const SKIN_SHADOW = "#c5e4f7";
-const ACCENT = "#38bdf8";
-const ACTIVE = "#22d3ee";
+const SKIN = "#f0e6d8";
+const SKIN_SHADOW = "#dcc9b0";
+const ACCENT = "#5aa897";
+const ACTIVE = "#c98500";
 
 const VISUAL_SPRING = 16;
 const VISUAL_DAMP = 8;
@@ -22,13 +22,13 @@ function useBodyMaterial(color: string, active: boolean) {
   return useMemo(
     () =>
       new MeshPhysicalMaterial({
-        color: active ? "#a5f3fc" : color,
+        color: active ? "#f0d090" : color,
         roughness: 0.48,
         metalness: 0.02,
         clearcoat: 0.35,
         clearcoatRoughness: 0.22,
-        emissive: active ? ACTIVE : "#0ea5e9",
-        emissiveIntensity: active ? 0.38 : 0.08,
+        emissive: active ? ACTIVE : "#5aa897",
+        emissiveIntensity: active ? 0.32 : 0.06,
       }),
     [color, active],
   );
