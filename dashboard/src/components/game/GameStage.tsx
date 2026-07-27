@@ -12,7 +12,7 @@ import {
 import { resolvePose } from "@/lib/pose";
 import { SessionFeedback, SensorFrame } from "@/lib/pose-physics";
 import { RehabExercise } from "@/lib/rehab-exercises";
-import { stripImuUnreachablePlane } from "@/lib/sensor-mapping";
+import { applyImuDisplayPlanes } from "@/lib/sensor-mapping";
 import { agentDbgLog } from "@/lib/debug-session-log";
 
 const GamePoseCanvas = dynamic(() => import("@/components/game/GamePoseCanvas"), {
@@ -93,12 +93,9 @@ function useCombo(feedback: SessionFeedback): number {
 function useGhostFrame(
   exercise: RehabExercise,
   feedback: SessionFeedback,
-  imuMode: boolean,
 ): SensorFrame {
   const [ghost, setGhost] = useState(() =>
-    imuMode
-      ? stripImuUnreachablePlane(resolvedPoseToFrame(exercise.startPose))
-      : resolvedPoseToFrame(exercise.startPose),
+    resolvedPoseToFrame(exercise.startPose),
   );
   const phaseIndex = useMemo(() => {
     const idx = exercise.phases.findIndex((p) => p.label === feedback.phaseLabel);
@@ -122,12 +119,12 @@ function useGhostFrame(
       } else {
         next = to;
       }
-      setGhost(imuMode ? stripImuUnreachablePlane(next) : next);
+      setGhost(next);
       raf = requestAnimationFrame(tick);
     };
     raf = requestAnimationFrame(tick);
     return () => cancelAnimationFrame(raf);
-  }, [exercise, feedback.status, phaseIndex, imuMode]);
+  }, [exercise, feedback.status, phaseIndex]);
 
   return ghost;
 }
@@ -174,10 +171,10 @@ export default function GameStage({
   sourceLabel,
 }: GameStageProps) {
   const combo = useCombo(feedback);
-  const ghostFrame = useGhostFrame(exercise, feedback, imuMode);
+  const ghostFrame = useGhostFrame(exercise, feedback);
   const holdProgress = useHoldProgress(feedback, exercise);
   const { muted, toggleMute } = useGameAudio(feedback, true);
-  const playerFrame = imuMode ? stripImuUnreachablePlane(frame) : frame;
+  const playerFrame = imuMode ? applyImuDisplayPlanes(frame, ghostFrame) : frame;
   const safeFeedback = feedback;
   const inSession =
     feedback.status === "moving" ||

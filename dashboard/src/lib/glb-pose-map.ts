@@ -106,9 +106,6 @@ function applyBindDelta(bone: Bone | undefined, bind: BindPose, name: string, eu
 /**
  * Apply SensorFrame onto a Mixamo T-pose skeleton.
  * Arms: T-pose = elevation 90°, plane 0°. Legs: bind = elevation 0°.
- *
- * imuMode: single-pitch MPU has no true swing plane or XYZ — drive arms from
- * elevation only (fixed rest plane) and legs from elevation + bend only.
  */
 export function applyFrameToMixamoBones(
   bones: BoneIndex,
@@ -116,16 +113,16 @@ export function applyFrameToMixamoBones(
   frame: SensorFrame,
   options?: { rootOffsetY?: number; imuMode?: boolean },
 ): void {
-  const imuMode = Boolean(options?.imuMode);
+  void options?.imuMode;
   const squat = computeSquatTransform(
     {
       elevation: frame.l_leg_upper.elevation,
-      plane: imuMode ? 90 : frame.l_leg_upper.plane,
+      plane: frame.l_leg_upper.plane,
       bend: frame.l_leg_lower.bend,
     },
     {
       elevation: frame.r_leg_upper.elevation,
-      plane: imuMode ? 90 : frame.r_leg_upper.plane,
+      plane: frame.r_leg_upper.plane,
       bend: frame.r_leg_lower.bend,
     },
     { mode: frame.body?.mode },
@@ -150,9 +147,8 @@ export function applyFrameToMixamoBones(
 
   const lArmElev = frame.l_arm_upper.elevation + squat.armElevationOffset;
   const rArmElev = frame.r_arm_upper.elevation + squat.armElevationOffset;
-  // IMU: ignore catalog/fake plane — pure raise in the coronal-ish rest plane.
-  const lArmPlane = imuMode ? 0 : frame.l_arm_upper.plane + squat.armPlaneOffset;
-  const rArmPlane = imuMode ? 0 : frame.r_arm_upper.plane + squat.armPlaneOffset;
+  const lArmPlane = frame.l_arm_upper.plane + squat.armPlaneOffset;
+  const rArmPlane = frame.r_arm_upper.plane + squat.armPlaneOffset;
 
   // Left arm: from T-pose, negative Z lowers the arm; Y swings forward/back via plane
   _euler.set(0, -lArmPlane * DEG, (90 - lArmElev) * DEG, "XYZ");
@@ -167,31 +163,23 @@ export function applyFrameToMixamoBones(
   _euler.set(-frame.r_arm_lower.bend * DEG, 0, 0, "XYZ");
   applyBindDelta(bones.get(MIXAMO_BONES.rightForeArm), bind, MIXAMO_BONES.rightForeArm, _euler);
 
-  // Legs: IMU uses pure hip flexion from elevation (no invented abduction plane).
-  if (imuMode) {
-    _euler.set(-frame.l_leg_upper.elevation * DEG, 0, 0, "XYZ");
-    applyBindDelta(bones.get(MIXAMO_BONES.leftUpLeg), bind, MIXAMO_BONES.leftUpLeg, _euler);
-    _euler.set(-frame.r_leg_upper.elevation * DEG, 0, 0, "XYZ");
-    applyBindDelta(bones.get(MIXAMO_BONES.rightUpLeg), bind, MIXAMO_BONES.rightUpLeg, _euler);
-  } else {
-    const lPlaneRad = frame.l_leg_upper.plane * DEG;
-    const rPlaneRad = frame.r_leg_upper.plane * DEG;
-    _euler.set(
-      -frame.l_leg_upper.elevation * DEG * Math.max(0.35, Math.abs(Math.sin(lPlaneRad)) + 0.2),
-      -frame.l_leg_upper.elevation * DEG * Math.cos(lPlaneRad) * 0.35,
-      0,
-      "XYZ",
-    );
-    applyBindDelta(bones.get(MIXAMO_BONES.leftUpLeg), bind, MIXAMO_BONES.leftUpLeg, _euler);
+  const lPlaneRad = frame.l_leg_upper.plane * DEG;
+  const rPlaneRad = frame.r_leg_upper.plane * DEG;
+  _euler.set(
+    -frame.l_leg_upper.elevation * DEG * Math.max(0.35, Math.abs(Math.sin(lPlaneRad)) + 0.2),
+    -frame.l_leg_upper.elevation * DEG * Math.cos(lPlaneRad) * 0.35,
+    0,
+    "XYZ",
+  );
+  applyBindDelta(bones.get(MIXAMO_BONES.leftUpLeg), bind, MIXAMO_BONES.leftUpLeg, _euler);
 
-    _euler.set(
-      -frame.r_leg_upper.elevation * DEG * Math.max(0.35, Math.abs(Math.sin(rPlaneRad)) + 0.2),
-      frame.r_leg_upper.elevation * DEG * Math.cos(rPlaneRad) * 0.35,
-      0,
-      "XYZ",
-    );
-    applyBindDelta(bones.get(MIXAMO_BONES.rightUpLeg), bind, MIXAMO_BONES.rightUpLeg, _euler);
-  }
+  _euler.set(
+    -frame.r_leg_upper.elevation * DEG * Math.max(0.35, Math.abs(Math.sin(rPlaneRad)) + 0.2),
+    frame.r_leg_upper.elevation * DEG * Math.cos(rPlaneRad) * 0.35,
+    0,
+    "XYZ",
+  );
+  applyBindDelta(bones.get(MIXAMO_BONES.rightUpLeg), bind, MIXAMO_BONES.rightUpLeg, _euler);
 
   _euler.set(frame.l_leg_lower.bend * DEG, 0, 0, "XYZ");
   applyBindDelta(bones.get(MIXAMO_BONES.leftLeg), bind, MIXAMO_BONES.leftLeg, _euler);

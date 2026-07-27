@@ -1,5 +1,4 @@
 import {
-  ARM_REST,
   DEFAULT_CHANNEL_TO_POSE,
   isUpperKey,
   LIMB_PAIRS,
@@ -388,11 +387,15 @@ export function isUpperPoseKey(key: PoseKey): boolean {
   return isUpperKey(key);
 }
 
-/** Force upper-limb plane to rest — Live IMU cannot measure abduction plane. */
-export function stripImuUnreachablePlane(frame: SensorFrame): SensorFrame {
+export function applyImuDisplayPlanes(
+  live: SensorFrame,
+  reference: SensorFrame,
+): SensorFrame {
   return {
-    ...frame,
-    l_arm_upper: { ...frame.l_arm_upper, plane: ARM_REST.plane },
-    r_arm_upper: { ...frame.r_arm_upper, plane: ARM_REST.plane },
+    ...live,
+    l_arm_upper: { ...live.l_arm_upper, plane: reference.l_arm_upper.plane },
+    r_arm_upper: { ...live.r_arm_upper, plane: reference.r_arm_upper.plane },
+    l_leg_upper: { ...live.l_leg_upper, plane: reference.l_leg_upper.plane },
+    r_leg_upper: { ...live.r_leg_upper, plane: reference.r_leg_upper.plane },
   };
 }
