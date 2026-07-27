@@ -29,6 +29,7 @@ export type BridgeSessionFeedback = {
   jointFeedback: Record<PoseKey, JointFeedback>;
   deltaByJoint?: Partial<Record<PoseKey, number>>;
   leaderJoint?: PoseKey | string | null;
+  holdProgress?: number;
   imuDiagnostics?: {
     leadershipOk: boolean;
     accelOk: boolean;
@@ -267,6 +268,7 @@ export function mapBridgeSessionFeedback(payload: BridgeSessionFeedback | null |
     deltaByJoint: payload.deltaByJoint,
     leaderJoint: payload.leaderJoint ?? null,
     imuDiagnostics: payload.imuDiagnostics ?? null,
+    holdProgress: typeof payload.holdProgress === "number" ? payload.holdProgress : 0,
   };
 }
 

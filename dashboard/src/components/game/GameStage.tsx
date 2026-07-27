@@ -130,7 +130,6 @@ function useGhostFrame(
   return ghost;
 }
 
-/** Approximate hold fill from status + phase holdSeconds (visual tension only). */
 function useHoldProgress(feedback: SessionFeedback, exercise: RehabExercise): number {
   const [progress, setProgress] = useState(0);
   const holdStarted = useRef<number | null>(null);
@@ -140,7 +139,14 @@ function useHoldProgress(feedback: SessionFeedback, exercise: RehabExercise): nu
     return phase?.holdSeconds ?? 0;
   }, [exercise.phases, feedback.phaseLabel]);
 
+  const engineProgress = feedback.holdProgress;
+  const hasEngineProgress = typeof engineProgress === "number";
+
   useEffect(() => {
+    if (hasEngineProgress) {
+      holdStarted.current = null;
+      return;
+    }
     if (feedback.status !== "holding" || holdSeconds <= 0) {
       holdStarted.current = null;
       setProgress(0);
@@ -155,8 +161,11 @@ function useHoldProgress(feedback: SessionFeedback, exercise: RehabExercise): nu
     };
     raf = requestAnimationFrame(tick);
     return () => cancelAnimationFrame(raf);
-  }, [feedback.status, feedback.phaseLabel, holdSeconds]);
+  }, [feedback.status, feedback.phaseLabel, holdSeconds, hasEngineProgress]);
 
+  if (hasEngineProgress) {
+    return Math.max(0, Math.min(1, engineProgress));
+  }
   return progress;
 }
 

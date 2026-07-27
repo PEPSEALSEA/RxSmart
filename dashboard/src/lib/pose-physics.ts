@@ -84,10 +84,12 @@ export interface SessionFeedback {
   deltaByJoint?: Partial<Record<PoseKey, number>>;
   leaderJoint?: PoseKey | string | null;
   imuDiagnostics?: ImuDiagnostics | null;
+  holdProgress?: number;
 }
 
 const SPRING_STIFFNESS = 52;
 const SPRING_DAMPING = 15;
+const HOLD_BREAK_GRACE_S = 0.35;
 
 export function createNeutralFrame(): SensorFrame {
   const { l_arm_upper, r_arm_upper, l_arm_lower, r_arm_lower, l_leg_upper, r_leg_upper, l_leg_lower, r_leg_lower } =
@@ -274,7 +276,7 @@ export function buildSessionFeedback(
   rep: number,
   totalReps: number,
   status: SessionStatus,
-  options?: { ignorePlane?: boolean },
+  options?: { ignorePlane?: boolean; holdProgress?: number },
 ): SessionFeedback {
   const jointFeedback = {} as Record<PoseKey, JointFeedback>;
   let activeCount = 0;
@@ -333,6 +335,7 @@ export function buildSessionFeedback(
     status,
     activeJoints: phase.activeJoints,
     jointFeedback,
+    holdProgress: Math.max(0, Math.min(1, options?.holdProgress ?? 0)),
   };
 }
 
@@ -341,7 +344,8 @@ export class RehabSessionEngine {
   private targets: ResolvedPose;
   private phaseIndex = 0;
   private rep = 1;
-  private phaseElapsed = 0;
+  private holdElapsed = 0;
+  private holdBreakElapsed = 0;
   private restRemaining = 0;
   private status: SessionStatus = "idle";
   private running = false;
@@ -373,7 +377,8 @@ export class RehabSessionEngine {
     this.status = "moving";
     this.phaseIndex = 0;
     this.rep = 1;
-    this.phaseElapsed = 0;
+    this.holdElapsed = 0;
+    this.holdBreakElapsed = 0;
     this.restRemaining = 0;
     this.targets = resolvePose(this.exercise.startPose, this.getPhase().targets);
   }
@@ -390,7 +395,8 @@ export class RehabSessionEngine {
     const phaseIndex = this.exercise.phases.findIndex((p) => p.label === feedback.phaseLabel);
     this.phaseIndex = phaseIndex >= 0 ? phaseIndex : 0;
     this.rep = Math.max(1, Math.min(feedback.rep || 1, this.exercise.reps));
-    this.phaseElapsed = 0;
+    this.holdElapsed = 0;
+    this.holdBreakElapsed = 0;
     this.restRemaining =
       feedback.status === "rest" ? Math.max(0.5, this.exercise.restBetweenReps) : 0;
     this.status = feedback.status;
@@ -412,7 +418,8 @@ export class RehabSessionEngine {
     this.stop();
     this.phaseIndex = 0;
     this.rep = 1;
-    this.phaseElapsed = 0;
+    this.holdElapsed = 0;
+    this.holdBreakElapsed = 0;
     this.restRemaining = 0;
   }
 
@@ -420,6 +427,11 @@ export class RehabSessionEngine {
     this.exercise = exercise;
     this.reset();
     this.targets = structuredClone(exercise.startPose);
+  }
+
+  private holdProgress(phase: ExercisePhase): number {
+    if (phase.holdSeconds <= 0) return 0;
+    return Math.max(0, Math.min(1, this.holdElapsed / phase.holdSeconds));
   }
 
   private feedback(
@@ -434,7 +446,10 @@ export class RehabSessionEngine {
       this.rep,
       this.exercise.reps,
       status,
-      { ignorePlane: this.ignorePlane },
+      {
+        ignorePlane: this.ignorePlane,
+        holdProgress: status === "holding" ? this.holdProgress(phase) : 0,
+      },
     );
   }
 
@@ -457,12 +472,28 @@ export class RehabSessionEngine {
     }
 
     this.targets = resolvePose(this.exercise.startPose, phase.targets);
-    this.phaseElapsed += dt;
     const atTarget = isAtTarget(frame, this.targets, phase.activeJoints);
 
     if (phase.holdSeconds > 0) {
-      this.status = atTarget ? "holding" : "moving";
-      if (atTarget && this.phaseElapsed >= phase.holdSeconds) this.advancePhase();
+      if (atTarget) {
+        this.holdBreakElapsed = 0;
+        this.holdElapsed += dt;
+        this.status = "holding";
+        if (this.holdElapsed >= phase.holdSeconds) this.advancePhase();
+      } else if (this.holdElapsed > 0) {
+        this.holdBreakElapsed += dt;
+        if (this.holdBreakElapsed < HOLD_BREAK_GRACE_S) {
+          this.status = "holding";
+        } else {
+          this.holdElapsed = 0;
+          this.holdBreakElapsed = 0;
+          this.status = "moving";
+        }
+      } else {
+        this.holdElapsed = 0;
+        this.holdBreakElapsed = 0;
+        this.status = "moving";
+      }
     } else if (atTarget) {
       this.advancePhase();
     } else {
@@ -473,7 +504,8 @@ export class RehabSessionEngine {
   }
 
   private advancePhase(): void {
-    this.phaseElapsed = 0;
+    this.holdElapsed = 0;
+    this.holdBreakElapsed = 0;
     const last = this.exercise.phases.length - 1;
 
     if (this.phaseIndex < last) {

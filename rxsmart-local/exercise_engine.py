@@ -357,6 +357,7 @@ def _is_at_target(
     active_joints: List[str],
     phase: ExercisePhase,
     score_plane: bool = True,
+    maintain_hold: bool = False,
 ) -> Tuple[bool, Optional[str], str]:
     for key in active_joints:
         fb = _evaluate_joint(
@@ -364,10 +365,15 @@ def _is_at_target(
         )
         if not fb["angleOk"]:
             return False, key, "delta_height"
+        if maintain_hold:
+            continue
         if not score_plane and not fb["accelOk"]:
             return False, key, "accel"
         if not score_plane and not fb["velocityOk"]:
             return False, key, "speed"
+
+    if maintain_hold:
+        return True, (active_joints[0] if active_joints else None), ""
 
     if not score_plane:
         ok, leader, reason = _imu_leadership(
@@ -393,6 +399,7 @@ class SessionFeedback:
     delta_by_joint: Dict[str, float] = field(default_factory=dict)
     leader_joint: Optional[str] = None
     imu_diagnostics: Optional[dict] = None
+    hold_progress: float = 0.0
 
     def to_dict(self) -> dict:
         out = {
@@ -406,6 +413,7 @@ class SessionFeedback:
             "jointFeedback": self.joint_feedback,
             "deltaByJoint": self.delta_by_joint,
             "leaderJoint": self.leader_joint,
+            "holdProgress": round(self.hold_progress, 4),
         }
         if self.imu_diagnostics is not None:
             out["imuDiagnostics"] = self.imu_diagnostics
@@ -424,6 +432,7 @@ def build_session_feedback(
     score_plane: bool = True,
     leader_joint: Optional[str] = None,
     fail_reason: str = "",
+    hold_progress: float = 0.0,
 ) -> SessionFeedback:
     joint_feedback: Dict[str, dict] = {}
     active_scores: List[float] = []
@@ -513,6 +522,7 @@ def build_session_feedback(
         delta_by_joint=delta_by_joint,
         leader_joint=leader_joint,
         imu_diagnostics=imu_diagnostics,
+        hold_progress=max(0.0, min(1.0, float(hold_progress))),
     )
 
 
@@ -525,6 +535,7 @@ class ExerciseSessionManager:
         self._phase_index = 0
         self._rep = 1
         self._hold_elapsed = 0.0
+        self._hold_break_elapsed = 0.0
         self._rest_remaining = 0.0
         self._status = "idle"
         self._running = False
@@ -558,6 +569,7 @@ class ExerciseSessionManager:
         self._phase_index = 0
         self._rep = 1
         self._hold_elapsed = 0.0
+        self._hold_break_elapsed = 0.0
         self._rest_remaining = 0.0
         self._targets = resolve_pose(self._exercise.start_pose, self._current_phase().targets)
         self._smoothed_score = None
@@ -575,6 +587,7 @@ class ExerciseSessionManager:
         self._phase_index = 0
         self._rep = 1
         self._hold_elapsed = 0.0
+        self._hold_break_elapsed = 0.0
         self._rest_remaining = 0.0
         self._smoothed_score = None
         self._last_tick_ts = None
@@ -597,8 +610,14 @@ class ExerciseSessionManager:
     def _current_phase(self) -> ExercisePhase:
         return self._exercise.phases[self._phase_index]
 
+    def _hold_progress(self, phase: ExercisePhase) -> float:
+        if phase.hold_seconds <= 0:
+            return 0.0
+        return max(0.0, min(1.0, self._hold_elapsed / phase.hold_seconds))
+
     def _advance_phase(self) -> None:
         self._hold_elapsed = 0.0
+        self._hold_break_elapsed = 0.0
         self._last_fail_reason = ""
         last = len(self._exercise.phases) - 1
         if self._phase_index < last:
@@ -655,33 +674,55 @@ class ExerciseSessionManager:
             return self._smooth(fb)
 
         self._targets = resolve_pose(self._exercise.start_pose, phase.targets)
+        maintaining = phase.hold_seconds > 0 and (
+            self._status == "holding" or self._hold_elapsed > 0.0
+        )
         at_target, leader, reason = _is_at_target(
             frame, self._targets, velocities, accelerations,
             phase.active_joints, phase, score_plane=score_plane,
+            maintain_hold=maintaining,
         )
         self._last_leader = leader
         self._last_fail_reason = "" if at_target else reason
 
         if phase.hold_seconds > 0:
+            grace = float(config.IMU_HOLD_BREAK_GRACE_S)
             if at_target:
+                self._hold_break_elapsed = 0.0
                 self._hold_elapsed += dt
                 self._status = "holding"
                 if self._hold_elapsed >= phase.hold_seconds:
                     self._advance_phase()
+            elif self._hold_elapsed > 0.0:
+                self._hold_break_elapsed += dt
+                if self._hold_break_elapsed < grace:
+                    self._status = "holding"
+                else:
+                    self._hold_elapsed = 0.0
+                    self._hold_break_elapsed = 0.0
+                    self._status = "moving"
             else:
                 self._hold_elapsed = 0.0
+                self._hold_break_elapsed = 0.0
                 self._status = "moving"
         elif at_target:
             self._advance_phase()
         else:
             self._status = "moving"
 
+        out_phase = self._current_phase()
+        hold_progress = (
+            self._hold_progress(out_phase)
+            if self._status == "holding"
+            else 0.0
+        )
         fb = build_session_feedback(
             frame, self._targets, velocities, accelerations,
-            phase, self._rep, self._exercise.reps, self._status,
+            out_phase, self._rep, self._exercise.reps, self._status,
             score_plane=score_plane,
             leader_joint=self._last_leader,
             fail_reason=self._last_fail_reason,
+            hold_progress=hold_progress,
         )
         return self._smooth(fb)
 
