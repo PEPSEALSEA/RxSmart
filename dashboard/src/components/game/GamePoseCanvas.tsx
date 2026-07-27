@@ -2,11 +2,11 @@
 
 import { Canvas } from "@react-three/fiber";
 import { ContactShadows, Environment, Grid, OrbitControls } from "@react-three/drei";
-import { Suspense, useEffect, useMemo } from "react";
+import { Suspense, useMemo } from "react";
+import * as THREE from "three";
 import { Mannequin } from "@/components/Mannequin";
 import { PoseKey } from "@/lib/pose";
 import { SensorFrame } from "@/lib/pose-physics";
-import { agentDbgLog } from "@/lib/debug-session-log";
 
 interface GamePoseCanvasProps {
   frame: SensorFrame;
@@ -159,25 +159,6 @@ function StageScene({
   imuMode = false,
   tension = "idle",
 }: GamePoseCanvasProps) {
-  // #region agent log
-  const hasGhost = Boolean(ghostFrame);
-  const activeCount = activeJoints?.length ?? 0;
-  useEffect(() => {
-    agentDbgLog({
-      hypothesisId: "E",
-      location: "GamePoseCanvas.tsx:glbMode",
-      message: "avatar using stable Mannequin",
-      data: {
-        glbMode: "mannequin",
-        tension,
-        hasGhost,
-        activeCount,
-        mirror: imuMode,
-      },
-    });
-  }, [tension, activeCount, hasGhost, imuMode]);
-  // #endregion
-
   return (
     <>
       <StageLights tension={tension} />
@@ -207,6 +188,9 @@ export default function GamePoseCanvas({
         shadows
         camera={{ position: [1.8, 1.35, 2.6], fov: 40 }}
         gl={{ antialias: true }}
+        onCreated={({ gl }) => {
+          gl.shadowMap.type = THREE.PCFShadowMap;
+        }}
       >
         <StageScene
           frame={frame}

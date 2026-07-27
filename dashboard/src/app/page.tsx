@@ -15,7 +15,7 @@ import {
   postBridgeSessionAction,
   selectBridgeExercise,
 } from "@/lib/local-bridge";
-import { getExerciseById, REHAB_EXERCISES, RehabExercise } from "@/lib/rehab-exercises";
+import { getExerciseById, REHAB_EXERCISES, RehabExercise, supportsImuExercise } from "@/lib/rehab-exercises";
 import {
   RehabSessionEngine,
   SessionFeedback,
@@ -24,8 +24,6 @@ import {
   createNeutralFrame,
   stepPhysics,
 } from "@/lib/pose-physics";
-import { agentDbgLog } from "@/lib/debug-session-log";
-
 type DataMode = "simulation" | "live" | "camera";
 
 const MODE_OPTIONS: { id: DataMode; label: string }[] = [
@@ -77,6 +75,11 @@ function makeIdleFeedback(exercise: RehabExercise, frame: SensorFrame, debugLive
 
 function isActiveSession(status: SessionFeedback["status"]): boolean {
   return status === "moving" || status === "holding" || status === "rest";
+}
+
+function normalizeExerciseForMode(exercise: RehabExercise, mode: DataMode): RehabExercise {
+  if (mode !== "live" || supportsImuExercise(exercise)) return exercise;
+  return REHAB_EXERCISES.find((item) => supportsImuExercise(item)) ?? exercise;
 }
 
 /** Keep LIVE control path briefly when joints/IoT blip so HUD is not torn down. */
@@ -208,30 +211,6 @@ export default function UserHome() {
   const useBridgeControls = dataMode === "camera" || stableLiveImuReady;
   const useExternalFrame = (dataMode === "camera" && bridgeConnected) || stableLiveImuReady;
 
-  // #region agent log
-  useEffect(() => {
-    agentDbgLog({
-      hypothesisId: "D",
-      location: "page.tsx:modeFlags",
-      message: "live/debug bridge flags changed",
-      data: {
-        dataMode,
-        bridgeConnected,
-        liveImuReady,
-        stableLiveImuReady,
-        liveDebugMode,
-        useBridgeControls,
-        useExternalFrame,
-        iot: bridgeState?.iot_status ?? null,
-        hasJoints: Boolean(bridgeState?.joints),
-        fbStatus: feedback.status,
-        failover: failoverSessionRef.current,
-      },
-      runId: "post-fix",
-    });
-  }, [dataMode, bridgeConnected, liveImuReady, stableLiveImuReady, liveDebugMode, useBridgeControls, useExternalFrame, bridgeState?.iot_status, bridgeState?.joints, feedback.status]);
-  // #endregion
-
   useEffect(() => {
     if (liveImuReady) hadLiveImuSessionRef.current = true;
   }, [liveImuReady]);
@@ -251,20 +230,6 @@ export default function UserHome() {
         ...next.messages.filter((m) => !m.startsWith("สัญญาณขาด")),
       ].slice(0, 3),
     });
-    // #region agent log
-    agentDbgLog({
-      hypothesisId: "D",
-      location: "page.tsx:resumeBrowserSession",
-      message: "resumed browser session after live drop",
-      data: {
-        reason,
-        status: last.status,
-        phaseLabel: last.phaseLabel,
-        rep: last.rep,
-      },
-      runId: "post-fix",
-    });
-    // #endregion
     return true;
   };
 
@@ -303,17 +268,18 @@ export default function UserHome() {
   }, [useExternalFrame]);
 
   const handleSelectExercise = (next: RehabExercise) => {
-    setExercise(next);
+    const selected = normalizeExerciseForMode(next, dataMode);
+    setExercise(selected);
 
     if (useBridgeControls) {
-      void selectBridgeExercise(loadBridgeUrl(), next.id).catch(() => undefined);
+      void selectBridgeExercise(loadBridgeUrl(), selected.id).catch(() => undefined);
       return;
     }
 
-    engineRef.current.setExercise(next);
+    engineRef.current.setExercise(selected);
     frameRef.current = createNeutralFrame();
     setFrame(createNeutralFrame());
-    setFeedback(makeIdleFeedback(next, createNeutralFrame(), liveDebugMode));
+    setFeedback(makeIdleFeedback(selected, createNeutralFrame(), liveDebugMode));
   };
 
   const handleStart = () => {
@@ -348,21 +314,25 @@ export default function UserHome() {
 
   const handleModeChange = (mode: DataMode) => {
     failoverSessionRef.current = false;
+    const nextExercise = normalizeExerciseForMode(exercise, mode);
     setDataMode(mode);
+    setExercise(nextExercise);
     if (mode === "simulation") {
       setBridgeConnected(false);
       setBridgeState(null);
       engineRef.current.setIgnorePlane(false);
       frameRef.current = createNeutralFrame();
       setFrame(createNeutralFrame());
-      setFeedback(makeIdleFeedback(exercise, createNeutralFrame(), false));
+      setFeedback(makeIdleFeedback(nextExercise, createNeutralFrame(), false));
+      engineRef.current.setExercise(nextExercise);
     } else if (mode === "live") {
       engineRef.current.setIgnorePlane(true);
       frameRef.current = createNeutralFrame();
       setFrame(createNeutralFrame());
-      setFeedback(makeIdleFeedback(exercise, createNeutralFrame(), true));
+      setFeedback(makeIdleFeedback(nextExercise, createNeutralFrame(), true));
       engineRef.current.reset();
-      engineRef.current.setExercise(exercise);
+      engineRef.current.setExercise(nextExercise);
+      void selectBridgeExercise(loadBridgeUrl(), nextExercise.id).catch(() => undefined);
     }
   };
 
@@ -377,7 +347,13 @@ export default function UserHome() {
     if (!state) return;
     if (state.exercise_id && state.exercise_id !== exercise.id) {
       const synced = getExerciseById(state.exercise_id);
-      if (synced) setExercise(synced);
+      if (synced) {
+        const nextExercise = normalizeExerciseForMode(synced, dataMode);
+        if (nextExercise.id !== synced.id && dataMode === "live") {
+          void selectBridgeExercise(loadBridgeUrl(), nextExercise.id).catch(() => undefined);
+        }
+        setExercise(nextExercise);
+      }
     }
     if (dataMode === "live") {
       const hasJoints = Boolean(state.joints);
@@ -413,26 +389,6 @@ export default function UserHome() {
   const handleBridgeConnectChange = (connected: boolean) => {
     const wasConnected = bridgeConnectedRef.current;
     bridgeConnectedRef.current = connected;
-    // #region agent log
-    agentDbgLog({
-      hypothesisId: "D",
-      location: "page.tsx:bridgeConnect",
-      message: "bridge connect change",
-      data: {
-        connected,
-        wasConnected,
-        dataMode,
-        prevFb: feedbackRef.current.status,
-        hadLiveImu: hadLiveImuSessionRef.current,
-        willResume:
-          !connected &&
-          wasConnected &&
-          dataMode === "live" &&
-          isActiveSession(feedbackRef.current.status),
-      },
-      runId: "post-fix",
-    });
-    // #endregion
     setBridgeConnected(connected);
     if (connected) return;
 

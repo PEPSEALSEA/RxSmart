@@ -2,6 +2,7 @@
 
 import { Canvas } from "@react-three/fiber";
 import { ContactShadows, Environment, Grid, OrbitControls } from "@react-three/drei";
+import * as THREE from "three";
 import { PoseKey } from "@/lib/pose";
 import { SensorFrame } from "@/lib/pose-physics";
 import { Mannequin } from "@/components/Mannequin";
@@ -14,7 +15,14 @@ interface PoseViewerProps {
 export default function PoseViewer({ frame, activeJoints = [] }: PoseViewerProps) {
   return (
     <div className="h-full min-h-[340px] w-full overflow-hidden rounded-2xl border border-neutral-200/80 bg-neutral-50">
-      <Canvas shadows camera={{ position: [1.7, 1.3, 2.5], fov: 40 }} gl={{ antialias: true, alpha: true }}>
+      <Canvas
+        shadows
+        camera={{ position: [1.7, 1.3, 2.5], fov: 40 }}
+        gl={{ antialias: true, alpha: true }}
+        onCreated={({ gl }) => {
+          gl.shadowMap.type = THREE.PCFShadowMap;
+        }}
+      >
         <color attach="background" args={["#fafafa"]} />
         <fog attach="fog" args={["#fafafa", 5, 11]} />
         <Environment preset="city" environmentIntensity={0.35} />

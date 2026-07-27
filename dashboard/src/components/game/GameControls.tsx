@@ -2,10 +2,8 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import { playSfx, unlockGameAudio } from "@/lib/game-audio";
-import { ExerciseCategory, RehabExercise, REHAB_EXERCISES } from "@/lib/rehab-exercises";
+import { ExerciseCategory, RehabExercise, REHAB_EXERCISES, supportsImuExercise } from "@/lib/rehab-exercises";
 import { SessionFeedback } from "@/lib/pose-physics";
-import { agentDbgLog } from "@/lib/debug-session-log";
-
 interface GameControlsProps {
   exercise: RehabExercise;
   feedback: SessionFeedback;
@@ -13,6 +11,7 @@ interface GameControlsProps {
   onStart: () => void;
   onStop: () => void;
   onReset: () => void;
+  imuMode?: boolean;
   sourceLabel?: string;
 }
 
@@ -48,6 +47,7 @@ export default function GameControls({
   onStart,
   onStop,
   onReset,
+  imuMode = false,
   sourceLabel,
 }: GameControlsProps) {
   const [category, setCategory] = useState<ExerciseCategory | "all">("all");
@@ -62,10 +62,11 @@ export default function GameControls({
 
   const filtered = useMemo(
     () =>
-      category === "all"
+      (category === "all"
         ? REHAB_EXERCISES
-        : REHAB_EXERCISES.filter((item) => item.category === category),
-    [category],
+        : REHAB_EXERCISES.filter((item) => item.category === category)
+      ).filter((item) => !imuMode || supportsImuExercise(item)),
+    [category, imuMode],
   );
 
   const phaseIndex = useMemo(() => {
@@ -79,24 +80,6 @@ export default function GameControls({
       setScreen("brief");
     }
   }, [isRunning, isComplete, feedback.status, countdown, screen]);
-
-  // #region agent log
-  useEffect(() => {
-    agentDbgLog({
-      hypothesisId: "A",
-      location: "GameControls.tsx:screen",
-      message: "controls screen vs feedback",
-      data: {
-        screen,
-        status: feedback.status,
-        isRunning,
-        isComplete,
-        phaseLabel: feedback.phaseLabel,
-        mismatch: screen === "play" && feedback.status === "idle",
-      },
-    });
-  }, [screen, feedback.status, feedback.phaseLabel, isRunning, isComplete]);
-  // #endregion
 
   useEffect(() => {
     if (countdown == null) return;
@@ -183,6 +166,11 @@ export default function GameControls({
             ))}
           </div>
           <div className="max-h-[28rem] space-y-2 overflow-y-auto pr-1">
+            {imuMode && (
+              <p className="rounded-xl border border-[var(--rx-line)] bg-[var(--rx-sand)] px-3 py-2 text-sm text-[var(--rx-ink-soft)]">
+                โหมด IMU แสดงเฉพาะท่าที่วัดได้จริงจากบอร์ดเดียวแกนเดียว
+              </p>
+            )}
             {filtered.map((item, i) => (
               <button
                 key={item.id}
