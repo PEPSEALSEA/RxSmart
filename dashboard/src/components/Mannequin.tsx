@@ -3,7 +3,7 @@
 import { useFrame } from "@react-three/fiber";
 import { RoundedBox } from "@react-three/drei";
 import { type RefObject, useMemo, useRef } from "react";
-import { Group, MeshPhysicalMaterial } from "three";
+import { Group, MeshPhysicalMaterial, DoubleSide } from "three";
 import { SEGMENT_LENGTHS } from "@/lib/biomechanics";
 import { applyElbowBend, computeSquatTransform, orientUpperLimb, ROOT_BASE_Y } from "@/lib/mannequin-rig";
 import { NEUTRAL_POSE, PoseKey, UPPER_KEYS, shortestPlaneDelta } from "@/lib/pose";
@@ -29,6 +29,7 @@ function useBodyMaterial(color: string, active: boolean) {
         clearcoatRoughness: 0.22,
         emissive: active ? ACTIVE : "#5aa897",
         emissiveIntensity: active ? 0.32 : 0.06,
+        side: DoubleSide,
       }),
     [color, active],
   );

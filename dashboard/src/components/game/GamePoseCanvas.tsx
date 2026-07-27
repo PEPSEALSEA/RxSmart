@@ -2,7 +2,7 @@
 
 import { Canvas } from "@react-three/fiber";
 import { ContactShadows, Environment, Grid, OrbitControls } from "@react-three/drei";
-import { Suspense, useEffect } from "react";
+import { Suspense, useEffect, useMemo } from "react";
 import { Mannequin } from "@/components/Mannequin";
 import { PoseKey } from "@/lib/pose";
 import { SensorFrame } from "@/lib/pose-physics";
@@ -15,6 +15,35 @@ interface GamePoseCanvasProps {
   showGhost?: boolean;
   imuMode?: boolean;
   tension?: "idle" | "move" | "hold";
+}
+
+const MIRROR_JOINT: Record<PoseKey, PoseKey> = {
+  l_arm_upper: "r_arm_upper",
+  r_arm_upper: "l_arm_upper",
+  l_arm_lower: "r_arm_lower",
+  r_arm_lower: "l_arm_lower",
+  l_leg_upper: "r_leg_upper",
+  r_leg_upper: "l_leg_upper",
+  l_leg_lower: "r_leg_lower",
+  r_leg_lower: "l_leg_lower",
+};
+
+function mirrorPoseFrame(frame: SensorFrame): SensorFrame {
+  return {
+    ...frame,
+    l_arm_upper: { ...frame.r_arm_upper },
+    r_arm_upper: { ...frame.l_arm_upper },
+    l_arm_lower: { ...frame.r_arm_lower },
+    r_arm_lower: { ...frame.l_arm_lower },
+    l_leg_upper: { ...frame.r_leg_upper },
+    r_leg_upper: { ...frame.l_leg_upper },
+    l_leg_lower: { ...frame.r_leg_lower },
+    r_leg_lower: { ...frame.l_leg_lower },
+  };
+}
+
+function mirrorJoints(joints: PoseKey[]): PoseKey[] {
+  return joints.map((key) => MIRROR_JOINT[key] ?? key);
 }
 
 function StageLights({ tension = "idle" }: { tension?: "idle" | "move" | "hold" }) {
@@ -90,20 +119,32 @@ function MannequinPair({
   ghostFrame,
   activeJoints,
   showGhost,
+  mirror,
 }: {
   frame: SensorFrame;
   ghostFrame?: SensorFrame | null;
   activeJoints?: PoseKey[];
   showGhost?: boolean;
+  mirror?: boolean;
 }) {
+  const player = useMemo(() => (mirror ? mirrorPoseFrame(frame) : frame), [frame, mirror]);
+  const ghost = useMemo(
+    () => (ghostFrame && mirror ? mirrorPoseFrame(ghostFrame) : ghostFrame),
+    [ghostFrame, mirror],
+  );
+  const joints = useMemo(
+    () => (mirror ? mirrorJoints(activeJoints ?? []) : (activeJoints ?? [])),
+    [activeJoints, mirror],
+  );
+
   return (
     <group>
       <group position={showGhost ? [-0.55, 0, 0] : [0, 0, 0]}>
-        <Mannequin frame={frame} activeJoints={activeJoints} />
+        <Mannequin frame={player} activeJoints={joints} />
       </group>
-      {showGhost && ghostFrame && (
+      {showGhost && ghost && (
         <group position={[0.7, 0, 0]}>
-          <Mannequin frame={ghostFrame} activeJoints={activeJoints} />
+          <Mannequin frame={ghost} activeJoints={joints} />
         </group>
       )}
     </group>
@@ -115,9 +156,12 @@ function StageScene({
   ghostFrame,
   activeJoints,
   showGhost,
+  imuMode = false,
   tension = "idle",
 }: GamePoseCanvasProps) {
   // #region agent log
+  const hasGhost = Boolean(ghostFrame);
+  const activeCount = activeJoints?.length ?? 0;
   useEffect(() => {
     agentDbgLog({
       hypothesisId: "E",
@@ -126,11 +170,12 @@ function StageScene({
       data: {
         glbMode: "mannequin",
         tension,
-        hasGhost: Boolean(ghostFrame),
-        activeCount: activeJoints?.length ?? 0,
+        hasGhost,
+        activeCount,
+        mirror: imuMode,
       },
     });
-  }, [tension, activeJoints, ghostFrame]);
+  }, [tension, activeCount, hasGhost, imuMode]);
   // #endregion
 
   return (
@@ -141,6 +186,7 @@ function StageScene({
         ghostFrame={ghostFrame}
         activeJoints={activeJoints}
         showGhost={showGhost}
+        mirror={imuMode}
       />
       <StageFloor />
     </>
@@ -155,7 +201,6 @@ export default function GamePoseCanvas({
   imuMode = false,
   tension = "idle",
 }: GamePoseCanvasProps) {
-  void imuMode;
   return (
     <div className="h-full min-h-[420px] w-full overflow-hidden bg-[#2a3544]">
       <Canvas
@@ -168,6 +213,7 @@ export default function GamePoseCanvas({
           ghostFrame={ghostFrame}
           activeJoints={activeJoints}
           showGhost={showGhost}
+          imuMode={imuMode}
           tension={tension}
         />
       </Canvas>
