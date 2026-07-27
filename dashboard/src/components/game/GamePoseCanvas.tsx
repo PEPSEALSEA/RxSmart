@@ -2,20 +2,11 @@
 
 import { Canvas } from "@react-three/fiber";
 import { ContactShadows, Environment, Grid, OrbitControls } from "@react-three/drei";
-import {
-  Component,
-  Suspense,
-  useEffect,
-  useState,
-  type ReactNode,
-} from "react";
-import { GlbAvatar } from "@/components/game/GlbAvatar";
+import { Suspense, useEffect } from "react";
 import { Mannequin } from "@/components/Mannequin";
 import { PoseKey } from "@/lib/pose";
 import { SensorFrame } from "@/lib/pose-physics";
 import { agentDbgLog } from "@/lib/debug-session-log";
-
-const GLB_LOAD_TIMEOUT_MS = 2500;
 
 interface GamePoseCanvasProps {
   frame: SensorFrame;
@@ -24,28 +15,6 @@ interface GamePoseCanvasProps {
   showGhost?: boolean;
   imuMode?: boolean;
   tension?: "idle" | "move" | "hold";
-}
-
-type GlbMode = "pending" | "ready" | "failed";
-
-class AvatarErrorBoundary extends Component<
-  { fallback: ReactNode; children: ReactNode; onError?: () => void },
-  { failed: boolean }
-> {
-  state = { failed: false };
-
-  static getDerivedStateFromError() {
-    return { failed: true };
-  }
-
-  componentDidCatch() {
-    this.props.onError?.();
-  }
-
-  render() {
-    if (this.state.failed) return this.props.fallback;
-    return this.props.children;
-  }
 }
 
 function StageLights({ tension = "idle" }: { tension?: "idle" | "move" | "hold" }) {
@@ -57,7 +26,9 @@ function StageLights({ tension = "idle" }: { tension?: "idle" | "move" | "hold" 
     <>
       <color attach="background" args={["#2a3544"]} />
       <fog attach="fog" args={["#2a3544", 11, 24]} />
-      <Environment preset="warehouse" environmentIntensity={0.42} />
+      <Suspense fallback={null}>
+        <Environment preset="warehouse" environmentIntensity={0.42} />
+      </Suspense>
       <ambientLight intensity={0.72} />
       <directionalLight
         position={[3, 6, 2]}
@@ -139,113 +110,38 @@ function MannequinPair({
   );
 }
 
-function GlbPair({
-  frame,
-  ghostFrame,
-  activeJoints,
-  showGhost,
-  imuMode,
-  onReady,
-  onError,
-}: {
-  frame: SensorFrame;
-  ghostFrame?: SensorFrame | null;
-  activeJoints?: PoseKey[];
-  showGhost?: boolean;
-  imuMode?: boolean;
-  onReady: () => void;
-  onError: () => void;
-}) {
-  return (
-    <group>
-      <GlbAvatar
-        frame={frame}
-        activeJoints={activeJoints}
-        position={showGhost ? [-0.55, 0, 0] : [0, 0, 0]}
-        scale={1}
-        imuMode={imuMode}
-        onReady={onReady}
-        onError={onError}
-      />
-      {showGhost && ghostFrame && (
-        <GlbAvatar
-          frame={ghostFrame}
-          activeJoints={activeJoints}
-          opacity={0.48}
-          tint="#7ec8b8"
-          ghost
-          position={[0.7, 0, 0]}
-          scale={1}
-          imuMode={imuMode}
-        />
-      )}
-    </group>
-  );
-}
-
 function StageScene({
   frame,
   ghostFrame,
   activeJoints,
   showGhost,
-  imuMode = false,
   tension = "idle",
 }: GamePoseCanvasProps) {
-  const [glbMode, setGlbMode] = useState<GlbMode>("pending");
-
-  useEffect(() => {
-    const timer = window.setTimeout(() => {
-      setGlbMode((mode) => (mode === "pending" ? "failed" : mode));
-    }, GLB_LOAD_TIMEOUT_MS);
-    return () => window.clearTimeout(timer);
-  }, []);
-
-  const markReady = () => setGlbMode((mode) => (mode === "failed" ? mode : "ready"));
-  const markFailed = () => setGlbMode("failed");
-
   // #region agent log
   useEffect(() => {
     agentDbgLog({
       hypothesisId: "E",
       location: "GamePoseCanvas.tsx:glbMode",
-      message: "avatar glbMode changed",
+      message: "avatar using stable Mannequin",
       data: {
-        glbMode,
+        glbMode: "mannequin",
         tension,
-        imuMode,
         hasGhost: Boolean(ghostFrame),
         activeCount: activeJoints?.length ?? 0,
       },
     });
-  }, [glbMode, tension, imuMode, activeJoints]);
+  }, [tension, activeJoints, ghostFrame]);
   // #endregion
 
   return (
     <>
       <StageLights tension={tension} />
-      {glbMode !== "ready" && (
-        <MannequinPair
-          frame={frame}
-          ghostFrame={ghostFrame}
-          activeJoints={activeJoints}
-          showGhost={showGhost}
-        />
-      )}
-      {glbMode !== "failed" && (
-        <AvatarErrorBoundary fallback={null} onError={markFailed}>
-          <Suspense fallback={null}>
-            <GlbPair
-              frame={frame}
-              ghostFrame={ghostFrame}
-              activeJoints={activeJoints}
-              showGhost={showGhost}
-              imuMode={imuMode}
-              onReady={markReady}
-              onError={markFailed}
-            />
-          </Suspense>
-        </AvatarErrorBoundary>
-      )}
+      <MannequinPair
+        frame={frame}
+        ghostFrame={ghostFrame}
+        activeJoints={activeJoints}
+        showGhost={showGhost}
+      />
       <StageFloor />
     </>
   );
@@ -259,6 +155,7 @@ export default function GamePoseCanvas({
   imuMode = false,
   tension = "idle",
 }: GamePoseCanvasProps) {
+  void imuMode;
   return (
     <div className="h-full min-h-[420px] w-full overflow-hidden bg-[#2a3544]">
       <Canvas
@@ -271,7 +168,6 @@ export default function GamePoseCanvas({
           ghostFrame={ghostFrame}
           activeJoints={activeJoints}
           showGhost={showGhost}
-          imuMode={imuMode}
           tension={tension}
         />
       </Canvas>

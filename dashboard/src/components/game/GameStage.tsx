@@ -268,14 +268,6 @@ export default function GameStage({
               holdProgress={holdProgress}
             />
           )}
-          <div className="pointer-events-none absolute bottom-4 left-4 z-20 flex flex-wrap gap-2 text-sm font-semibold">
-            <span className="rounded-xl border-2 border-[var(--rx-line)] bg-[var(--rx-sand)] px-3 py-1.5 text-[var(--rx-ink)]">
-              คุณ
-            </span>
-            <span className="rounded-xl border-2 border-[var(--rx-focus)] bg-[var(--rx-focus-soft)] px-3 py-1.5 text-[var(--rx-focus)]">
-              โค้ช · ท่าเป้าหมาย
-            </span>
-          </div>
         </div>
 
         <aside className="border-t border-[var(--rx-line)] bg-[var(--rx-sand)] p-5 lg:col-span-5 xl:col-span-4 lg:border-l lg:border-t-0">

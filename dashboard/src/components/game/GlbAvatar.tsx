@@ -84,13 +84,19 @@ export function GlbAvatar({
 
   useEffect(() => {
     try {
+      clone.updateMatrixWorld(true);
       bonesRef.current = indexMixamoBones(clone);
       bindRef.current = captureBindPose(bonesRef.current);
       const hips = bonesRef.current.get("mixamorigHips");
-      hipsBindY.current = hips?.position.y ?? 0;
+      const meshes = collectSkinnedMeshes(clone);
+
+      if (!hips || meshes.length === 0) {
+        throw new Error("athlete.glb missing Mixamo hips or skinned meshes");
+      }
+
+      hipsBindY.current = hips.position.y;
       setAutoScale(heightScaleFromObject(clone));
 
-      const meshes = collectSkinnedMeshes(clone);
       for (const mesh of meshes) {
         const mats = Array.isArray(mesh.material) ? mesh.material : [mesh.material];
         mesh.material = mats.map((mat) => {
@@ -110,6 +116,9 @@ export function GlbAvatar({
         mesh.castShadow = !ghost;
         mesh.receiveShadow = !ghost;
         mesh.visible = true;
+        // Skinned bind-pose bounds often lie outside the frustum after posing.
+        mesh.frustumCulled = false;
+        mesh.skeleton?.update();
       }
 
       if (!readySent.current) {
