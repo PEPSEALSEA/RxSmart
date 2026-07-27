@@ -242,18 +242,43 @@ class IoTReceiver:
         ser.baudrate = config.SERIAL_BAUDRATE
         ser.timeout = config.SERIAL_TIMEOUT
         ser.open()
-        # Assert DTR/RTS so Pico CDC streams (Serial Monitor does this).
+        try:
+            ser.dtr = False
+            ser.rts = False
+        except Exception:
+            pass
+        time.sleep(0.08)
         try:
             ser.dtr = True
             ser.rts = True
         except Exception:
             pass
-        time.sleep(0.15)
+        time.sleep(1.25)
         try:
             ser.reset_input_buffer()
         except Exception:
             pass
         return ser
+
+    def _soft_wake_serial(self, ser) -> None:
+        try:
+            ser.dtr = False
+            ser.rts = False
+        except Exception:
+            pass
+        time.sleep(0.12)
+        try:
+            ser.dtr = True
+            ser.rts = True
+        except Exception:
+            pass
+        time.sleep(1.25)
+        try:
+            ser.reset_input_buffer()
+        except Exception:
+            pass
+        self._dbg_block = None
+        self._serial_opened_at = time.time()
 
     def _store_joint(self, jd: JointData) -> None:
         """Keep last full sensor list when a partial DBG frame arrives (angles before CH lines)."""
@@ -275,11 +300,13 @@ class IoTReceiver:
             return
 
         ser = None
-        no_packet_grace_s = max(10.0, config.IOT_WATCHDOG_TIMEOUT_S * 2)
+        # Pico setup can spend ~30s on WiFi before old firmwares emit [DBG].
+        no_packet_grace_s = max(45.0, config.IOT_WATCHDOG_TIMEOUT_S * 5)
         with self._port_lock:
             if self._port_locked:
-                no_packet_grace_s = max(no_packet_grace_s, 15.0)
+                no_packet_grace_s = max(no_packet_grace_s, 45.0)
         raw_log_left = 12
+        no_telem_streak = 0
         while self._running:
             if self._take_serial_reconnect():
                 if ser is not None:
@@ -291,6 +318,8 @@ class IoTReceiver:
                 self._status = ConnectionStatus.DISCONNECTED
                 self._reset_rx_watchdog()
                 raw_log_left = 12
+                no_telem_streak = 0
+                time.sleep(1.5)
 
             # --- Establish / re-establish connection ---
             if ser is None or not ser.is_open:
@@ -319,6 +348,16 @@ class IoTReceiver:
                 and self._serial_opened_at > 0
                 and time.time() - self._serial_opened_at > no_packet_grace_s
             ):
+                no_telem_streak += 1
+                if no_telem_streak <= 2 and ser is not None:
+                    print(
+                        f"[IoTReceiver] No [DBG] on {self._current_serial_port()} "
+                        f"for {no_packet_grace_s:.0f}s - soft wake ({no_telem_streak}/2)..."
+                    )
+                    self._status = ConnectionStatus.TIMEOUT
+                    self._soft_wake_serial(ser)
+                    continue
+
                 print(
                     f"[IoTReceiver] No [DBG] telemetry on {self._current_serial_port()} "
                     f"for {no_packet_grace_s:.0f}s - reconnecting..."
@@ -331,7 +370,7 @@ class IoTReceiver:
                 self._status = ConnectionStatus.TIMEOUT
                 self._try_auto_repick_port("no_telemetry")
                 self._reset_rx_watchdog()
-                time.sleep(1.0)
+                time.sleep(min(2.0 * no_telem_streak, 8.0))
                 continue
 
             # Had packets, then silence past watchdog -> drop and reconnect (don't stick on TIMEOUT)
@@ -351,7 +390,8 @@ class IoTReceiver:
                 self._status = ConnectionStatus.TIMEOUT
                 self._try_auto_repick_port("telemetry_silence")
                 self._reset_rx_watchdog()
-                time.sleep(1.0)
+                no_telem_streak = 0
+                time.sleep(2.0)
                 continue
 
             # --- Read one line ---
@@ -373,6 +413,7 @@ class IoTReceiver:
                     self._record_packet()
                     self._status = ConnectionStatus.CONNECTED
                     self._store_joint(jd)
+                    no_telem_streak = 0
 
             except Exception as exc:
                 print(f"[IoTReceiver] Serial read error: {exc}. Reconnecting...")
@@ -383,7 +424,7 @@ class IoTReceiver:
                     pass
                 ser = None
                 self._reset_rx_watchdog()
-                time.sleep(1.0)
+                time.sleep(1.5)
 
         if ser and ser.is_open:
             ser.close()

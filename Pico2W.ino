@@ -500,6 +500,13 @@ void setup() {
 
   setupBleDebug();
 
+  initializeSensors();
+  sampleSensors(millis(), false);
+  if (ENABLE_REALTIME_SERIAL_DEBUG) {
+    lastSerialDebugMs = millis();
+    printRealtimeDebug(millis());
+  }
+
   if (!hasCreds) {
     Serial.println("No WiFi credentials found. Starting Captive Portal.");
     inAPMode = true;
@@ -529,6 +536,11 @@ void setup() {
     delay(1000);
     Serial.print(".");
     attempts++;
+    sampleSensors(millis(), false);
+    if (ENABLE_REALTIME_SERIAL_DEBUG) {
+      lastSerialDebugMs = millis();
+      printRealtimeDebug(millis());
+    }
   }
 
   if (WiFi.status() == WL_CONNECTED) {
@@ -538,7 +550,6 @@ void setup() {
 
     // เมื่อต่อ WiFi ได้ ให้เช็ค Internet ทันที
     if (checkInternetWatchdog()) {
-      initializeSensors();
       sampleSensors(millis(), false);
       ensureDeviceRegistered();
       sendTelemetryData();
@@ -567,7 +578,15 @@ void loop() {
     dnsServer.processNextRequest();
     server.handleClient();
 
-    // กดปุ่ม Mode ค้าง 3 วินาทีขณะใช้งานปกติ (เมื่ออยู่ใน AP mode อยู่แล้วไม่ต้องทำอะไร)
+    unsigned long apNow = millis();
+    if (apNow - lastMotionSampleMs >= MOTION_SAMPLE_INTERVAL_MS) {
+      sampleSensors(apNow, calibrationDone);
+      lastMotionSampleMs = apNow;
+    }
+    if (ENABLE_REALTIME_SERIAL_DEBUG && apNow - lastSerialDebugMs >= SERIAL_DEBUG_INTERVAL_MS) {
+      lastSerialDebugMs = apNow;
+      printRealtimeDebug(apNow);
+    }
   } else {
     if (sessionState == SESSION_EXERCISE && millis() - lastMotionSampleMs >= MOTION_SAMPLE_INTERVAL_MS) {
       updateMotionModel();
@@ -1227,6 +1246,10 @@ void checkDeviceCommand() {
 }
 
 void initializeSensors() {
+  static bool sensorsReady = false;
+  if (sensorsReady) {
+    return;
+  }
   if (USE_MPU6050_TEST) {
     bool configured = configureI2CForMPU(Wire, I2C_SDA_PIN, I2C_SCL_PIN);
     if (!configured) {
@@ -1245,6 +1268,7 @@ void initializeSensors() {
           sensors[i].muxAddr, sensors[i].pin, sensors[i].key,
           mpuPresent[i] ? "OK" : "MISS");
       }
+      sensorsReady = true;
     }
     return;
   }
