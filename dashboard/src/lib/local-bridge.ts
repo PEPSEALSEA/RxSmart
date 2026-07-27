@@ -85,6 +85,7 @@ export type LocalJointData = {
     shoulder_right?: number;
     hip_left?: number;
     hip_right?: number;
+    center?: number;
   };
 };
 
@@ -218,6 +219,7 @@ export type BridgeLiveTelemetry = {
     shoulder_right?: number;
     hip_left?: number;
     hip_right?: number;
+    center?: number;
   };
 };
 

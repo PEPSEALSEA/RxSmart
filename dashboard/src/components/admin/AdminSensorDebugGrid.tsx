@@ -4,10 +4,11 @@ import FadeIn from "@/components/ui/FadeIn";
 import {
   FIRMWARE_SENSOR_TO_POSE,
   DEFAULT_CHANNEL_TO_POSE,
-  LOWER_KEYS,
+  MAPPING_LABELS,
+  MappingKey,
+  SENSOR_COUNT,
+  isPoseKey,
   POSE_LABELS,
-  PoseKey,
-  UPPER_KEYS,
 } from "@/lib/pose";
 
 export type RawSensor = {
@@ -23,7 +24,7 @@ interface AdminSensorDebugGridProps {
   sensors?: RawSensor[];
 }
 
-const CHANNEL_TO_POSE: Record<number, PoseKey> = { ...DEFAULT_CHANNEL_TO_POSE };
+const CHANNEL_TO_POSE: Record<number, MappingKey> = { ...DEFAULT_CHANNEL_TO_POSE };
 
 function toAngle(calibrated: number | undefined): string {
   if (typeof calibrated !== "number" || Number.isNaN(calibrated)) return "—";
@@ -48,10 +49,13 @@ function findSensorForChannel(sensors: RawSensor[] | undefined, channel: number)
 export default function AdminSensorDebugGrid({ sensors }: AdminSensorDebugGridProps) {
   return (
     <div className="grid grid-cols-2 gap-2 lg:grid-cols-4">
-      {Array.from({ length: 8 }, (_, channel) => {
+      {Array.from({ length: SENSOR_COUNT }, (_, channel) => {
         const sensor = findSensorForChannel(sensors, channel);
         const poseKey = CHANNEL_TO_POSE[channel];
         const hasData = Boolean(sensor?.key);
+        const label = isPoseKey(poseKey)
+          ? POSE_LABELS[poseKey].split(" (")[0]
+          : MAPPING_LABELS[poseKey];
 
         return (
           <FadeIn key={channel} delay={channel * 30}>
@@ -71,9 +75,7 @@ export default function AdminSensorDebugGrid({ sensors }: AdminSensorDebugGridPr
                 )}
               </div>
 
-              <p className="mt-1 text-xs font-medium text-neutral-800">
-                {POSE_LABELS[poseKey].split(" (")[0]}
-              </p>
+              <p className="mt-1 text-xs font-medium text-neutral-800">{label}</p>
               <p className="mt-0.5 font-mono text-[10px] text-neutral-400">{sensor?.key || "empty"}</p>
 
               <dl className="mt-2 space-y-1 font-mono text-[10px] tabular-nums text-neutral-600">

@@ -1,0 +1,24 @@
+---
+description: Firmware target is Pico 2 W only — never generate or maintain ESP32 firmware
+alwaysApply: true
+---
+
+# Board target: Raspberry Pi Pico 2 W only
+
+This project **does not use ESP32**. Hardware and firmware target is **Raspberry Pi Pico 2 W (RP2350)** only.
+
+ESP32 firmware and wiring docs were removed (`ESP32DevKitV1-ArduinoIDE-Code.ino`, `hardware_connection.txt`).
+
+## Do
+
+- Edit / generate firmware only in `Pico2W.ino`
+- Use Pico 2 W APIs (`LittleFS`, `rp2040.restart()`, `TwoWire` pin remapping, etc.)
+- Wire docs: `hardware_connection_pico2w.txt`
+- OTA / telemetry platform string: `pico2w`
+- Sensor count: **9** MPUs (`SENSOR_COUNT = 9`) — 8 limbs on TCA9548A `0x70` CH0–7 + `center` on TCA9548A `0x71` CH0
+
+## Do not
+
+- Do **not** create ESP32 firmware or re-add ESP32 wiring docs
+- Do **not** ask whether to also produce an ESP32 version
+- Do **not** use ESP32-only APIs (`Preferences`/NVS, ESP-IDF headers) in new firmware code

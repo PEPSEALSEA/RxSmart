@@ -22,8 +22,8 @@ export function inferDevicePlatform(deviceId: string, explicit?: string): Device
 
   const id = deviceId.toUpperCase();
   if (id.startsWith("PICO2W_")) return "pico2w";
-  if (id.startsWith("ESP32_")) return "esp32";
-  return "esp32";
+  if (id.startsWith("ESP32_")) return "esp32"; // legacy rows only
+  return "pico2w";
 }
 
 export function getDevicePlatformLabel(platform: DevicePlatform): string {

@@ -55,7 +55,7 @@ SERIAL_PORT: str = "auto"
 SERIAL_PORT_FALLBACK: str = "COM3"
 SERIAL_BAUDRATE: int = 115200
 SERIAL_TIMEOUT: float = 2.0
-IOT_WATCHDOG_TIMEOUT_S: float = 3.0
+IOT_WATCHDOG_TIMEOUT_S: float = 8.0
 
 # HTTP poll settings (used when IOT_TRANSPORT = "http")
 API_BASE_URL: str = "https://rxsmart-worker.sealseapep.workers.dev"

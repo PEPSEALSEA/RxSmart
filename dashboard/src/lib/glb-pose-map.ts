@@ -91,6 +91,8 @@ export function lerpFrames(a: SensorFrame, b: SensorFrame, t: number): SensorFra
       rootY: (a.body?.rootY ?? ROOT_BASE_Y) + ((b.body?.rootY ?? ROOT_BASE_Y) - (a.body?.rootY ?? ROOT_BASE_Y)) * u,
       rootZ: (a.body?.rootZ ?? 0) + ((b.body?.rootZ ?? 0) - (a.body?.rootZ ?? 0)) * u,
       mode: b.body?.mode ?? a.body?.mode ?? "standing",
+      torsoTilt:
+        (a.body?.torsoTilt ?? 0) + ((b.body?.torsoTilt ?? 0) - (a.body?.torsoTilt ?? 0)) * u,
     },
   };
 }
@@ -139,7 +141,8 @@ export function applyFrameToMixamoBones(
   if (spine) {
     const base = bind.get(MIXAMO_BONES.spine);
     if (base) {
-      _euler.set(squat.pelvisLeanRad * 0.65 + squat.headCounterLeanRad * 0.25, 0, 0);
+      const imuLean = Math.min(45, Math.max(0, frame.body?.torsoTilt ?? 0)) * DEG * 0.55;
+      _euler.set(squat.pelvisLeanRad * 0.65 + squat.headCounterLeanRad * 0.25 + imuLean, 0, 0);
       _delta.setFromEuler(_euler);
       spine.quaternion.copy(base).multiply(_delta);
     }

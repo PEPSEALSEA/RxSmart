@@ -30,6 +30,7 @@ class RehabExercise:
     name: str
     description: str
     category: str
+    support: str
     start_pose: Dict[str, Dict[str, float]]
     phases: List[ExercisePhase]
     reps: int
@@ -46,6 +47,7 @@ REHAB_EXERCISES: List[RehabExercise] = [
         name="ยกแขนซ้ายไปข้างหน้า",
         description="Shoulder flexion — elevation + plane ไปข้างหน้า",
         category="arm",
+        support="both",
         start_pose=_rest(),
         phases=[
             ExercisePhase(
@@ -71,6 +73,7 @@ REHAB_EXERCISES: List[RehabExercise] = [
         name="ยกแขนซ้ายไปข้างๆ (T-pose)",
         description="Abduction — ยกแขนไปข้าง ใช้ plane ข้างตัว",
         category="arm",
+        support="camera_only",
         start_pose=_rest(),
         phases=[
             ExercisePhase(
@@ -96,6 +99,7 @@ REHAB_EXERCISES: List[RehabExercise] = [
         name="หมุนแขนซ้าย (ท่าว่ายน้ำ)",
         description="Freestyle — วงจรแขนรอบนอกลำตัว (entry → pull → recovery)",
         category="arm",
+        support="camera_only",
         start_pose=_rest(),
         phases=[
             ExercisePhase(
@@ -131,6 +135,7 @@ REHAB_EXERCISES: List[RehabExercise] = [
         name="หมุนแขนขวา (ท่าว่ายน้ำ)",
         description="Freestyle แขนขวา — วงจรรอบนอกลำตัว",
         category="arm",
+        support="camera_only",
         start_pose=_rest(),
         phases=[
             ExercisePhase(
@@ -166,6 +171,7 @@ REHAB_EXERCISES: List[RehabExercise] = [
         name="งอข้อศอกซ้าย",
         description="Elbow flexion — ข้อศอกงอเข้าหาตัว",
         category="arm",
+        support="both",
         start_pose=resolve_pose(_rest(), {"l_arm_upper": {"elevation": 25, "plane": 90}}),
         phases=[
             ExercisePhase(
@@ -191,6 +197,7 @@ REHAB_EXERCISES: List[RehabExercise] = [
         name="ยกขาซ้ายไปข้างหน้า",
         description="Hip flexion — สะโพกยกขาไปหน้า",
         category="leg",
+        support="both",
         start_pose=_rest(),
         phases=[
             ExercisePhase(
@@ -216,6 +223,7 @@ REHAB_EXERCISES: List[RehabExercise] = [
         name="ยกขาซ้ายไปข้าง",
         description="Hip abduction — ยกขาไปข้าง (plane ข้างตัว)",
         category="leg",
+        support="camera_only",
         start_pose=_rest(),
         phases=[
             ExercisePhase(
@@ -241,6 +249,7 @@ REHAB_EXERCISES: List[RehabExercise] = [
         name="นั่งยอง",
         description="งอเข่าทั้งสองข้าง — sensor ขา 4 จุด",
         category="bilateral",
+        support="both",
         start_pose=_rest(),
         phases=[
             ExercisePhase(
@@ -278,6 +287,7 @@ REHAB_EXERCISES: List[RehabExercise] = [
         name="ยกแขนสองข้าง",
         description="ยกแขนซ้าย-ขวาไปข้างหน้าพร้อมกัน",
         category="bilateral",
+        support="both",
         start_pose=_rest(),
         phases=[
             ExercisePhase(
@@ -306,6 +316,10 @@ def get_exercise_by_id(exercise_id: str) -> Optional[RehabExercise]:
     return next((e for e in REHAB_EXERCISES if e.id == exercise_id), None)
 
 
+def supports_imu_exercise(exercise: RehabExercise) -> bool:
+    return exercise.support == "both"
+
+
 def exercise_catalog() -> List[dict]:
     """Lightweight catalog payload for the dashboard picker UI."""
     return [
@@ -314,6 +328,7 @@ def exercise_catalog() -> List[dict]:
             "name": e.name,
             "description": e.description,
             "category": e.category,
+            "support": e.support,
             "reps": e.reps,
         }
         for e in REHAB_EXERCISES

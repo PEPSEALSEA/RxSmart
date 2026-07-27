@@ -3,12 +3,13 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { postSensorMappingAction } from "@/lib/local-bridge";
 import type { SensorChannelReading } from "@/lib/sensor-mapping";
-import { POSE_KEYS, POSE_LABELS, PoseKey, DEFAULT_CHANNEL_TO_POSE } from "@/lib/pose";
+import { POSE_KEYS, POSE_LABELS, PoseKey, DEFAULT_CHANNEL_TO_POSE, CENTER_CHANNEL, CENTER_KEY, LIMB_CHANNEL_COUNT, SENSOR_COUNT, MAPPING_LABELS, isPoseKey } from "@/lib/pose";
 import {
   CALIBRATION_STEP_LABELS,
   CALIBRATION_STEP_SAVE_HINTS,
   ChannelMap,
   channelMapToRecord,
+  ensureCenterInMap,
   parseChannelMap,
   POSE_PROFILE_LABELS,
   saveStoredChannelMap,
@@ -74,6 +75,7 @@ function buildChannelMapFromLocks(
   const byStep: Record<string, number[]> = {};
   for (const [chStr, info] of Object.entries(locked)) {
     const ch = Number(chStr);
+    if (ch === CENTER_CHANNEL) continue;
     if (!STEP_TO_PAIR[info.step]) continue;
     (byStep[info.step] ??= []).push(ch);
   }
@@ -94,8 +96,8 @@ function buildChannelMapFromLocks(
     usedKeys.add(pair.right);
   }
 
-  if (usedKeys.size !== 8) return null;
-  return map;
+  if (usedKeys.size !== LIMB_CHANNEL_COUNT) return null;
+  return ensureCenterInMap(map);
 }
 
 const ACTIVE_DELTA_DEG = 6;
@@ -106,15 +108,15 @@ function degreesFromSources(
   sensors: SensorChannelReading[] | null | undefined,
   channelDegrees: number[] | null | undefined,
 ): number[] {
-  const out = Array.from({ length: 8 }, () => 0);
-  if (channelDegrees && channelDegrees.length >= 8) {
-    for (let i = 0; i < 8; i++) out[i] = channelDegrees[i] ?? 0;
+  const out = Array.from({ length: SENSOR_COUNT }, () => 0);
+  if (channelDegrees && channelDegrees.length >= LIMB_CHANNEL_COUNT) {
+    for (let i = 0; i < SENSOR_COUNT; i++) out[i] = channelDegrees[i] ?? 0;
     return out;
   }
   if (sensors?.length) {
     for (const s of sensors) {
       const ch = typeof s.channel === "number" ? s.channel : -1;
-      if (ch < 0 || ch > 7) continue;
+      if (ch < 0 || ch >= SENSOR_COUNT) continue;
       if (typeof s.degrees === "number") out[ch] = s.degrees;
     }
   }
@@ -128,10 +130,16 @@ function pickTopFree(
 ): number[] {
   return peakDeltas
     .map((d, i) => ({ i, d }))
-    .filter((r) => !locked[r.i] && r.d >= ACTIVE_DELTA_DEG)
+    .filter((r) => r.i < LIMB_CHANNEL_COUNT && !locked[r.i] && r.d >= ACTIVE_DELTA_DEG)
     .sort((a, b) => b.d - a.d)
     .slice(0, topN)
     .map((r) => r.i);
+}
+
+function centerLocked(): Record<number, LockedInfo> {
+  return {
+    [CENTER_CHANNEL]: { step: "center", label: "ลำตัว / center (MPU #9)" },
+  };
 }
 
 function ChannelActivityBars({
@@ -154,49 +162,82 @@ function ChannelActivityBars({
   return (
     <div className="space-y-2">
       <p className="cohere-mono-label text-[10px]">
-        Live CH0–CH7 · top {TOP_N} จากช่องที่ยังไม่ล็อก (Δ≥{ACTIVE_DELTA_DEG}°) · ล็อกแล้ว =
-        ใช้ไปแล้ว
+        Live CH0–CH8 · top {TOP_N} จากช่องแขนขาที่ยังไม่ล็อก (Δ≥{ACTIVE_DELTA_DEG}°) · CH8 =
+        center (อ้างอิงลำตัว) · ล็อกแล้ว = ใช้ไปแล้ว
       </p>
       {degrees.map((deg, ch) => {
         const lock = locked[ch];
+        const isCenter = ch === CENTER_CHANNEL;
         const delta = peakDeltas[ch] ?? 0;
         const isTop = !lock && topSet.has(ch);
-        const active = !lock && delta >= ACTIVE_DELTA_DEG;
-        const width = lock ? 0 : Math.min(100, (delta / BAR_FULL_SCALE_DEG) * 100);
-        const label = POSE_LABELS[map[ch]] ?? map[ch] ?? "—";
+        const active = (!lock || isCenter) && delta >= ACTIVE_DELTA_DEG;
+        const width = lock && !isCenter ? 0 : Math.min(100, (delta / BAR_FULL_SCALE_DEG) * 100);
+        const mapped = map[ch];
+        const label =
+          mapped === CENTER_KEY
+            ? MAPPING_LABELS.center
+            : mapped && isPoseKey(mapped)
+              ? POSE_LABELS[mapped]
+              : mapped ?? "—";
 
         return (
           <div
             key={ch}
             className={`rounded-cohere-sm border px-3 py-2.5 ${
-              lock
-                ? "border-neutral-300 bg-neutral-200/90 opacity-90"
-                : isTop
-                  ? "border-cohere-primary bg-cohere-pale-green"
-                  : active
-                    ? "border-cohere-hairline bg-cohere-primary/5"
-                    : "border-cohere-hairline bg-white"
+              isCenter
+                ? active
+                  ? "border-cohere-primary/40 bg-cohere-pale-green/40"
+                  : "border-neutral-300 bg-neutral-100/80"
+                : lock
+                  ? "border-neutral-300 bg-neutral-200/90 opacity-90"
+                  : isTop
+                    ? "border-cohere-primary bg-cohere-pale-green"
+                    : active
+                      ? "border-cohere-hairline bg-cohere-primary/5"
+                      : "border-cohere-hairline bg-white"
             }`}
           >
             <div className="flex items-center justify-between gap-2 text-xs">
-              <span className={`font-mono-label ${lock ? "text-neutral-500" : "text-cohere-ink"}`}>
+              <span className={`font-mono-label ${lock && !isCenter ? "text-neutral-500" : "text-cohere-ink"}`}>
                 CH{ch}
-                {lock ? " · LOCKED" : isTop ? " · top mover" : active ? " · กำลังขยับ" : ""}
+                {isCenter
+                  ? active
+                    ? " · center · ขยับ"
+                    : " · center"
+                  : lock
+                    ? " · LOCKED"
+                    : isTop
+                      ? " · top mover"
+                      : active
+                        ? " · กำลังขยับ"
+                        : ""}
               </span>
-              <span className={lock ? "text-neutral-500" : "text-cohere-body-muted"}>
-                {lock
+              <span className={lock && !isCenter ? "text-neutral-500" : "text-cohere-body-muted"}>
+                {lock && !isCenter
                   ? lock.label
                   : `${deg.toFixed(1)}° · Δ${delta.toFixed(1)}°`}
               </span>
             </div>
-            <p className={`mt-0.5 truncate text-[11px] ${lock ? "text-neutral-500" : "text-cohere-muted"}`}>
-              {lock ? `ล็อกจากขั้น: ${lock.label}` : label}
+            <p className={`mt-0.5 truncate text-[11px] ${lock && !isCenter ? "text-neutral-500" : "text-cohere-muted"}`}>
+              {isCenter
+                ? "อ้างอิงลำตัว · ใช้คำนวณมุมแขนขา + เอนตัวในเกม"
+                : lock
+                  ? `ล็อกจากขั้น: ${lock.label}`
+                  : label}
             </p>
-            {!lock && (
+            {(!lock || isCenter) && (
               <div className="mt-1.5 h-1.5 overflow-hidden rounded-full bg-neutral-100">
                 <div
                   className={`h-full rounded-full transition-[width] duration-150 ${
-                    isTop ? "bg-cohere-primary" : active ? "bg-neutral-500" : "bg-neutral-300"
+                    isCenter
+                      ? active
+                        ? "bg-cohere-primary"
+                        : "bg-neutral-400"
+                      : isTop
+                        ? "bg-cohere-primary"
+                        : active
+                          ? "bg-neutral-500"
+                          : "bg-neutral-300"
                   }`}
                   style={{ width: `${width}%` }}
                 />
@@ -225,7 +266,7 @@ export default function SensorSetupWizard({
   /** Baseline from step 1 (neutral) — all later steps compare against this. */
   const [neutralBaseline, setNeutralBaseline] = useState<number[] | null>(null);
   const [locked, setLocked] = useState<Record<number, LockedInfo>>({});
-  const [peakDeltas, setPeakDeltas] = useState(() => Array.from({ length: 8 }, () => 0));
+  const [peakDeltas, setPeakDeltas] = useState(() => Array.from({ length: SENSOR_COUNT }, () => 0));
   const peakRef = useRef(peakDeltas);
   peakRef.current = peakDeltas;
   const lockedRef = useRef(locked);
@@ -249,8 +290,8 @@ export default function SensorSetupWizard({
 
   const resetWizardLocal = useCallback(() => {
     setNeutralBaseline(null);
-    setLocked({});
-    setPeakDeltas(Array.from({ length: 8 }, () => 0));
+    setLocked(centerLocked());
+    setPeakDeltas(Array.from({ length: SENSOR_COUNT }, () => 0));
   }, []);
 
   useEffect(() => {
@@ -268,7 +309,7 @@ export default function SensorSetupWizard({
     }
   }, [mapping?.channel_map]);
 
-  // Peak-hold vs neutral baseline; locked channels stay at 0 for ranking
+  // Peak-hold vs neutral baseline; locked limb channels stay at 0 for ranking
   useEffect(() => {
     if (phase !== "guided" && phase !== "review") return;
     const base = neutralBaseline;
@@ -277,7 +318,7 @@ export default function SensorSetupWizard({
     const instant = degrees.map((d, i) => Math.abs(d - (base[i] ?? d)));
     setPeakDeltas((prev) =>
       prev.map((peak, i) => {
-        if (lockedRef.current[i]) return 0;
+        if (i !== CENTER_CHANNEL && lockedRef.current[i]) return 0;
         const now = instant[i] ?? 0;
         if (now >= peak) return now;
         return Math.max(0, peak - 0.8);
@@ -289,9 +330,7 @@ export default function SensorSetupWizard({
   useEffect(() => {
     if (phase !== "guided" || !step) return;
     if (step === "neutral") return;
-    setPeakDeltas((prev) =>
-      prev.map((_, i) => (lockedRef.current[i] ? 0 : 0)),
-    );
+    setPeakDeltas(Array.from({ length: SENSOR_COUNT }, () => 0));
   }, [phase, step]);
 
   const applyMappingResult = useCallback(
@@ -331,12 +370,14 @@ export default function SensorSetupWizard({
       // Step 1 → capture neutral baseline for all later steps
       if (current === "neutral") {
         setNeutralBaseline([...degrees]);
-        setPeakDeltas(Array.from({ length: 8 }, () => 0));
+        setPeakDeltas(Array.from({ length: SENSOR_COUNT }, () => 0));
       }
 
-      // Steps 2–5 → lock top-2 free channels before advancing
+      // Steps 2–5 → lock top-2 free limb channels before advancing
       if (current && LOCK_ON_ADVANCE.has(current)) {
-        const free = Array.from({ length: 8 }, (_, i) => i).filter((i) => !lockedRef.current[i]);
+        const free = Array.from({ length: LIMB_CHANNEL_COUNT }, (_, i) => i).filter(
+          (i) => !lockedRef.current[i],
+        );
         let picks = pickTopFree(peakRef.current, lockedRef.current);
 
         // Last mapping step: assign whatever free channels remain (หลังตัดขั้น 4)
@@ -346,13 +387,16 @@ export default function SensorSetupWizard({
 
         if (picks.length < Math.min(TOP_N, free.length) || picks.length === 0) {
           setMessage(
-            `ยังไม่พอ — ต้องมีอย่างน้อย ${Math.min(TOP_N, free.length)} ช่องที่ Δ≥${ACTIVE_DELTA_DEG}° จาก ${free.length} ช่องที่ยังไม่ล็อก`,
+            `ยังไม่พอ — ต้องมีอย่างน้อย ${Math.min(TOP_N, free.length)} ช่องที่ Δ≥${ACTIVE_DELTA_DEG}° จาก ${free.length} ช่องแขนขาที่ยังไม่ล็อก`,
           );
           setBusy("");
           return;
         }
 
-        const nextLocked: Record<number, LockedInfo> = { ...lockedRef.current };
+        const nextLocked: Record<number, LockedInfo> = {
+          ...centerLocked(),
+          ...lockedRef.current,
+        };
         for (const ch of picks) {
           nextLocked[ch] = {
             step: current,
@@ -406,16 +450,18 @@ export default function SensorSetupWizard({
     setBusy("set");
     setMessage("");
     try {
-      const channelMap: Record<string, string> = {};
-      for (let i = 0; i < 8; i++) channelMap[String(i)] = editMap[i];
-      const used = new Set(Object.values(channelMap));
-      if (used.size !== 8) {
-        setMessage("แต่ละข้อต่อต้องได้คนละ CH — ห้ามซ้ำ");
+      const channelMap: Record<string, string> = channelMapToRecord(editMap);
+      const limbValues = Object.entries(channelMap)
+        .filter(([ch]) => Number(ch) < LIMB_CHANNEL_COUNT)
+        .map(([, v]) => v);
+      const used = new Set(limbValues);
+      if (used.size !== LIMB_CHANNEL_COUNT || channelMap[String(CENTER_CHANNEL)] !== CENTER_KEY) {
+        setMessage("แต่ละข้อต่อต้องได้คนละ CH (CH0–7) และ CH8 ต้องเป็น center");
         return;
       }
       const data = await postSensorMappingAction(bridgeUrl, "set", { channelMap });
       applyMappingResult(data);
-      setMessage("บันทึก channel_map ที่แก้ด้วยมือลง sensor_map.json แล้ว");
+      setMessage("บันทึก channel_map (9 CH รวม center) ลง sensor_map.json แล้ว");
     } catch (err) {
       setMessage(err instanceof Error ? err.message : "บันทึกแมปไม่สำเร็จ");
     } finally {
@@ -459,8 +505,8 @@ export default function SensorSetupWizard({
   if (!open) return null;
 
   const mapForBars = phase === "review" ? editMap : parseChannelMap(mapping?.channel_map);
-  const lockedCount = Object.keys(locked).length;
-  const freeCount = 8 - lockedCount;
+  const lockedLimbCount = Object.keys(locked).filter((ch) => Number(ch) < LIMB_CHANNEL_COUNT).length;
+  const freeCount = LIMB_CHANNEL_COUNT - lockedLimbCount;
 
   return (
     <div
@@ -477,7 +523,7 @@ export default function SensorSetupWizard({
           </h2>
           <p className="mt-1 text-xs text-cohere-muted">
             บันทึก <span className="font-mono-label">rxsmart-local/sensor_map.json</span> · ขั้น 2+
-            อิง baseline จากขั้น 1 · CH ที่ล็อกแล้วไม่เลือกซ้ำ
+            อิง baseline จากขั้น 1 · CH0–7 ล็อกแขนขา · CH8 = center อ้างอิงคำนวณมุม + เอนตัว
           </p>
         </div>
         <button
@@ -506,9 +552,11 @@ export default function SensorSetupWizard({
               <li>ขั้น 3 (ยกไหล่): เลือก top 2 จาก CH ที่ยังไม่ล็อก</li>
               <li>ขั้น 4 (งอเข่า): เลือก top 2 จากที่เหลือ</li>
               <li>ขั้น 5 (ต้นขา): เลือกจากที่เหลือหลังขั้น 4</li>
+              <li>CH8 (MPU #9 / center) อ้างอิงลำตัว — คำนวณมุมไหล่/สะโพกเทียบ CH8 และเอนตัวในเกม</li>
             </ul>
             <p className="rounded-cohere-sm bg-cohere-primary/5 px-3 py-2 text-xs">
-              บล็อกสีเทา = LOCKED ใช้ไปแล้ว ระบบจะไม่เลือกซ้ำ · บันทึกลง sensor_map.json บนเครื่องนี้
+              บล็อกสีเทา = LOCKED ใช้ไปแล้ว ระบบจะไม่เลือกซ้ำ · บันทึก 9 ช่องลง sensor_map.json
+              บนเครื่องนี้ (Python / เกมโหลดต่อได้)
             </p>
           </div>
         )}
@@ -518,7 +566,7 @@ export default function SensorSetupWizard({
             <div className="space-y-3">
               <p className="cohere-mono-label text-[11px]">
                 ขั้น {Math.max(1, stepIndex + 1)}/{GUIDED_ORDER.length}
-                {lockedCount > 0 ? ` · ล็อกแล้ว ${lockedCount} · เหลือ ${freeCount}` : ""}
+                {lockedLimbCount > 0 ? ` · ล็อกแล้ว ${lockedLimbCount} · เหลือ ${freeCount}` : ""}
               </p>
               <p className="text-lg text-cohere-ink">
                 {step ? CALIBRATION_STEP_LABELS[step] ?? step : "กำลังเริ่ม…"}
@@ -539,7 +587,7 @@ export default function SensorSetupWizard({
                 ขยับช้าๆ ให้ชัด — มุมกรองแล้ว · ให้ Δ ≥ {ACTIVE_DELTA_DEG}° บนช่องที่ยังไม่ล็อก
                 แล้วกดขั้นถัดไป — ระบบจะล็อก top {TOP_N} ของขั้นนี้
               </p>
-              {lockedCount > 0 && (
+              {lockedLimbCount > 0 && (
                 <div className="rounded-cohere-sm bg-neutral-100 px-3 py-2 text-xs text-neutral-600">
                   ล็อกแล้ว:{" "}
                   {Object.entries(locked)
@@ -569,25 +617,33 @@ export default function SensorSetupWizard({
             </div>
             <div className="grid gap-6 lg:grid-cols-2">
               <div className="space-y-2">
-                {Array.from({ length: 8 }, (_, ch) => (
+                {Array.from({ length: SENSOR_COUNT }, (_, ch) => (
                   <label key={ch} className="flex items-center gap-2 text-xs">
                     <span className="w-10 font-mono-label text-cohere-ink">CH{ch}</span>
-                    <select
-                      className="cohere-input flex-1 py-1.5 text-xs"
-                      value={editMap[ch]}
-                      onChange={(e) =>
-                        setEditMap((prev) => ({
-                          ...prev,
-                          [ch]: e.target.value as PoseKey,
-                        }))
-                      }
-                    >
-                      {POSE_KEYS.map((key) => (
-                        <option key={key} value={key}>
-                          {POSE_LABELS[key]}
-                        </option>
-                      ))}
-                    </select>
+                    {ch === CENTER_CHANNEL ? (
+                      <span className="cohere-input flex-1 py-1.5 text-xs text-cohere-muted">
+                        {MAPPING_LABELS.center}
+                      </span>
+                    ) : (
+                      <select
+                        className="cohere-input flex-1 py-1.5 text-xs"
+                        value={editMap[ch]}
+                        onChange={(e) =>
+                          setEditMap((prev) =>
+                            ensureCenterInMap({
+                              ...prev,
+                              [ch]: e.target.value as PoseKey,
+                            }),
+                          )
+                        }
+                      >
+                        {POSE_KEYS.map((key) => (
+                          <option key={key} value={key}>
+                            {POSE_LABELS[key]}
+                          </option>
+                        ))}
+                      </select>
+                    )}
                   </label>
                 ))}
                 <div className="flex flex-wrap gap-2 pt-2">
@@ -597,7 +653,7 @@ export default function SensorSetupWizard({
                     onClick={() => void saveManualMap()}
                     className="cohere-btn-primary px-4 py-2 text-xs disabled:opacity-50"
                   >
-                    {busy === "set" ? "…" : "บันทึกแมป"}
+                    {busy === "set" ? "…" : "บันทึกแมป → sensor_map.json"}
                   </button>
                   <button
                     type="button"
@@ -626,7 +682,7 @@ export default function SensorSetupWizard({
                   className="cohere-btn-pill-outline mt-2 text-xs"
                   onClick={() => {
                     setNeutralBaseline([...degrees]);
-                    setPeakDeltas(Array.from({ length: 8 }, () => 0));
+                    setPeakDeltas(Array.from({ length: SENSOR_COUNT }, () => 0));
                   }}
                 >
                   ตั้ง baseline ใหม่ (ยืนนิ่งแล้วกด)

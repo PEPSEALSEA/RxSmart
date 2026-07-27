@@ -2,7 +2,7 @@
 
 import { useMemo, useState } from "react";
 import FadeIn from "@/components/ui/FadeIn";
-import { ExerciseCategory, RehabExercise, REHAB_EXERCISES } from "@/lib/rehab-exercises";
+import { ExerciseCategory, RehabExercise, REHAB_EXERCISES, supportsImuExercise } from "@/lib/rehab-exercises";
 import { SessionFeedback, SessionStatus } from "@/lib/pose-physics";
 
 interface RehabPanelProps {
@@ -12,6 +12,7 @@ interface RehabPanelProps {
   onStart: () => void;
   onStop: () => void;
   onReset: () => void;
+  imuMode?: boolean;
 }
 
 const STATUS_LABELS: Record<SessionStatus, string> = {
@@ -45,6 +46,7 @@ export default function RehabPanel({
   onStart,
   onStop,
   onReset,
+  imuMode = false,
 }: RehabPanelProps) {
   const [category, setCategory] = useState<ExerciseCategory | "all">("all");
   const [listOpen, setListOpen] = useState(false);
@@ -54,10 +56,11 @@ export default function RehabPanel({
 
   const filteredExercises = useMemo(
     () =>
-      category === "all"
+      (category === "all"
         ? REHAB_EXERCISES
-        : REHAB_EXERCISES.filter((item) => item.category === category),
-    [category],
+        : REHAB_EXERCISES.filter((item) => item.category === category)
+      ).filter((item) => !imuMode || supportsImuExercise(item)),
+    [category, imuMode],
   );
 
   return (
@@ -194,6 +197,12 @@ export default function RehabPanel({
               </button>
             ))}
           </div>
+
+          {imuMode && (
+            <p className="mb-3 rounded-cohere-sm border border-cohere-hairline bg-cohere-soft-stone px-4 py-3 text-sm text-cohere-body-muted">
+              โหมด IMU ซ่อนท่าที่ต้องใช้ plane เช่น กางแขนด้านข้าง ว่ายน้ำ และกางขาออกข้าง
+            </p>
+          )}
 
           <div className="max-h-52 space-y-1 overflow-y-auto pr-1">
             {filteredExercises.map((item, index) => (

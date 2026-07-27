@@ -16,17 +16,17 @@
 ================================================================================
 
 RxSmart/
-├── ESP32DevKitV1-ArduinoIDE-Code.ino   ← Firmware หลัก (Hardware / IMU Mode)
-├── hardware_connection.txt             ← แผนผังการต่อสาย MPU6050 (ชุดทดสอบ 2 ตัว)
+├── Pico2W.ino                          ← Firmware หลัก (Pico 2 W / IMU Mode)
+├── hardware_connection_pico2w.txt      ← แผนผังการต่อสาย MPU6050 × 9
 ├── rxsmart-local/                      ← Local Pipeline (Camera + IoT Fusion)
 │   ├── main.py                         ← Entry point, event loop OpenCV
 │   ├── config.py                       ← ตั้งค่า camera / transport / fusion
 │   ├── camera_pose_engine.py           ← MediaPipe Pose + คำนวณมุมข้อต่อ
-│   ├── iot_receiver.py                 ← รับ telemetry จาก ESP32 (serial/http/server)
+│   ├── iot_receiver.py                 ← รับ telemetry จาก Pico 2 W (serial/http/server)
 │   ├── system_mode_manager.py          ← สลับโหมด + FusionEngine
 │   ├── visual_debugger.py              ← หน้าจอ debug แบบ split-panel
 │   ├── data_models.py                  ← JointData, SystemMode, DebugStats
-│   ├── firmware_local_server_snippet.ino ← Snippet สำหรับ ESP32 POST ตรง LAN
+│   ├── firmware_local_server_snippet.ino ← Snippet สำหรับ board POST ตรง LAN
 │   └── requirements.txt                ← Python deps (mediapipe, opencv, flask, …)
 │
 ├── cloudflare-worker/                  ← Backend API (Cloudflare Workers)

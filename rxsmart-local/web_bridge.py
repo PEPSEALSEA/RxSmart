@@ -29,6 +29,8 @@ from sensor_mapper import (
     calibrated_to_degrees,
     relative_deltas_from_frame,
     sensors_to_angles,
+    SENSOR_COUNT,
+    LIMB_CHANNEL_COUNT,
 )
 
 if TYPE_CHECKING:
@@ -87,9 +89,9 @@ def _channel_degrees(joint_data: Optional[JointData]) -> Optional[list[float]]:
         int(s.get("channel", idx)): calibrated_to_degrees(float(s.get("calibrated", 0)))
         for idx, s in enumerate(joint_data.sensor_channels)
     }
-    if len(by_ch) < 8:
+    if len(by_ch) < LIMB_CHANNEL_COUNT:
         return None
-    return [by_ch[i] for i in range(8)]
+    return [float(by_ch.get(i, 0.0)) for i in range(SENSOR_COUNT)]
 
 
 def _apply_sensor_mapping(

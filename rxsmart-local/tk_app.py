@@ -15,6 +15,7 @@ from camera_pose_engine import CameraPoseEngine
 from data_models import ConnectionStatus, JointData, SystemMode
 from iot_receiver import IoTReceiver
 from serial_utils import list_serial_ports
+from sensor_mapper import SENSOR_COUNT, calibrated_to_degrees
 from system_mode_manager import SystemModeManager
 from visual_debugger import AdvancedVisualDebugger
 
@@ -533,8 +534,8 @@ class RxSmartTkApp:
             ch_lines: list[str] = []
             channels = j.sensor_channels or []
             if channels:
-                ch_lines.append("MPU CH (deg)")
-                for s in channels[:8]:
+                ch_lines.append(f"MPU CH0–CH{SENSOR_COUNT - 1} (deg)")
+                for s in channels[:SENSOR_COUNT]:
                     if not isinstance(s, dict):
                         continue
                     ch = s.get("channel", "?")
@@ -543,7 +544,7 @@ class RxSmartTkApp:
                     if deg is None:
                         cal = s.get("calibrated", 0.0)
                         try:
-                            deg = abs(float(cal)) * (180.0 / 4095.0)
+                            deg = calibrated_to_degrees(float(cal))
                         except (TypeError, ValueError):
                             deg = 0.0
                     ch_lines.append(f"CH{ch} {key:<14} {float(deg):5.1f}")

@@ -33,9 +33,9 @@
 DONE — พื้นฐานที่มีแล้ว (ใช้เป็นฐานต่อ)
 ================================================================================
 
---- Firmware (ESP32DevKitV1-ArduinoIDE-Code.ino) ---
-[x] Data model sensor 8 จุด + telemetry v2
-[x] TCA9548A I2C Multiplexer + MPU6050 × 8 (CH0–CH7)
+--- Firmware (Pico2W.ino) ---
+[x] Data model sensor 9 จุด + telemetry v2 (8 limbs + center)
+[x] TCA9548A I2C Multiplexer × 2 + MPU6050 × 9
 [x] Calibration, มุม elbow/knee, speed, rep, posture, injury alert
 [x] Session state machine (idle → calibrate → exercise → complete)
 [x] WiFi Captive Portal, watchdog, OTA check, device register, command poll

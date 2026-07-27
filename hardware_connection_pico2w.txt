@@ -2,11 +2,11 @@
   RxSmart — Hardware Wiring Guide (Production Setup)
   Raspberry Pi Pico 2 W (RP2350, Arduino-Pico core by Earle Philhower)
 
-  LOCKED BASELINE (current firmware):
-    TCA9548A I2C Multiplexer x 1 @ 0x70  +  MPU6050 (GY-521) x 8
+  CURRENT FIRMWARE (Pico2W.ino, SENSOR_COUNT = 9):
+    TCA9548A #1 @ 0x70  +  MPU6050 x 8 (limbs CH0–7)
+    TCA9548A #2 @ 0x71  +  MPU6050 #9 center on mux#2 CH0
 
-  EXPANSION (hardware ready; software follow-up required):
-    + TCA9548A x 1 @ 0x71  +  MPU6050 #9 (center / trunk) on mux#2 CH0
+  MCU target: Raspberry Pi Pico 2 W only (ESP32 retired — see pico2w-only rule).
 ================================================================================
 
 --------------------------------------------------------------------------------
@@ -36,19 +36,21 @@ LOCKED ARCHITECTURE — 8 MPU baseline (do not rewire)
     Sensors      MPU6050 x 8, all at 0x68 (AD0=GND), one per mux channel 0–7
     Power        Shared 3V3(OUT) + GND
 
-  Firmware map (SENSOR_COUNT = 8 in Pico2W.ino):
-    CH0 = left_upper_arm   (ต้นแขนซ้าย)
-    CH1 = right_upper_arm  (ต้นแขนขวา)
-    CH2 = left_forearm     (แขนท่อนล่างซ้าย)
-    CH3 = right_forearm    (แขนท่อนล่างขวา)
-    CH4 = left_thigh       (ต้นขาซ้าย)
-    CH5 = right_thigh      (ต้นขาขวา)
-    CH6 = left_shin        (หน้าแข้งซ้าย)
-    CH7 = right_shin       (หน้าแข้งขวา)
+  Firmware map (SENSOR_COUNT = 9 in Pico2W.ino):
+    mux 0x70 CH0 = left_upper_arm   (ต้นแขนซ้าย)
+    mux 0x70 CH1 = right_upper_arm  (ต้นแขนขวา)
+    mux 0x70 CH2 = left_forearm     (แขนท่อนล่างซ้าย)
+    mux 0x70 CH3 = right_forearm    (แขนท่อนล่างขวา)
+    mux 0x70 CH4 = left_thigh       (ต้นขาซ้าย)
+    mux 0x70 CH5 = right_thigh      (ต้นขาขวา)
+    mux 0x70 CH6 = left_shin        (หน้าแข้งซ้าย)
+    mux 0x70 CH7 = right_shin       (หน้าแข้งขวา)
+    mux 0x71 CH0 = center           (ลำตัว / trunk)
 
-  I2C Addresses (baseline):
+  I2C Addresses:
     TCA9548A #1 = 0x70
-    MPU6050 x8  = 0x68  (all — separated by TCA channel)
+    TCA9548A #2 = 0x71
+    MPU6050 x9  = 0x68  (all — separated by TCA channel)
 
 --------------------------------------------------------------------------------
 What changed vs. the old ESP32 DevKit V1 wiring
@@ -63,14 +65,9 @@ What changed vs. the old ESP32 DevKit V1 wiring
       ESP32 3V3           -> TCA9548A VCC + RESET
       ESP32 GND           -> TCA9548A GND + A0 + A1 + A2
 
-  The Pico 2 W uses the exact same design (I2C bus -> TCA9548A -> 8x MPU6050),
-  just on different GPIO numbers, because GPIO21/22 don't exist as an I2C bus
-  on the RP2350. Everything else (the TCA9548A and all 8 MPU6050 modules) is
-  wired IDENTICALLY to before — only the 2 wires that plug into the
-  microcontroller board itself change pin numbers.
-
-  ESP32 wiring lives in hardware_connection.txt — leave it alone if you are
-  on Pico 2 W.
+  The Pico 2 W uses the same I2C bus -> TCA9548A -> MPU6050 design as the
+  retired ESP32 board, on GP4/GP5 instead of GPIO21/22. ESP32 firmware and
+  wiring docs have been removed from this repo.
 
 --------------------------------------------------------------------------------
 Pico 2 W pins used (what your "7 wires" become)
@@ -226,8 +223,8 @@ MPU6050 #9 (center / trunk) -- wiring
   │ XDA/XCL  │ not connected                                                │
   └──────────┴──────────────────────────────────────────────────────────────┘
 
-  Logical address for software later:
-    mux 0x71 / channel 0  →  body key "center" / "trunk"
+  Logical address (implemented in Pico2W.ino):
+    mux 0x71 / channel 0  →  body key "center"
 
 --------------------------------------------------------------------------------
 Do not change when adding MPU #9

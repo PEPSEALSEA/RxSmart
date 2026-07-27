@@ -8,7 +8,7 @@ import AdminSensorDebugGrid from "@/components/admin/AdminSensorDebugGrid";
 import SensorReadout from "@/components/SensorReadout";
 import FadeIn from "@/components/ui/FadeIn";
 import { Device, DevicePlatform, formatLastSeen, getApiUrl, getDevicePlatformLabel, getErrorMessage, inferDevicePlatform, isDeviceOnline } from "@/lib/devices";
-import { FIRMWARE_SENSOR_TO_POSE, isUpperKey, POSE_KEYS, POSE_LABELS, PoseKey } from "@/lib/pose";
+import { CENTER_KEY, FIRMWARE_SENSOR_TO_POSE, isPoseKey, isUpperKey, POSE_KEYS, POSE_LABELS, PoseKey, SENSOR_COUNT } from "@/lib/pose";
 import { REHAB_EXERCISES } from "@/lib/rehab-exercises";
 import {
   buildSessionFeedback,
@@ -116,6 +116,11 @@ function mapTelemetryToFrame(payload: Record<string, unknown> | null): SensorFra
       const poseKey = sensor.key ? FIRMWARE_SENSOR_TO_POSE[sensor.key] : undefined;
       if (!poseKey || typeof sensor.calibrated !== "number") continue;
       const angle = Math.max(0, Math.min(180, Math.abs(sensor.calibrated) * (180 / 4095)));
+      if (poseKey === CENTER_KEY) {
+        if (frame.body) frame.body.torsoTilt = angle;
+        continue;
+      }
+      if (!isPoseKey(poseKey)) continue;
       if (isUpperKey(poseKey)) {
         frame[poseKey].elevation = angle;
       } else {
@@ -698,7 +703,7 @@ export default function AdminPage() {
                     { label: "Stability", value: payloadField(payload, "posture.stability_score") },
                     { label: "Calibrated", value: payloadField(payload, "calibrated") },
                     { label: "Firmware", value: payloadField(payload, "firmware_version") },
-                    { label: "Sensors", value: `${sensors?.length ?? 0}/8` },
+                    { label: "Sensors", value: `${sensors?.length ?? 0}/${SENSOR_COUNT}` },
                   ].map((item, index) => (
                     <div
                       key={item.label}

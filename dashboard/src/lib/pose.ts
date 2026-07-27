@@ -1,6 +1,14 @@
 export type UpperPoseKey = "l_arm_upper" | "r_arm_upper" | "l_leg_upper" | "r_leg_upper";
 export type LowerPoseKey = "l_arm_lower" | "r_arm_lower" | "l_leg_lower" | "r_leg_lower";
 export type PoseKey = UpperPoseKey | LowerPoseKey;
+/** MPU #9 — torso / pelvis reference on second mux (logical CH8). */
+export type CenterPoseKey = "center";
+export type MappingKey = PoseKey | CenterPoseKey;
+
+export const SENSOR_COUNT = 9;
+export const LIMB_CHANNEL_COUNT = 8;
+export const CENTER_CHANNEL = 8;
+export const CENTER_KEY: CenterPoseKey = "center";
 
 /** ข้อต่อบน (ไหล่/สะโพก) — หมุนได้เกือบรอบทิศ เช่น ท่าว่ายน้ำ */
 export interface UpperJointAngles {
@@ -29,6 +37,8 @@ export type BodyRootPose = {
   rootY: number;
   rootZ: number;
   mode?: string;
+  /** Absolute / relative tilt from center MPU (deg) — for game torso lean. */
+  torsoTilt?: number;
 };
 
 export type SensorFrame = Record<UpperPoseKey, UpperJointReading> &
@@ -58,7 +68,12 @@ export const POSE_LABELS: Record<PoseKey, string> = {
   r_leg_lower: "ขาขวา ล่าง (เข่า)",
 };
 
-/** MPU6050 ช่องบน TCA9548A — ตรงกับ firmware CH0–CH7 */
+export const MAPPING_LABELS: Record<MappingKey, string> = {
+  ...POSE_LABELS,
+  center: "ลำตัว / center (MPU #9)",
+};
+
+/** MPU6050 ช่องบน TCA9548A — ตรงกับ firmware CH0–CH7 (+ CH8 center) */
 export const UPPER_SENSOR_CHANNEL: Record<UpperPoseKey, number> = {
   l_arm_upper: 0,
   r_arm_upper: 1,
@@ -74,8 +89,8 @@ export const LOWER_SENSOR_CHANNEL: Record<LowerPoseKey, number> = {
   r_leg_lower: 7,
 };
 
-/** CH index → pose key (firmware default wiring) */
-export const DEFAULT_CHANNEL_TO_POSE: Record<number, PoseKey> = {
+/** CH index → pose/mapping key (firmware default wiring) */
+export const DEFAULT_CHANNEL_TO_POSE: Record<number, MappingKey> = {
   0: "l_arm_upper",
   1: "r_arm_upper",
   2: "l_arm_lower",
@@ -84,9 +99,10 @@ export const DEFAULT_CHANNEL_TO_POSE: Record<number, PoseKey> = {
   5: "r_leg_upper",
   6: "l_leg_lower",
   7: "r_leg_lower",
+  8: "center",
 };
 
-export const FIRMWARE_SENSOR_TO_POSE: Record<string, PoseKey> = {
+export const FIRMWARE_SENSOR_TO_POSE: Record<string, MappingKey> = {
   left_upper_arm: "l_arm_upper",
   right_upper_arm: "r_arm_upper",
   left_forearm: "l_arm_lower",
@@ -95,7 +111,16 @@ export const FIRMWARE_SENSOR_TO_POSE: Record<string, PoseKey> = {
   right_thigh: "r_leg_upper",
   left_shin: "l_leg_lower",
   right_shin: "r_leg_lower",
+  center: "center",
 };
+
+export function isPoseKey(key: string): key is PoseKey {
+  return (POSE_KEYS as string[]).includes(key);
+}
+
+export function isMappingKey(key: string): key is MappingKey {
+  return isPoseKey(key) || key === CENTER_KEY;
+}
 
 /** proximal + distal pairs for joint bend calculation */
 export const LIMB_PAIRS: [PoseKey, PoseKey][] = [

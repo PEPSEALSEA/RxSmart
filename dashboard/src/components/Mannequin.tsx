@@ -17,6 +17,7 @@ const ACTIVE = "#c98500";
 const VISUAL_SPRING = 16;
 const VISUAL_DAMP = 8;
 const PELVIS_Y = 0.98;
+const DEG = Math.PI / 180;
 
 function useBodyMaterial(color: string, active: boolean) {
   return useMemo(
@@ -225,7 +226,12 @@ export function Mannequin({ frame, activeJoints = [] }: MannequinProps) {
     vs.rootZ = next.value;
     sv.rootZ = next.velocity;
 
-    next = springScalar(vs.pelvisLean, squat.pelvisLeanRad, sv.pelvisLean, capped);
+    next = springScalar(
+      vs.pelvisLean,
+      squat.pelvisLeanRad + Math.min(45, Math.max(0, frame.body?.torsoTilt ?? 0)) * DEG * 0.55,
+      sv.pelvisLean,
+      capped,
+    );
     vs.pelvisLean = next.value;
     sv.pelvisLean = next.velocity;
 

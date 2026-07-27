@@ -1,8 +1,9 @@
 """
-Auto-detect which TCA channel (0–7) maps to which body segment.
+Auto-detect which TCA channel (0–7) maps to which body segment,
+plus fixed CH8 → center (MPU #9 on second mux).
 
-Each wearer may plug sensors into different channels — this module learns the
-mapping from motion samples and persists it per device.
+Each wearer may plug limb sensors into different channels — this module learns the
+mapping from motion samples and persists it per device (sensor_map.json).
 """
 from __future__ import annotations
 
@@ -15,8 +16,13 @@ from typing import Any, Optional
 import config
 
 # ---------------------------------------------------------------------------
-# Segment keys — match dashboard PoseKey naming
+# Channel / segment keys — match dashboard PoseKey / MappingKey naming
 # ---------------------------------------------------------------------------
+SENSOR_COUNT = 9
+LIMB_CHANNEL_COUNT = 8
+CENTER_CHANNEL = 8
+CENTER_KEY = "center"
+
 POSE_KEYS: list[str] = [
     "l_arm_upper",
     "l_arm_lower",
@@ -35,7 +41,7 @@ LIMB_PAIRS: list[tuple[str, str]] = [
     ("r_leg_upper", "r_leg_lower"),
 ]
 
-# Firmware default: CH0=left_upper_arm … CH7=right_shin
+# Firmware default: CH0–7 limbs on mux 0x70, CH8=center on mux 0x71
 DEFAULT_CHANNEL_MAP: dict[int, str] = {
     0: "l_arm_upper",
     1: "r_arm_upper",
@@ -45,6 +51,7 @@ DEFAULT_CHANNEL_MAP: dict[int, str] = {
     5: "r_leg_upper",
     6: "l_leg_lower",
     7: "r_leg_lower",
+    8: CENTER_KEY,
 }
 
 CALIBRATION_STEPS: list[str] = [
@@ -75,11 +82,29 @@ POSE_DEFAULT_ANGLE_KEYS: list[str] = [
     "knee_right",
     "hip_left",
     "hip_right",
+    "center",
 ]
 
 POSE_PROFILE_NAMES: tuple[str, ...] = ("standing", "sitting")
 
 RAW_TO_DEG = 180.0 / 4095.0
+
+
+def ensure_center_in_map(channel_map: dict[int, str]) -> dict[int, str]:
+    """Keep CH8 fixed as center; strip any misplaced center keys."""
+    out = {int(k): str(v) for k, v in channel_map.items()}
+    for ch, key in list(out.items()):
+        if key == CENTER_KEY and ch != CENTER_CHANNEL:
+            del out[ch]
+    out[CENTER_CHANNEL] = CENTER_KEY
+    return out
+
+
+def pad_degrees(degrees: list[float]) -> list[float]:
+    row = [float(d) for d in degrees[:SENSOR_COUNT]]
+    while len(row) < SENSOR_COUNT:
+        row.append(0.0)
+    return row
 
 
 def calibrated_to_degrees(calibrated: float) -> float:
@@ -96,8 +121,8 @@ def _pair_bend_variance(samples: list[list[float]], i: int, j: int) -> float:
 
 def _greedy_pair_channels(samples: list[list[float]]) -> list[tuple[int, int, float]]:
     scores: list[tuple[tuple[int, int], float]] = []
-    for i in range(8):
-        for j in range(i + 1, 8):
+    for i in range(LIMB_CHANNEL_COUNT):
+        for j in range(i + 1, LIMB_CHANNEL_COUNT):
             scores.append(((i, j), _pair_bend_variance(samples, i, j)))
     scores.sort(key=lambda item: item[1], reverse=True)
 
@@ -188,20 +213,22 @@ def auto_detect_from_motion(samples: list[list[float]]) -> dict[int, str]:
         result[prox_ch] = prox_key
         result[dist_ch] = dist_key
 
-    return result
+    return ensure_center_in_map(result)
 
 
 def _mean_neutral(neutral_rows: list[list[float]]) -> list[float]:
+    width = min(LIMB_CHANNEL_COUNT, min(len(row) for row in neutral_rows))
     return [
         sum(row[c] for row in neutral_rows) / len(neutral_rows)
-        for c in range(8)
+        for c in range(width)
     ]
 
 
 def _channel_peak_deltas(rows: list[list[float]], neutral: list[float]) -> list[float]:
     if not rows:
-        return [0.0] * 8
-    return [max(row[c] for row in rows) - neutral[c] for c in range(8)]
+        return [0.0] * LIMB_CHANNEL_COUNT
+    width = min(LIMB_CHANNEL_COUNT, len(neutral), min(len(row) for row in rows))
+    return [max(row[c] for row in rows) - neutral[c] for c in range(width)]
 
 
 def _top_movers(
@@ -211,7 +238,7 @@ def _top_movers(
 ) -> list[int]:
     blocked = exclude or set()
     ranked = sorted(
-        (c for c in range(8) if c not in blocked),
+        (c for c in range(min(LIMB_CHANNEL_COUNT, len(deltas))) if c not in blocked),
         key=lambda c: deltas[c],
         reverse=True,
     )
@@ -340,18 +367,20 @@ def auto_detect_guided(step_samples: dict[str, list[list[float]]]) -> dict[int, 
         result[right_leg[0]] = "r_leg_upper"
         result[right_leg[1]] = "r_leg_lower"
 
-    if len(result) < 8:
+    if len(result) < LIMB_CHANNEL_COUNT:
         combined = neutral_rows[:]
         for rows in step_samples.values():
             combined.extend(rows)
         fallback = auto_detect_from_motion(combined)
-        for ch in range(8):
+        for ch in range(LIMB_CHANNEL_COUNT):
             if ch not in result:
                 result[ch] = fallback.get(ch, DEFAULT_CHANNEL_MAP[ch])
 
         owned: dict[str, int] = {}
         duplicates: list[int] = []
         for ch, key in sorted(result.items()):
+            if key == CENTER_KEY:
+                continue
             if key in owned:
                 duplicates.append(ch)
             else:
@@ -360,7 +389,7 @@ def auto_detect_guided(step_samples: dict[str, list[list[float]]]) -> dict[int, 
         for ch, key in zip(duplicates, missing_keys):
             result[ch] = key
 
-    return result
+    return ensure_center_in_map(result)
 
 
 def mapping_confidence(
@@ -369,13 +398,14 @@ def mapping_confidence(
     firmware_angles: Optional[dict[str, float]] = None,
 ) -> float:
     """0–1 score: how well the mapping explains observed joint motion."""
-    if len(samples) < 5 or len(channel_map) < 8:
+    limb_map = {c: k for c, k in channel_map.items() if k in POSE_KEYS}
+    if len(samples) < 5 or len(limb_map) < LIMB_CHANNEL_COUNT:
         return 0.0
 
     errors: list[float] = []
     for prox_key, dist_key in LIMB_PAIRS:
-        prox_ch = next((c for c, k in channel_map.items() if k == prox_key), None)
-        dist_ch = next((c for c, k in channel_map.items() if k == dist_key), None)
+        prox_ch = next((c for c, k in limb_map.items() if k == prox_key), None)
+        dist_ch = next((c for c, k in limb_map.items() if k == dist_key), None)
         if prox_ch is None or dist_ch is None:
             continue
 
@@ -402,21 +432,36 @@ def sensors_to_angles(
     channel_map: dict[int, str],
     pose_defaults: Optional[dict[str, dict[str, float]]] = None,
 ) -> dict[str, float]:
-    """Compute elbow/knee + shoulder/hip elevation from 8 segment angles."""
-    by_pose = {channel_map[ch]: degrees[ch] for ch in range(8) if ch in channel_map}
+    """Compute elbow/knee + shoulder/hip elevation (+ center) from channel angles."""
+    width = min(SENSOR_COUNT, len(degrees))
+    by_pose = {channel_map[ch]: degrees[ch] for ch in range(width) if ch in channel_map}
+    has_center = CENTER_KEY in by_pose or len(degrees) > CENTER_CHANNEL
+    center_raw = float(
+        by_pose.get(
+            CENTER_KEY,
+            float(degrees[CENTER_CHANNEL]) if len(degrees) > CENTER_CHANNEL else 0.0,
+        )
+    )
 
     def bend(prox: str, dist: str) -> float:
         return max(0.0, min(180.0, abs(by_pose.get(dist, 0.0) - by_pose.get(prox, 0.0))))
+
+    def elev(pose_key: str) -> float:
+        raw = float(by_pose.get(pose_key, 0.0))
+        if has_center:
+            return max(0.0, min(180.0, abs(raw - center_raw)))
+        return max(0.0, min(180.0, raw))
 
     angles = {
         "elbow_left": bend("l_arm_upper", "l_arm_lower"),
         "elbow_right": bend("r_arm_upper", "r_arm_lower"),
         "knee_left": bend("l_leg_upper", "l_leg_lower"),
         "knee_right": bend("r_leg_upper", "r_leg_lower"),
-        "shoulder_left": by_pose.get("l_arm_upper", 0.0),
-        "shoulder_right": by_pose.get("r_arm_upper", 0.0),
-        "hip_left": by_pose.get("l_leg_upper", 0.0),
-        "hip_right": by_pose.get("r_leg_upper", 0.0),
+        "shoulder_left": elev("l_arm_upper"),
+        "shoulder_right": elev("r_arm_upper"),
+        "hip_left": elev("l_leg_upper"),
+        "hip_right": elev("r_leg_upper"),
+        "center": center_raw,
     }
     return apply_pose_defaults(angles, pose_defaults)
 
@@ -508,7 +553,7 @@ def sample_channel_variance(samples: list[list[float]]) -> float:
     """Max per-channel variance (deg²) across recent IMU rows — stillness metric."""
     if len(samples) < 2:
         return 0.0
-    width = min(8, min(len(row) for row in samples))
+    width = min(SENSOR_COUNT, min(len(row) for row in samples))
     peak = 0.0
     for ch in range(width):
         vals = [float(row[ch]) for row in samples]
@@ -621,7 +666,7 @@ class SensorMappingManager:
         try:
             data = json.loads(self.map_path.read_text(encoding="utf-8"))
             raw_map = data.get("channel_map", {})
-            self.channel_map = {int(k): v for k, v in raw_map.items()}
+            self.channel_map = ensure_center_in_map({int(k): v for k, v in raw_map.items()})
             raw_defaults = data.get("pose_defaults", {})
             if isinstance(raw_defaults, dict):
                 self.pose_defaults = {
@@ -672,7 +717,7 @@ class SensorMappingManager:
         self.save()
 
     def set_map(self, channel_map: dict[int, str], confidence: float = 1.0) -> None:
-        self.channel_map = {int(k): v for k, v in channel_map.items()}
+        self.channel_map = ensure_center_in_map({int(k): v for k, v in channel_map.items()})
         self.confidence = confidence
         self.calibrated_at = time.time()
         self.save()
@@ -711,11 +756,12 @@ class SensorMappingManager:
                 "variance": round(variance, 3),
                 "max_variance": round(max_var * max_var, 3),
             }
-        if not self.channel_map or len(self.channel_map) < 8:
+        limb_keys = {v for v in self.channel_map.values() if v in POSE_KEYS}
+        if len(limb_keys) < LIMB_CHANNEL_COUNT:
             return {
                 "ok": False,
                 "error": "need_channel_map",
-                "message": "ทำ Setup Wizard แมปบอร์ดให้ครบ 8 ช่องก่อนบันทึกท่า",
+                "message": "ทำ Setup Wizard แมปบอร์ดให้ครบ 8 ช่องแขนขา + center ก่อนบันทึกท่า",
             }
         profile = defaults_from_samples(samples[-min_n:], self.channel_map)
         if not profile or len(profile) < len(POSE_DEFAULT_ANGLE_KEYS):
@@ -755,15 +801,16 @@ class SensorMappingManager:
         }
 
     def ingest_channels(self, degrees: list[float]) -> None:
-        if len(degrees) != 8:
+        if len(degrees) < LIMB_CHANNEL_COUNT:
             return
-        self._motion_buffer.append(list(degrees))
+        row = pad_degrees(degrees)
+        self._motion_buffer.append(row)
         if len(self._motion_buffer) > self._buffer_max:
             self._motion_buffer = self._motion_buffer[-self._buffer_max :]
 
         step = self.calibration_step
         if step in CALIBRATION_STEPS:
-            self._guided_buffer.setdefault(step, []).append(list(degrees))
+            self._guided_buffer.setdefault(step, []).append(list(row))
             if len(self._guided_buffer[step]) > 60:
                 self._guided_buffer[step] = self._guided_buffer[step][-60:]
 
@@ -792,7 +839,8 @@ class SensorMappingManager:
             return self.calibration_step
 
         # Final step (arms_up_down) → personal defaults, then done
-        if not self.channel_map or len(self.channel_map) < 8:
+        limb_keys = {v for v in self.channel_map.values() if v in POSE_KEYS}
+        if len(limb_keys) < LIMB_CHANNEL_COUNT:
             self._commit_channel_map_from_guided()
         defaults = compute_pose_defaults(self._guided_buffer, self.channel_map)
         self.set_pose_defaults(defaults)
@@ -844,8 +892,8 @@ class SensorMappingManager:
 
     def to_api_dict(self) -> dict[str, Any]:
         degrees: Optional[list[float]] = None
-        if self._motion_buffer and len(self._motion_buffer[-1]) >= 8:
-            degrees = [round(float(d), 2) for d in self._motion_buffer[-1][:8]]
+        if self._motion_buffer and len(self._motion_buffer[-1]) >= LIMB_CHANNEL_COUNT:
+            degrees = [round(float(d), 2) for d in pad_degrees(self._motion_buffer[-1])]
         return {
             "channel_map": {str(k): v for k, v in sorted(self.channel_map.items())},
             "default_map": {str(k): v for k, v in sorted(DEFAULT_CHANNEL_MAP.items())},
@@ -858,6 +906,7 @@ class SensorMappingManager:
             "calibration_steps": CALIBRATION_STEPS,
             "buffer_samples": len(self._motion_buffer),
             "channel_degrees": degrees,
+            "sensor_count": SENSOR_COUNT,
         }
 
     def _flatten_guided(self, steps: Optional[list[str]] = None) -> list[list[float]]:

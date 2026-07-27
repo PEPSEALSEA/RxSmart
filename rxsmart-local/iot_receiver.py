@@ -21,6 +21,7 @@ from typing import Optional
 
 import config
 from data_models import ConnectionStatus, JointData
+from sensor_mapper import calibrated_to_degrees
 
 # ---------------------------------------------------------------------------
 # Pre-compiled regex for the ESP32 Serial debug block
@@ -48,9 +49,10 @@ _DBG_ANGLES_RE = re.compile(
 )
 
 _DBG_CH_RE = re.compile(
+    r"(?:mux=0x([0-9A-Fa-f]+)\s+)?"
     r"CH(\d+)\s+\[([^\]]+)\]\s+"
-    r"raw=([\d.]+)\s+"
-    r"cal=([\d.]+)\s+"
+    r"raw=(-?[\d.]+)\s+"
+    r"cal=(-?[\d.]+)\s+"
     r"(\S+)"
 )
 
@@ -243,6 +245,17 @@ class IoTReceiver:
             pass
         return ser
 
+    def _store_joint(self, jd: JointData) -> None:
+        """Keep last full sensor list when a partial DBG frame arrives (angles before CH lines)."""
+        with self._lock:
+            prev = self._latest
+            if prev is not None and not jd.sensor_channels and prev.sensor_channels:
+                jd.sensor_channels = prev.sensor_channels
+                raw = jd.raw_sensors if isinstance(jd.raw_sensors, dict) else {}
+                prev_raw = prev.raw_sensors if isinstance(prev.raw_sensors, dict) else {}
+                jd.raw_sensors = {**prev_raw, **raw, "sensors": prev.sensor_channels}
+            self._latest = jd
+
     def _serial_loop(self) -> None:
         try:
             import serial  # pyserial
@@ -252,7 +265,10 @@ class IoTReceiver:
             return
 
         ser = None
-        no_packet_grace_s = max(8.0, config.IOT_WATCHDOG_TIMEOUT_S * 2)
+        no_packet_grace_s = max(10.0, config.IOT_WATCHDOG_TIMEOUT_S * 2)
+        with self._port_lock:
+            if self._port_locked:
+                no_packet_grace_s = max(no_packet_grace_s, 15.0)
         raw_log_left = 12
         while self._running:
             if self._take_serial_reconnect() and ser is not None:
@@ -325,8 +341,7 @@ class IoTReceiver:
                 if jd is not None:
                     self._record_packet()
                     self._status = ConnectionStatus.CONNECTED
-                    with self._lock:
-                        self._latest = jd
+                    self._store_joint(jd)
 
             except Exception as exc:
                 print(f"[IoTReceiver] Serial read error: {exc}. Reconnecting...")
@@ -386,15 +401,22 @@ class IoTReceiver:
 
         ch_m = _DBG_CH_RE.search(line)
         if ch_m:
-            ch_idx, key, raw, cal, status = ch_m.groups()
-            self._dbg_block["channels"][int(ch_idx)] = {
-                "channel": int(ch_idx),
+            mux_hex, ch_idx, key, raw, cal, status = ch_m.groups()
+            channels = self._dbg_block["channels"]
+            next_idx = len(channels)
+            item = {
+                "channel": next_idx,
+                "hw_channel": int(ch_idx),
                 "key": key.strip(),
                 "raw": float(raw),
                 "calibrated": float(cal),
+                "degrees": round(calibrated_to_degrees(float(cal)), 2),
                 "status": status,
             }
-            if len(self._dbg_block["channels"]) >= 8:
+            if mux_hex is not None:
+                item["mux_addr"] = int(mux_hex, 16)
+            channels[next_idx] = item
+            if len(self._dbg_block["channels"]) >= 9:
                 return self._joint_from_dbg_block(clear=True)
             return None
 

@@ -1,6 +1,8 @@
-# โครงสร้างระบบ IoT & Web App (ESP32 + Next.js + Cloudflare Workers + Google Sheets)
+# โครงสร้างระบบ IoT & Web App (Pico 2 W + Next.js + Cloudflare Workers + Google Sheets)
 
-This document outlines the architecture, setup process, and implementation details for the end-to-end IoT and Web Application system you requested. 
+This document outlines the architecture, setup process, and implementation details for the end-to-end IoT and Web Application system you requested.
+
+> ESP32 is retired. Active firmware is `Pico2W.ino` only.
 
 ## User Review Required
 
@@ -11,19 +13,19 @@ This document outlines the architecture, setup process, and implementation detai
 
 We will create a multi-project workspace inside the current directory (`e:\Github2\RxSmart`).
 
-### 1. ESP32 Firmware (`ESP32DevKitV1-ArduinoIDE-Code.cpp`)
-The ESP32 code will be implemented as a clean C++ sketch using the following key libraries:
+### 1. Pico 2 W Firmware (`Pico2W.ino`)
+The board firmware is an Arduino sketch (arduino-pico core) using:
 - `WiFi.h`, `WebServer.h`, `DNSServer.h`: For normal connection and the Captive Portal.
-- `Preferences.h`: To save and retrieve WiFi credentials from non-volatile memory (NVS).
+- `LittleFS`: To save and retrieve WiFi credentials.
 - `HTTPClient.h`: For Watchdog checks, Telemetry POST requests.
 - `HTTPUpdate.h`: For Over-the-Air (OTA) updates.
 - `ArduinoJson.h`: For parsing version info and sending telemetry data.
 
 **Key Mechanisms:**
-- **Smart WiFi:** Attempts to connect using stored credentials. Fails -> creates `ESP32-Setup` AP with a Captive Portal.
-- **Watchdog:** Periodic HTTP GET to `google.com`. If no response, re-enter Captive Portal.
-- **OTA:** HTTP GET to Cloudflare `/api/firmware-version`. If version mismatch, download `.bin` and flash.
-- **Telemetry:** HTTP POST to Cloudflare `/api/telemetry`.
+- **Smart WiFi:** Attempts to connect using stored credentials. Fails -> creates `RxSmart-Setup` AP with a Captive Portal.
+- **Watchdog:** Periodic HTTP GET to `google.com`. If no response, restart / re-enter setup.
+- **OTA:** HTTP GET to Cloudflare `/api/firmware-version?platform=pico2w`. If version mismatch, download `.bin` and flash.
+- **Telemetry:** HTTP POST to Cloudflare `/api/telemetry` (`device_platform: pico2w`, 9 sensors).
 
 ### 2. Cloudflare Workers Backend (`/cloudflare-worker`)
 We will create a new folder and initialize a Cloudflare Workers project using Wrangler (`npm create cloudflare@latest`).

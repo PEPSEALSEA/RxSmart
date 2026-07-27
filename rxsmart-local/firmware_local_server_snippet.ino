@@ -1,15 +1,14 @@
 // =============================================================================
 // firmware_local_server_snippet.ino
 // =============================================================================
-// โค้ดที่ต้องเพิ่มเข้าไปใน ESP32DevKitV1-ArduinoIDE-Code.ino
-// เพื่อให้ ESP32 ส่งข้อมูล real-time ไปยัง Python server บนคอมพิวเตอร์
-// ผ่าน WiFi โดยตรง — ไม่ต้องต่อสาย USB
+// Optional patch for Pico2W.ino — POST telemetry to the local Python server
+// over WiFi (no USB serial). ESP32 firmware has been removed from this repo.
 //
 // วิธีใช้:
 //   1. รัน Python pipeline ก่อน: python main.py  (ตั้ง IOT_TRANSPORT = "server")
 //   2. ดู IP ที่แสดงในหน้าต่าง Terminal เช่น  http://192.168.1.5:8765/telemetry
 //   3. แก้ LOCAL_SERVER_URL ด้านล่างให้ตรงกับ IP ของคอมพิวเตอร์
-//   4. Paste โค้ดส่วนที่ระบุลงในไฟล์ .ino หลัก แล้ว Upload
+//   4. Paste โค้ดส่วนที่ระบุลงใน Pico2W.ino แล้ว Upload
 // =============================================================================
 
 // ─────────────────────────────────────────────────────────────────────────────

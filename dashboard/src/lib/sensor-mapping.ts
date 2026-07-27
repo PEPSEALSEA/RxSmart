@@ -1,15 +1,22 @@
 import {
+  CENTER_CHANNEL,
+  CENTER_KEY,
   DEFAULT_CHANNEL_TO_POSE,
+  isMappingKey,
+  isPoseKey,
   isUpperKey,
+  LIMB_CHANNEL_COUNT,
   LIMB_PAIRS,
   LowerPoseKey,
+  MappingKey,
   PoseKey,
+  SENSOR_COUNT,
   UPPER_KEYS,
 } from "@/lib/pose";
 import { createNeutralFrame, SensorFrame } from "@/lib/pose-physics";
 import { computeSquatTransform } from "@/lib/mannequin-rig";
 
-export type ChannelMap = Record<number, PoseKey>;
+export type ChannelMap = Record<number, MappingKey>;
 
 export type SensorChannelReading = {
   channel?: number;
@@ -31,7 +38,7 @@ export type SensorMappingState = {
   calibration_step: string;
   calibration_steps: string[];
   buffer_samples: number;
-  /** Live CH0–7 degrees from motion buffer (when available). */
+  /** Live CH0–CH8 degrees from motion buffer (when available). */
   channel_degrees?: number[] | null;
 };
 
@@ -58,13 +65,24 @@ export const CALIBRATION_STEP_SAVE_HINTS: Record<string, string> = {
   move_forearms: "เทียบ baseline ขั้น 1 · ล็อก top 2 CH ที่ขยับ (Δ≥10°) ตอนกดถัดไป",
   move_shoulders: "ตัด CH ที่ล็อกจากขั้น 2 ออก · เลือก top 2 จากที่เหลือ",
   move_shins: "ตัด CH ที่ล็อกแล้วออก · เลือก top 2 จากที่เหลือ",
-  move_thighs: "ตัด CH จากขั้น 4 ออก · ล็อกที่เหลือ แล้วเขียน channel_map",
-  arms_down: "กำลังเก็บมุม baseline แขนห้อย — ยังไม่เขียน pose_defaults",
-  arms_up_down: "หลังกดถัดไปจะเขียน pose_defaults (standing) ลง sensor_map.json",
+  move_thighs: "ตัด CH จากขั้น 4 ออก · ล็อกที่เหลือ แล้วเขียน channel_map (+ CH8 center อ้างอิง)",
+  arms_down: "กำลังเก็บมุม baseline แขนห้อย (เทียบ CH8) — ยังไม่เขียน pose_defaults",
+  arms_up_down: "หลังกดถัดไปจะเขียน pose_defaults (standing) + center ลง sensor_map.json",
 };
 
 export function calibratedToDegrees(calibrated: number): number {
   return Math.max(0, Math.min(180, Math.abs(calibrated) * (180 / 4095)));
+}
+
+export function ensureCenterInMap(map: ChannelMap): ChannelMap {
+  const next: ChannelMap = { ...map };
+  for (const [chStr, key] of Object.entries(next)) {
+    if (key === CENTER_KEY && Number(chStr) !== CENTER_CHANNEL) {
+      delete next[Number(chStr)];
+    }
+  }
+  next[CENTER_CHANNEL] = CENTER_KEY;
+  return next;
 }
 
 export function parseChannelMap(raw: Record<string, string> | undefined): ChannelMap {
@@ -72,10 +90,13 @@ export function parseChannelMap(raw: Record<string, string> | undefined): Channe
   const result: ChannelMap = {};
   for (const [k, v] of Object.entries(raw)) {
     const ch = Number(k);
-    if (Number.isNaN(ch) || ch < 0 || ch > 7) continue;
-    result[ch] = v as PoseKey;
+    if (Number.isNaN(ch) || ch < 0 || ch >= SENSOR_COUNT) continue;
+    if (!isMappingKey(v)) continue;
+    result[ch] = v;
   }
-  return Object.keys(result).length === 8 ? result : { ...DEFAULT_CHANNEL_TO_POSE };
+  const limbKeys = Object.values(result).filter((k) => isPoseKey(k));
+  if (limbKeys.length < LIMB_CHANNEL_COUNT) return { ...DEFAULT_CHANNEL_TO_POSE };
+  return ensureCenterInMap(result);
 }
 
 export function loadStoredChannelMap(): ChannelMap {
@@ -92,27 +113,29 @@ export function loadStoredChannelMap(): ChannelMap {
 export function saveStoredChannelMap(map: ChannelMap) {
   if (typeof window === "undefined") return;
   const payload: Record<string, string> = {};
-  for (let ch = 0; ch < 8; ch++) {
-    payload[String(ch)] = map[ch];
+  const full = ensureCenterInMap(map);
+  for (let ch = 0; ch < SENSOR_COUNT; ch++) {
+    payload[String(ch)] = full[ch] ?? DEFAULT_CHANNEL_TO_POSE[ch];
   }
   window.localStorage.setItem(STORAGE_KEY, JSON.stringify(payload));
 }
 
 export function channelMapToRecord(map: ChannelMap): Record<string, string> {
   const out: Record<string, string> = {};
-  for (let ch = 0; ch < 8; ch++) {
-    out[String(ch)] = map[ch];
+  const full = ensureCenterInMap(map);
+  for (let ch = 0; ch < SENSOR_COUNT; ch++) {
+    out[String(ch)] = full[ch] ?? DEFAULT_CHANNEL_TO_POSE[ch];
   }
   return out;
 }
 
 export function sensorsToDegreesByChannel(sensors: SensorChannelReading[]): number[] | null {
-  if (sensors.length < 8) return null;
-  const byCh: number[] = Array.from({ length: 8 }, () => 0);
+  if (sensors.length < LIMB_CHANNEL_COUNT) return null;
+  const byCh: number[] = Array.from({ length: SENSOR_COUNT }, () => 0);
   for (let idx = 0; idx < sensors.length; idx++) {
     const s = sensors[idx];
     const ch = typeof s.channel === "number" ? s.channel : idx;
-    if (ch < 0 || ch > 7) continue;
+    if (ch < 0 || ch >= SENSOR_COUNT) continue;
     byCh[ch] =
       typeof s.degrees === "number"
         ? s.degrees
@@ -123,18 +146,30 @@ export function sensorsToDegreesByChannel(sensors: SensorChannelReading[]): numb
   return byCh;
 }
 
+function limbElevVsCenter(raw: number, centerDeg: number | undefined): number {
+  if (centerDeg === undefined) return clampDeg(raw);
+  return clampDeg(Math.abs(raw - centerDeg));
+}
+
 export function mapChannelsToFrame(degrees: number[], channelMap: ChannelMap): SensorFrame {
   const frame = createNeutralFrame();
   const byPose: Partial<Record<PoseKey, number>> = {};
+  let centerDeg: number | undefined;
 
-  for (let ch = 0; ch < 8; ch++) {
+  for (let ch = 0; ch < SENSOR_COUNT; ch++) {
     const poseKey = channelMap[ch];
-    if (poseKey) byPose[poseKey] = degrees[ch];
+    if (!poseKey) continue;
+    const deg = degrees[ch] ?? 0;
+    if (poseKey === CENTER_KEY) {
+      centerDeg = deg;
+      continue;
+    }
+    if (isPoseKey(poseKey)) byPose[poseKey] = deg;
   }
 
   for (const key of UPPER_KEYS) {
     if (byPose[key] !== undefined) {
-      frame[key].elevation = byPose[key]!;
+      frame[key].elevation = limbElevVsCenter(byPose[key]!, centerDeg);
     }
   }
 
@@ -153,6 +188,10 @@ export function mapChannelsToFrame(degrees: number[], channelMap: ChannelMap): S
         Math.min(180, Math.abs(byPose[distKey]! - byPose[proxKey]!)),
       );
     }
+  }
+
+  if (centerDeg !== undefined && frame.body) {
+    frame.body.torsoTilt = centerDeg;
   }
 
   return frame;
@@ -246,6 +285,7 @@ function applyLegPlanesAndSquat(
     rootY: squat.rootY,
     rootZ: squat.rootZ,
     mode: mode ?? "standing",
+    torsoTilt: frame.body?.torsoTilt,
   };
   return frame;
 }
@@ -268,6 +308,7 @@ export function mapJointsAndSensorsToFrame(
       shoulder_right?: number;
       hip_left?: number;
       hip_right?: number;
+      center?: number;
     };
   } | null,
   channelMap: ChannelMap,
@@ -283,34 +324,38 @@ export function mapJointsAndSensorsToFrame(
   if (degrees) {
     const frame = mapChannelsToFrame(degrees, channelMap);
     const byPose: Partial<Record<PoseKey, number>> = {};
-    for (let ch = 0; ch < 8; ch++) {
+    let centerRaw: number | undefined;
+    for (let ch = 0; ch < SENSOR_COUNT; ch++) {
       const key = channelMap[ch];
-      if (key) byPose[key] = degrees[ch];
+      if (!key) continue;
+      if (key === CENTER_KEY) {
+        centerRaw = degrees[ch];
+        continue;
+      }
+      if (isPoseKey(key)) byPose[key] = degrees[ch];
     }
 
     const rel = joints.angles_relative;
     const shNeutralL = upperNeutral(poseDefaults, "arm", "left");
     const shNeutralR = upperNeutral(poseDefaults, "arm", "right");
 
-    // Always abs(raw − hang) for elevation — matches Python apply_pose_defaults.
-    // Do not trust one-sided angles_relative.shoulder_* (can stick at 0 when pitch falls on raise).
     frame.l_arm_upper.elevation = relativeElevation(
-      byPose.l_arm_upper ?? 0,
+      limbElevVsCenter(byPose.l_arm_upper ?? 0, centerRaw),
       shNeutralL,
       ARM_REST_ELEV,
     );
     frame.r_arm_upper.elevation = relativeElevation(
-      byPose.r_arm_upper ?? 0,
+      limbElevVsCenter(byPose.r_arm_upper ?? 0, centerRaw),
       shNeutralR,
       ARM_REST_ELEV,
     );
 
     frame.l_leg_upper.elevation = relativeElevation(
-      byPose.l_leg_upper ?? 0,
+      limbElevVsCenter(byPose.l_leg_upper ?? 0, centerRaw),
       upperNeutral(poseDefaults, "leg", "left"),
     );
     frame.r_leg_upper.elevation = relativeElevation(
-      byPose.r_leg_upper ?? 0,
+      limbElevVsCenter(byPose.r_leg_upper ?? 0, centerRaw),
       upperNeutral(poseDefaults, "leg", "right"),
     );
 
@@ -333,6 +378,16 @@ export function mapJointsAndSensorsToFrame(
         rel?.knee_right !== undefined
           ? clampDeg(Math.min(140, rel.knee_right))
           : Math.min(140, relativeBend(frame.r_leg_lower.bend, lowerNeutral(poseDefaults, "knee_right")));
+    }
+
+    const centerNeutral = poseDefaults?.center?.neutral;
+    if (centerRaw !== undefined && frame.body) {
+      frame.body.torsoTilt =
+        typeof centerNeutral === "number"
+          ? clampDeg(Math.abs(centerRaw - centerNeutral))
+          : typeof rel?.center === "number"
+            ? clampDeg(Math.abs(rel.center))
+            : centerRaw;
     }
 
     return applyLegPlanesAndSquat(frame, mode);
@@ -378,7 +433,7 @@ export function mapJointsAndSensorsToFrame(
 export const LIMB_PAIR_KEYS = LIMB_PAIRS;
 
 export function mappingSummary(map: ChannelMap): string {
-  return Array.from({ length: 8 }, (_, ch) => `CH${ch}→${map[ch]?.replace("_", " ") ?? "?"}`).join(
+  return Array.from({ length: SENSOR_COUNT }, (_, ch) => `CH${ch}→${map[ch]?.replace("_", " ") ?? "?"}`).join(
     " · ",
   );
 }

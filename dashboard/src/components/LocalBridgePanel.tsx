@@ -23,7 +23,7 @@ import {
   saveStoredChannelMap,
   SensorMappingState,
 } from "@/lib/sensor-mapping";
-import { POSE_LABELS } from "@/lib/pose";
+import { MAPPING_LABELS, SENSOR_COUNT } from "@/lib/pose";
 
 interface LocalBridgePanelProps {
   onConnectChange: (connected: boolean) => void;
@@ -42,6 +42,7 @@ const MODES: { id: LocalBridgeMode; label: string }[] = [
 ];
 
 const RECONNECT_MS = 2000;
+const POLL_FAIL_DISCONNECT = 5;
 const WAITING_MSG =
   "รอ Python bridge — เปิดเว็บก่อนหรือหลังก็ได้ ระบบจะลองเชื่อมใหม่อัตโนมัติ";
 
@@ -78,7 +79,9 @@ export default function LocalBridgePanel({
     async (opts?: { quiet?: boolean }) => {
       if (connectInFlight.current) return;
       connectInFlight.current = true;
-      setSeeking(true);
+      if (!connectedRef.current) {
+        setSeeking(true);
+      }
       if (!opts?.quiet) {
         setChecking(true);
         setError("");
@@ -110,6 +113,7 @@ export default function LocalBridgePanel({
         connectedRef.current = true;
         setConnected(true);
         setPolling(true);
+        setSeeking(false);
         setError("");
         if (becameConnected) onConnectChange(true);
       } finally {
@@ -172,7 +176,7 @@ export default function LocalBridgePanel({
         if (cancelled) return;
         failStreak += 1;
         // Tolerate a single blip; then drop and let reconnect loop recover.
-        if (failStreak < 2) return;
+        if (failStreak < POLL_FAIL_DISCONNECT) return;
         if (!connectedRef.current) return;
         connectedRef.current = false;
         setConnected(false);
@@ -249,7 +253,7 @@ export default function LocalBridgePanel({
               </div>
               <p className="mt-3 text-sm text-cohere-body-muted">
                 {imuStats
-                  ? "เสียบ Pico / ESP32 ทาง USB — เปิดเว็บหรือรัน python ก่อนก็ได้ ระบบเชื่อมใหม่อัตโนมัติ"
+                  ? "เสียบ Pico 2 W ทาง USB — เปิดเว็บหรือรัน python ก่อนก็ได้ ระบบเชื่อมใหม่อัตโนมัติ"
                   : "เปิดเว็บก่อนหรือรัน Python ก่อนก็ได้ — bridge จะลองเชื่อม 127.0.0.1:8766 เอง"}
               </p>
             </div>
@@ -269,7 +273,7 @@ export default function LocalBridgePanel({
             </div>
           </div>
 
-          {error && (
+          {error && !connected && (
             <p
               className={`mt-4 animate-fade-in-only rounded-cohere-sm px-4 py-2.5 text-xs ${
                 seeking && !connected
@@ -424,8 +428,8 @@ export default function LocalBridgePanel({
               </div>
 
               {mapping?.channel_map && (
-                <div className="mt-4 grid grid-cols-2 gap-2 sm:grid-cols-4">
-                  {Array.from({ length: 8 }, (_, ch) => {
+                <div className="mt-4 grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-5">
+                  {Array.from({ length: SENSOR_COUNT }, (_, ch) => {
                     const key = channelMap[ch];
                     return (
                       <div
@@ -434,7 +438,7 @@ export default function LocalBridgePanel({
                       >
                         <p className="font-mono-label text-[10px] text-cohere-muted">CH{ch}</p>
                         <p className="mt-0.5 truncate text-[11px] text-cohere-ink">
-                          {key ? POSE_LABELS[key] ?? key : "—"}
+                          {key ? MAPPING_LABELS[key] ?? key : "—"}
                         </p>
                       </div>
                     );

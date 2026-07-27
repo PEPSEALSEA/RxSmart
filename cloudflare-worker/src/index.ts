@@ -174,8 +174,8 @@ function normalizeDevicePlatform(value: unknown, deviceId = ""): DevicePlatform 
 
   const id = deviceId.toUpperCase();
   if (id.startsWith("PICO2W_")) return "pico2w";
-  if (id.startsWith("ESP32_")) return "esp32";
-  return "esp32";
+  if (id.startsWith("ESP32_")) return "esp32"; // legacy rows only
+  return "pico2w";
 }
 
 function parseMaybeJson(raw: string): unknown {
