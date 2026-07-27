@@ -32,6 +32,8 @@ interface GameStageProps {
   onStop: () => void;
   onReset: () => void;
   imuMode?: boolean;
+  /** DEBUG · no board vs LIVE · IMU */
+  sourceLabel?: string;
 }
 
 function useCombo(feedback: SessionFeedback): number {
@@ -92,7 +94,11 @@ function useGhostFrame(
   feedback: SessionFeedback,
   imuMode: boolean,
 ): SensorFrame {
-  const [ghost, setGhost] = useState(() => resolvedPoseToFrame(exercise.startPose));
+  const [ghost, setGhost] = useState(() =>
+    imuMode
+      ? stripImuUnreachablePlane(resolvedPoseToFrame(exercise.startPose))
+      : resolvedPoseToFrame(exercise.startPose),
+  );
   const phaseIndex = useMemo(() => {
     const idx = exercise.phases.findIndex((p) => p.label === feedback.phaseLabel);
     return idx >= 0 ? idx : 0;
@@ -134,28 +140,33 @@ export default function GameStage({
   onStop,
   onReset,
   imuMode = false,
+  sourceLabel,
 }: GameStageProps) {
   const combo = useCombo(feedback);
   const ghostFrame = useGhostFrame(exercise, feedback, imuMode);
   const { muted, toggleMute } = useGameAudio(feedback, true);
+  const playerFrame = imuMode ? stripImuUnreachablePlane(frame) : frame;
+  const safeFeedback = feedback;
 
   return (
     <section className="overflow-hidden rounded-3xl border border-slate-700/80 bg-[#0b1220] shadow-[0_0_60px_rgba(34,211,238,0.08)]">
       <div className="grid lg:grid-cols-12">
         <div className="relative min-h-[520px] lg:col-span-8 xl:col-span-9">
           <GamePoseCanvas
-            frame={frame}
+            frame={playerFrame}
             ghostFrame={ghostFrame}
-            activeJoints={feedback.activeJoints}
+            activeJoints={safeFeedback.activeJoints}
             showGhost
+            imuMode={imuMode}
           />
           <GameHud
-            feedback={feedback}
+            feedback={safeFeedback}
             combo={combo}
             exerciseName={exercise.name}
             muted={muted}
             onToggleMute={toggleMute}
             imuMode={imuMode}
+            sourceLabel={sourceLabel}
           />
           <div className="pointer-events-none absolute bottom-4 left-4 z-20 flex gap-3 text-[10px] uppercase tracking-wider text-slate-400">
             <span className="rounded-full bg-slate-950/70 px-2 py-1">คุณ</span>
@@ -171,7 +182,7 @@ export default function GameStage({
         <aside className="border-t border-white/10 bg-slate-950/90 p-5 lg:col-span-4 xl:col-span-3 lg:border-l lg:border-t-0">
           <GameControls
             exercise={exercise}
-            feedback={feedback}
+            feedback={safeFeedback}
             onSelectExercise={onSelectExercise}
             onStart={onStart}
             onStop={onStop}

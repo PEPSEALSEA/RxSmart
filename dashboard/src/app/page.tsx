@@ -54,7 +54,7 @@ const SkeletonViewer = dynamic(() => import("@/components/SkeletonViewer"), {
   ),
 });
 
-function makeIdleFeedback(exercise: RehabExercise, frame: SensorFrame): SessionFeedback {
+function makeIdleFeedback(exercise: RehabExercise, frame: SensorFrame, debugLive = false): SessionFeedback {
   const fb = buildSessionFeedback(
     frame,
     exercise.startPose,
@@ -63,7 +63,14 @@ function makeIdleFeedback(exercise: RehabExercise, frame: SensorFrame): SessionF
     exercise.reps,
     "idle",
   );
-  return { ...fb, messages: ["เลือกโปรแกรมฝึกแล้วกดเริ่ม — โหมดจำลอง physics 8 sensor"] };
+  return {
+    ...fb,
+    messages: [
+      debugLive
+        ? "DEBUG · ไม่มีบอร์ด — กดเริ่มเพื่อลอง UI/เสียง/โฟลว์เกม"
+        : "เลือกโปรแกรมฝึกแล้วกดเริ่ม — โหมดจำลอง physics 8 sensor",
+    ],
+  };
 }
 
 /**
@@ -158,9 +165,16 @@ export default function UserHome() {
   const lastTickRef = useRef(0);
   const rafRef = useRef<number | null>(null);
 
-  const isLive = dataMode === "live" && bridgeConnected;
-  const useBridgeControls = dataMode === "live" || dataMode === "camera";
-  const useExternalFrame = useBridgeControls && bridgeConnected;
+  const liveImuReady =
+    dataMode === "live" &&
+    bridgeConnected &&
+    Boolean(bridgeState?.joints) &&
+    (bridgeState?.iot_status === "CONNECTED" ||
+      (bridgeState?.joints?.sensors?.length ?? 0) > 0 ||
+      bridgeState?.joints?.source === "iot");
+  const liveDebugMode = dataMode === "live" && !liveImuReady;
+  const useBridgeControls = dataMode === "camera" || liveImuReady;
+  const useExternalFrame = (dataMode === "camera" && bridgeConnected) || liveImuReady;
 
   useEffect(() => {
     const tick = (now: number) => {
@@ -199,7 +213,7 @@ export default function UserHome() {
     engineRef.current.setExercise(next);
     frameRef.current = createNeutralFrame();
     setFrame(createNeutralFrame());
-    setFeedback(makeIdleFeedback(next, createNeutralFrame()));
+    setFeedback(makeIdleFeedback(next, createNeutralFrame(), liveDebugMode));
   };
 
   const handleStart = () => {
@@ -227,7 +241,7 @@ export default function UserHome() {
     engineRef.current.reset();
     frameRef.current = createNeutralFrame();
     setFrame(createNeutralFrame());
-    setFeedback(makeIdleFeedback(exercise, createNeutralFrame()));
+    setFeedback(makeIdleFeedback(exercise, createNeutralFrame(), liveDebugMode));
   };
 
   const handleModeChange = (mode: DataMode) => {
@@ -237,11 +251,18 @@ export default function UserHome() {
       setBridgeState(null);
       frameRef.current = createNeutralFrame();
       setFrame(createNeutralFrame());
-      setFeedback(makeIdleFeedback(exercise, createNeutralFrame()));
+      setFeedback(makeIdleFeedback(exercise, createNeutralFrame(), false));
+    } else if (mode === "live") {
+      frameRef.current = createNeutralFrame();
+      setFrame(createNeutralFrame());
+      setFeedback(makeIdleFeedback(exercise, createNeutralFrame(), true));
+      engineRef.current.reset();
+      engineRef.current.setExercise(exercise);
     }
   };
 
   const handleBridgeFrameUpdate = (nextFrame: SensorFrame) => {
+    // LocalBridgePanel only emits when joints exist.
     frameRef.current = nextFrame;
     setFrame(nextFrame);
   };
@@ -254,8 +275,16 @@ export default function UserHome() {
       if (synced) setExercise(synced);
     }
     if (dataMode === "live") {
-      const liveFb = makeBridgeFeedback(state, "IMU");
-      if (liveFb) setFeedback(liveFb);
+      const hasJoints = Boolean(state.joints);
+      const imuLive =
+        hasJoints &&
+        (state.iot_status === "CONNECTED" ||
+          (state.joints?.sensors?.length ?? 0) > 0 ||
+          state.joints?.source === "iot");
+      if (imuLive) {
+        const liveFb = makeBridgeFeedback(state, "IMU");
+        if (liveFb) setFeedback(liveFb);
+      }
     } else if (dataMode === "camera") {
       const camFb = makeBridgeFeedback(state, "Camera");
       if (camFb) setFeedback(camFb);
@@ -264,11 +293,18 @@ export default function UserHome() {
 
   const handleBridgeConnectChange = (connected: boolean) => {
     setBridgeConnected(connected);
-    if (!connected) {
+    if (!connected && dataMode === "live") {
       setBridgeState(null);
       frameRef.current = createNeutralFrame();
       setFrame(createNeutralFrame());
-      setFeedback(makeIdleFeedback(exercise, createNeutralFrame()));
+      setFeedback(makeIdleFeedback(exercise, createNeutralFrame(), true));
+      engineRef.current.reset();
+      engineRef.current.setExercise(exercise);
+    } else if (!connected) {
+      setBridgeState(null);
+      frameRef.current = createNeutralFrame();
+      setFrame(createNeutralFrame());
+      setFeedback(makeIdleFeedback(exercise, createNeutralFrame(), false));
     }
   };
 
@@ -279,9 +315,15 @@ export default function UserHome() {
       ? bridgeConnected
         ? `Camera bridge · ${bridgeState?.mode ?? "—"}`
         : "Camera — รัน python main.py แล้วกดเชื่อมต่อ"
-      : isLive
-        ? `Local USB · ${bridgeState?.iot_status ?? "—"} · ${bridgeState?.iot_poll_rate_hz?.toFixed(1) ?? "0"} Hz`
+      : dataMode === "live"
+        ? liveImuReady
+          ? `LIVE IMU · ${bridgeState?.iot_status ?? "—"} · ${bridgeState?.iot_poll_rate_hz?.toFixed(1) ?? "0"} Hz`
+          : bridgeConnected
+            ? "DEBUG · bridge ต่อแล้ว แต่ยังไม่มีบอร์ด — เล่น UI ด้วย physics ในเบราว์เซอร์"
+            : "DEBUG · ไม่มีบอร์ด — เล่นเกม UI ได้เลย · เชื่อม Python เมื่อพร้อม"
         : "Simulation mode — ไม่ต้องใช้อุปกรณ์";
+
+  const liveSourceLabel = liveImuReady ? "LIVE · IMU" : "DEBUG · no board";
 
   return (
     <main className="min-h-screen bg-cohere-canvas text-cohere-ink">
@@ -343,20 +385,19 @@ export default function UserHome() {
               onStateUpdate={handleBridgeStateUpdate}
             />
 
-            {bridgeConnected && (
-              <FadeIn delay={120}>
-                <GameStage
-                  frame={frame}
-                  feedback={feedback}
-                  exercise={exercise}
-                  onSelectExercise={handleSelectExercise}
-                  onStart={handleStart}
-                  onStop={handleStop}
-                  onReset={handleReset}
-                  imuMode
-                />
-              </FadeIn>
-            )}
+            <FadeIn delay={120}>
+              <GameStage
+                frame={frame}
+                feedback={feedback}
+                exercise={exercise}
+                onSelectExercise={handleSelectExercise}
+                onStart={handleStart}
+                onStop={handleStop}
+                onReset={handleReset}
+                imuMode
+                sourceLabel={liveSourceLabel}
+              />
+            </FadeIn>
           </FadeIn>
         )}
 

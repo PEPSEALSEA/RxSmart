@@ -32,6 +32,7 @@ interface GlbAvatarProps {
   position?: [number, number, number];
   scale?: number;
   ghost?: boolean;
+  imuMode?: boolean;
 }
 
 function collectSkinnedMeshes(root: Object3D): SkinnedMesh[] {
@@ -50,6 +51,7 @@ export function GlbAvatar({
   position = [0, 0, 0],
   scale = 1,
   ghost = false,
+  imuMode = false,
 }: GlbAvatarProps) {
   const { scene } = useGLTF(ATHLETE_MODEL_URL);
   const rootRef = useRef<Group>(null);
@@ -89,6 +91,7 @@ export function GlbAvatar({
     if (bindRef.current.size === 0) return;
     applyFrameToMixamoBones(bonesRef.current, bindRef.current, frame, {
       rootOffsetY: hipsBindY.current,
+      imuMode,
     });
   });
 

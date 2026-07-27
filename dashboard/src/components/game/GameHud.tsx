@@ -27,6 +27,7 @@ interface GameHudProps {
   muted: boolean;
   onToggleMute: () => void;
   imuMode?: boolean;
+  sourceLabel?: string;
 }
 
 export default function GameHud({
@@ -36,6 +37,7 @@ export default function GameHud({
   muted,
   onToggleMute,
   imuMode = false,
+  sourceLabel,
 }: GameHudProps) {
   const hints = buildDirectionHints(feedback, { ignorePlane: imuMode });
   const progress = feedback.totalReps > 0 ? (feedback.rep / feedback.totalReps) * 100 : 0;
@@ -72,6 +74,17 @@ export default function GameHud({
           <p className="mt-1 text-xs text-slate-300">
             {STATUS_LABELS[feedback.status]} · {feedback.phaseLabel}
           </p>
+          {sourceLabel && (
+            <p
+              className={`mt-1 text-[11px] font-medium tracking-wide ${
+                sourceLabel.startsWith("DEBUG")
+                  ? "text-amber-300/90"
+                  : "text-emerald-300/90"
+              }`}
+            >
+              {sourceLabel}
+            </p>
+          )}
           {imuMode && leaderLabel && (
             <p className="mt-1 text-[11px] text-cyan-200/80">leader · {leaderLabel}</p>
           )}

@@ -13,6 +13,7 @@ interface GamePoseCanvasProps {
   ghostFrame?: SensorFrame | null;
   activeJoints?: PoseKey[];
   showGhost?: boolean;
+  imuMode?: boolean;
 }
 
 class AvatarErrorBoundary extends Component<
@@ -111,6 +112,7 @@ function StageScene({
   ghostFrame,
   activeJoints,
   showGhost,
+  imuMode = false,
 }: GamePoseCanvasProps) {
   const fallback = (
     <MannequinFallback
@@ -131,6 +133,7 @@ function StageScene({
             activeJoints={activeJoints}
             position={showGhost ? [-0.55, 0, 0] : [0, 0, 0]}
             scale={1}
+            imuMode={imuMode}
           />
           {showGhost && ghostFrame && (
             <GlbAvatar
@@ -141,6 +144,7 @@ function StageScene({
               ghost
               position={[0.7, 0, 0]}
               scale={1}
+              imuMode={imuMode}
             />
           )}
         </Suspense>
@@ -155,6 +159,7 @@ export default function GamePoseCanvas({
   ghostFrame = null,
   activeJoints = [],
   showGhost = true,
+  imuMode = false,
 }: GamePoseCanvasProps) {
   return (
     <div className="h-full min-h-[420px] w-full overflow-hidden bg-[#0b1220]">
@@ -164,6 +169,7 @@ export default function GamePoseCanvas({
           ghostFrame={ghostFrame}
           activeJoints={activeJoints}
           showGhost={showGhost}
+          imuMode={imuMode}
         />
       </Canvas>
     </div>
