@@ -69,7 +69,7 @@ function upperHint(
         : "มุมถูกแล้ว — ค้างท่าไว้",
     };
   }
-  if (fb.elevationError > 12) {
+  if (fb.elevationError > 15) {
     const needUp = fb.targetElevation > fb.elevation;
     return {
       joint: key,
