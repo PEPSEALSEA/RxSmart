@@ -35,9 +35,13 @@ Use the **next-devtools** MCP whenever you need live Next.js runtime context —
 
 When you finish work that changes the **dashboard / GitHub Pages** site (anything under `dashboard/`, or related Pages deploy config such as `.github/workflows/nextjs.yml`), **always commit and push** before ending the turn (unless the user says not to):
 
-1. Commit meaningful source changes only (never `__pycache__`, `*.pyc`, secrets, `.env`, large binaries, or `*.tmp`).
-2. Push to `origin` on the current branch (`git push -u origin HEAD` if needed).
-3. Do **not** invent a local Pages deploy — GitHub Actions deploys after push.
-4. Tell the user the commit SHA/URL.
+1. **Check errors first** — do not commit/push until clean:
+   - Prefer next-devtools `get_errors` when `next dev` is running.
+   - Also check lints/diagnostics for edited files.
+   - If errors exist, fix them first; only then proceed.
+2. Commit meaningful source changes only (never `__pycache__`, `*.pyc`, secrets, `.env`, large binaries, or `*.tmp`).
+3. Push to `origin` on the current branch (`git push -u origin HEAD` if needed).
+4. Do **not** invent a local Pages deploy — GitHub Actions deploys after push.
+5. Tell the user the commit SHA/URL and that errors were checked.
 
 Do not force-push `main`/`master`. Do not amend unless the usual amend safety rules allow it.
