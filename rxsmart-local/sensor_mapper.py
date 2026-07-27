@@ -504,6 +504,35 @@ def defaults_from_samples(
     return result
 
 
+def sample_channel_variance(samples: list[list[float]]) -> float:
+    """Max per-channel variance (deg²) across recent IMU rows — stillness metric."""
+    if len(samples) < 2:
+        return 0.0
+    width = min(8, min(len(row) for row in samples))
+    peak = 0.0
+    for ch in range(width):
+        vals = [float(row[ch]) for row in samples]
+        mean = sum(vals) / len(vals)
+        var = sum((v - mean) ** 2 for v in vals) / len(vals)
+        if var > peak:
+            peak = var
+    return peak
+
+
+def relative_deltas_from_frame(pose_frame: Optional[dict[str, dict[str, float]]]) -> dict[str, float]:
+    """Per-joint Δ magnitudes from an IMU pose_frame (elevation / bend)."""
+    if not pose_frame:
+        return {}
+    out: dict[str, float] = {}
+    for key in POSE_KEYS:
+        joint = pose_frame.get(key) or {}
+        if "elevation" in joint:
+            out[key] = round(abs(float(joint.get("elevation", 0.0))), 2)
+        elif "bend" in joint:
+            out[key] = round(abs(float(joint.get("bend", 0.0))), 2)
+    return out
+
+
 def compute_pose_defaults(
     step_samples: dict[str, list[list[float]]],
     channel_map: dict[int, str],
@@ -663,16 +692,38 @@ class SensorMappingManager:
         name = str(pose_name).strip().lower()
         if name not in POSE_PROFILE_NAMES:
             return {"ok": False, "error": f"pose must be one of {POSE_PROFILE_NAMES}"}
-        samples = self._motion_buffer[-20:]
-        if len(samples) < 5:
+        min_n = int(getattr(config, "POSE_CAPTURE_MIN_SAMPLES", 8))
+        max_var = float(getattr(config, "POSE_CAPTURE_MAX_VARIANCE_DEG", 4.0))
+        samples = self._motion_buffer[-max(20, min_n) :]
+        if len(samples) < min_n:
             return {
                 "ok": False,
-                "error": "need_more_motion",
-                "message": "รอสัญญาณ IMU สักครู่ แล้วยืน/นั่งนิ่งก่อนกดอีกครั้ง",
+                "error": "need_more_samples",
+                "message": f"รอสัญญาณ IMU อย่างน้อย {min_n} เฟรม แล้วยืน/นั่งนิ่งก่อนกดอีกครั้ง",
+                "samples": len(samples),
             }
-        profile = defaults_from_samples(samples, self.channel_map)
-        if not profile:
-            return {"ok": False, "error": "capture_failed"}
+        variance = sample_channel_variance(samples[-min_n:])
+        if variance > (max_var * max_var):
+            return {
+                "ok": False,
+                "error": "not_still",
+                "message": "ยังขยับอยู่ — ยืน/นั่งนิ่งให้บอร์ดทุกช่องนิ่ง แล้วกดบันทึกอีกครั้ง",
+                "variance": round(variance, 3),
+                "max_variance": round(max_var * max_var, 3),
+            }
+        if not self.channel_map or len(self.channel_map) < 8:
+            return {
+                "ok": False,
+                "error": "need_channel_map",
+                "message": "ทำ Setup Wizard แมปบอร์ดให้ครบ 8 ช่องก่อนบันทึกท่า",
+            }
+        profile = defaults_from_samples(samples[-min_n:], self.channel_map)
+        if not profile or len(profile) < len(POSE_DEFAULT_ANGLE_KEYS):
+            return {
+                "ok": False,
+                "error": "capture_failed",
+                "message": "บันทึกท่าไม่สำเร็จ — ตรวจสัญญาณ IMU แล้วลองใหม่",
+            }
         self.pose_profiles[name] = profile
         self.pose_defaults = dict(profile)
         self.active_pose = name
@@ -683,6 +734,8 @@ class SensorMappingManager:
             "active_pose": self.active_pose,
             "pose_defaults": self.pose_defaults,
             "pose_profiles": self.pose_profiles,
+            "message": f"บันทึกท่า {name} แล้ว — Δ จะวัดจาก neutral นี้",
+            "variance": round(variance, 3),
         }
 
     def activate_pose_profile(self, pose_name: str) -> dict[str, Any]:

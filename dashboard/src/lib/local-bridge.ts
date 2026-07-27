@@ -27,6 +27,14 @@ export type BridgeSessionFeedback = {
   status: string;
   activeJoints: PoseKey[];
   jointFeedback: Record<PoseKey, JointFeedback>;
+  deltaByJoint?: Partial<Record<PoseKey, number>>;
+  leaderJoint?: PoseKey | string | null;
+  imuDiagnostics?: {
+    leadershipOk: boolean;
+    accelOk: boolean;
+    reason: string | null;
+    leaderJoint?: PoseKey | string | null;
+  } | null;
 };
 
 export type BridgeExerciseSummary = {
@@ -254,6 +262,9 @@ export function mapBridgeSessionFeedback(payload: BridgeSessionFeedback | null |
     status: payload.status as SessionStatus,
     activeJoints: payload.activeJoints,
     jointFeedback: payload.jointFeedback,
+    deltaByJoint: payload.deltaByJoint,
+    leaderJoint: payload.leaderJoint ?? null,
+    imuDiagnostics: payload.imuDiagnostics ?? null,
   };
 }
 

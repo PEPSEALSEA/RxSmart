@@ -27,6 +27,7 @@ from sensor_mapper import (
     SensorMappingManager,
     angles_to_pose_frame,
     calibrated_to_degrees,
+    relative_deltas_from_frame,
     sensors_to_angles,
 )
 
@@ -289,6 +290,13 @@ class WebBridgeServer:
             mapped_joints = _apply_sensor_mapping(joint_data, bridge._mapper)
             session_feedback = bridge._manager.get_session_feedback(mapped_joints)
 
+            delta_by_joint = None
+            if mapped_joints is not None and mapped_joints.pose_frame:
+                delta_by_joint = relative_deltas_from_frame(mapped_joints.pose_frame)
+            fb_dict = session_feedback.to_dict()
+            if delta_by_joint and not fb_dict.get("deltaByJoint"):
+                fb_dict["deltaByJoint"] = delta_by_joint
+
             payload: dict[str, Any] = {
                 "ok": True,
                 "ts": int(time.time() * 1000),
@@ -312,7 +320,8 @@ class WebBridgeServer:
                 else None,
                 "sensor_mapping": bridge._mapper.to_api_dict(),
                 "exercise_id": bridge._manager.current_exercise_id,
-                "session_feedback": session_feedback.to_dict(),
+                "session_feedback": fb_dict,
+                "delta_by_joint": delta_by_joint,
             }
             return jsonify(payload)
 

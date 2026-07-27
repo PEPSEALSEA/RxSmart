@@ -642,6 +642,7 @@ export default function SensorSetupWizard({
               บันทึกท่ายืน/นั่ง →{" "}
               <span className="font-mono-label text-cohere-ink">pose_profiles</span> ใน{" "}
               <span className="font-mono-label">sensor_map.json</span>
+              {" "}— ยืน/นั่งนิ่งก่อนกด (ใช้เป็น neutral สำหรับ Δ ในเกม)
             </p>
             <p className="text-xs">
               ท่าที่ใช้อยู่:{" "}

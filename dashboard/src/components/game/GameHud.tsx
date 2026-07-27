@@ -1,6 +1,5 @@
-"use client";
-
 import { buildDirectionHints } from "@/lib/game-hints";
+import { POSE_LABELS, PoseKey } from "@/lib/pose";
 import { SessionFeedback, SessionStatus } from "@/lib/pose-physics";
 
 const STATUS_LABELS: Record<SessionStatus, string> = {
@@ -43,6 +42,23 @@ export default function GameHud({
   const scoreRing = Math.min(100, Math.max(0, feedback.score));
   const celebrating = feedback.status === "complete";
 
+  const activeDeltas = imuMode
+    ? feedback.activeJoints
+        .map((key) => {
+          const delta =
+            feedback.deltaByJoint?.[key] ??
+            feedback.jointFeedback[key]?.delta ??
+            null;
+          return delta == null ? null : { key, delta };
+        })
+        .filter((row): row is { key: PoseKey; delta: number } => row != null)
+    : [];
+
+  const leaderKey = (feedback.leaderJoint ?? feedback.imuDiagnostics?.leaderJoint) as
+    | PoseKey
+    | undefined;
+  const leaderLabel = leaderKey ? POSE_LABELS[leaderKey] ?? leaderKey : null;
+
   return (
     <div className="pointer-events-none absolute inset-0 z-10 flex flex-col justify-between p-4 sm:p-6">
       <div className="flex items-start justify-between gap-3">
@@ -56,6 +72,9 @@ export default function GameHud({
           <p className="mt-1 text-xs text-slate-300">
             {STATUS_LABELS[feedback.status]} · {feedback.phaseLabel}
           </p>
+          {imuMode && leaderLabel && (
+            <p className="mt-1 text-[11px] text-cyan-200/80">leader · {leaderLabel}</p>
+          )}
         </div>
 
         <div className="flex items-start gap-2">
@@ -80,6 +99,19 @@ export default function GameHud({
         {feedback.messages[0] && (
           <div className="rounded-2xl border border-cyan-400/25 bg-cyan-500/10 px-5 py-3 text-center backdrop-blur-md">
             <p className="text-sm font-medium text-cyan-50 sm:text-base">{feedback.messages[0]}</p>
+          </div>
+        )}
+
+        {imuMode && activeDeltas.length > 0 && (
+          <div className="flex flex-wrap justify-center gap-2">
+            {activeDeltas.map(({ key, delta }) => (
+              <div
+                key={key}
+                className="rounded-full border border-white/15 bg-slate-950/65 px-3 py-1 font-mono text-[11px] tabular-nums text-slate-200 backdrop-blur-md"
+              >
+                {POSE_LABELS[key] ?? key} Δ {Math.round(delta)}°
+              </div>
+            ))}
           </div>
         )}
 

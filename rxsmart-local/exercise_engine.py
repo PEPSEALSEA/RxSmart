@@ -14,6 +14,10 @@ and computes the score. Ported from dashboard/src/lib/pose-physics.ts
   angles themselves are already smoothed upstream (pose_model.PoseFrameSmoother),
   so together this produces a stable, real percentage instead of a flicker.
 
+Live IMU (score_plane=False) adds relative-board leadership and accel gates:
+  the wizard-mapped active boards must lead other boards in delta (or speed
+  during raise/lower), with speed not too fast/slow and no accel spikes.
+
 Runs entirely on this machine — the browser only renders the JSON this
 produces (see web_bridge.py), it does not compute pose correctness itself.
 """
@@ -21,8 +25,8 @@ from __future__ import annotations
 
 import math
 import time
-from dataclasses import dataclass
-from typing import Dict, List, Optional
+from dataclasses import dataclass, field
+from typing import Dict, List, Optional, Tuple
 
 import config
 from biomechanics import LOWER_JOINT_LIMITS, UPPER_JOINT_LIMITS
@@ -45,6 +49,29 @@ def _joint_score(error: float, tolerance: float) -> float:
     return max(0.0, min(100.0, grade * 100.0))
 
 
+def _joint_delta(frame: dict, key: str) -> float:
+    f = frame.get(key) or {}
+    if key in UPPER_KEYS:
+        return abs(float(f.get("elevation", 0.0)))
+    return abs(float(f.get("bend", 0.0)))
+
+
+def _joint_speed(velocities: dict, key: str, score_plane: bool) -> float:
+    v = velocities.get(key) or {}
+    if key in UPPER_KEYS:
+        if not score_plane:
+            return abs(float(v.get("elevation", 0.0)))
+        return math.hypot(float(v.get("elevation", 0.0)), float(v.get("plane", 0.0)))
+    return abs(float(v.get("bend", 0.0)))
+
+
+def _target_scalar(targets: dict, key: str) -> float:
+    t = targets.get(key) or {}
+    if key in UPPER_KEYS:
+        return abs(float(t.get("elevation", 0.0)))
+    return abs(float(t.get("bend", 0.0)))
+
+
 def _velocities(prev_frame: Optional[dict], frame: dict, dt: float) -> Dict[str, dict]:
     out: Dict[str, dict] = {}
     for key in POSE_KEYS:
@@ -63,11 +90,76 @@ def _velocities(prev_frame: Optional[dict], frame: dict, dt: float) -> Dict[str,
     return out
 
 
+def _accelerations(
+    prev_velocities: Optional[Dict[str, dict]],
+    velocities: Dict[str, dict],
+    dt: float,
+    score_plane: bool,
+) -> Dict[str, float]:
+    out: Dict[str, float] = {}
+    for key in POSE_KEYS:
+        speed = _joint_speed(velocities, key, score_plane)
+        prev_speed = _joint_speed(prev_velocities or {}, key, score_plane) if prev_velocities else speed
+        if dt <= 0:
+            out[key] = 0.0
+        else:
+            out[key] = abs(speed - prev_speed) / dt
+    return out
+
+
+def _imu_phase_is_high(targets: dict, active_joints: List[str]) -> bool:
+    if not active_joints:
+        return False
+    peak = max(_target_scalar(targets, k) for k in active_joints)
+    return peak >= float(config.IMU_HIGH_TARGET_DEG)
+
+
+def _imu_leadership(
+    frame: dict,
+    velocities: dict,
+    targets: dict,
+    active_joints: List[str],
+    score_plane: bool,
+) -> Tuple[bool, Optional[str], str]:
+    """Active wizard-mapped boards must lead the others in delta or speed."""
+    if not active_joints or score_plane:
+        return True, None, ""
+
+    active = list(active_joints)
+    inactive = [k for k in POSE_KEYS if k not in active]
+    high = _imu_phase_is_high(targets, active)
+    margin = float(config.IMU_LEADER_MARGIN_DEG)
+    min_move = float(config.IMU_MIN_MOVE_DEG)
+
+    if high:
+        active_deltas = {k: _joint_delta(frame, k) for k in active}
+        inactive_peak = max((_joint_delta(frame, k) for k in inactive), default=0.0)
+        leader = max(active_deltas, key=active_deltas.get)
+        active_peak = active_deltas[leader]
+        if active_peak < min_move:
+            return False, leader, "wrong_board"
+        if active_peak + 1e-6 < inactive_peak + margin:
+            wrong = max(inactive, key=lambda k: _joint_delta(frame, k)) if inactive else None
+            return False, wrong or leader, "wrong_board"
+        return True, leader, ""
+
+    # Raise/lower toward rest — leading board is the one moving fastest.
+    active_speeds = {k: _joint_speed(velocities, k, score_plane) for k in active}
+    inactive_peak = max((_joint_speed(velocities, k, score_plane) for k in inactive), default=0.0)
+    leader = max(active_speeds, key=active_speeds.get)
+    active_peak = active_speeds[leader]
+    if inactive_peak > 6.0 and active_peak + 1e-6 < inactive_peak + margin * 0.5:
+        wrong = max(inactive, key=lambda k: _joint_speed(velocities, k, score_plane)) if inactive else None
+        return False, wrong or leader, "wrong_board"
+    return True, leader, ""
+
+
 def _evaluate_upper(
     key: str,
     frame: dict,
     targets: dict,
     velocities: dict,
+    accelerations: Dict[str, float],
     active: bool,
     phase: ExercisePhase,
     score_plane: bool = True,
@@ -83,11 +175,21 @@ def _evaluate_upper(
     plane_ok = (not score_plane) or plane_error <= lim["plane"]["tolerance"]
     angle_ok = (not active) or (elev_ok and plane_ok)
 
-    # IMU has no plane motion — judge speed from elevation alone.
     speed = abs(v["elevation"]) if not score_plane else math.hypot(v["elevation"], v["plane"])
     is_holding = phase.hold_seconds > 0
     velocity_ok = True
-    if active and not is_holding and speed > 0.5:
+    accel = float(accelerations.get(key, 0.0))
+    accel_ok = True
+
+    if active and not score_plane:
+        if is_holding:
+            velocity_ok = speed < float(config.IMU_HOLD_MAX_SPEED_DPS)
+        elif speed > 0.5:
+            lo = lim["elevation"]["idealVelocityMin"] * float(config.IMU_MOVE_MIN_SPEED_SCALE)
+            hi = phase.move_speed * float(config.IMU_MOVE_MAX_SPEED_SCALE)
+            velocity_ok = lo <= speed <= hi
+        accel_ok = accel <= float(config.IMU_MAX_ACCEL_DPS2)
+    elif active and not is_holding and speed > 0.5:
         velocity_ok = speed <= phase.move_speed * 1.4 and speed >= lim["elevation"]["idealVelocityMin"] * 0.3
     elif active and is_holding:
         velocity_ok = speed < 14
@@ -104,8 +206,11 @@ def _evaluate_upper(
         "vPlane": round(v["plane"], 2),
         "elevationError": round(elevation_error, 2),
         "planeError": round(plane_error, 2),
+        "delta": round(_joint_delta(frame, key), 2),
+        "accel": round(accel, 2),
         "angleOk": angle_ok,
         "velocityOk": velocity_ok,
+        "accelOk": accel_ok if active else True,
         "isActive": active,
         "_score": (score_e + score_p) / 2.0,
     }
@@ -116,9 +221,10 @@ def _evaluate_lower(
     frame: dict,
     targets: dict,
     velocities: dict,
+    accelerations: Dict[str, float],
     active: bool,
     phase: ExercisePhase,
-    score_plane: bool = True,  # noqa: ARG001 — kept for call-site symmetry with upper
+    score_plane: bool = True,
 ) -> dict:
     lim = LOWER_JOINT_LIMITS[key]["bend"]
     f = frame[key]
@@ -131,7 +237,18 @@ def _evaluate_lower(
     speed = abs(v["bend"])
     is_holding = phase.hold_seconds > 0
     velocity_ok = True
-    if active and not is_holding and speed > 0.5:
+    accel = float(accelerations.get(key, 0.0))
+    accel_ok = True
+
+    if active and not score_plane:
+        if is_holding:
+            velocity_ok = speed < float(config.IMU_HOLD_MAX_SPEED_DPS)
+        elif speed > 0.5:
+            lo = lim["idealVelocityMin"] * float(config.IMU_MOVE_MIN_SPEED_SCALE)
+            hi = phase.move_speed * float(config.IMU_MOVE_MAX_SPEED_SCALE)
+            velocity_ok = lo <= speed <= hi
+        accel_ok = accel <= float(config.IMU_MAX_ACCEL_DPS2)
+    elif active and not is_holding and speed > 0.5:
         velocity_ok = speed <= phase.move_speed * 1.35 and speed >= lim["idealVelocityMin"] * 0.35
     elif active and is_holding:
         velocity_ok = speed < 12
@@ -143,8 +260,11 @@ def _evaluate_lower(
         "targetBend": t["bend"],
         "vBend": round(v["bend"], 2),
         "bendError": round(bend_error, 2),
+        "delta": round(_joint_delta(frame, key), 2),
+        "accel": round(accel, 2),
         "angleOk": angle_ok,
         "velocityOk": velocity_ok,
+        "accelOk": accel_ok if active else True,
         "isActive": active,
         "_score": score,
     }
@@ -155,28 +275,49 @@ def _evaluate_joint(
     frame: dict,
     targets: dict,
     velocities: dict,
+    accelerations: Dict[str, float],
     active: bool,
     phase: ExercisePhase,
     score_plane: bool = True,
 ) -> dict:
     if key in UPPER_KEYS:
-        return _evaluate_upper(key, frame, targets, velocities, active, phase, score_plane=score_plane)
-    return _evaluate_lower(key, frame, targets, velocities, active, phase, score_plane=score_plane)
+        return _evaluate_upper(
+            key, frame, targets, velocities, accelerations, active, phase, score_plane=score_plane,
+        )
+    return _evaluate_lower(
+        key, frame, targets, velocities, accelerations, active, phase, score_plane=score_plane,
+    )
 
 
 def _is_at_target(
     frame: dict,
     targets: dict,
     velocities: dict,
+    accelerations: Dict[str, float],
     active_joints: List[str],
     phase: ExercisePhase,
     score_plane: bool = True,
-) -> bool:
+) -> Tuple[bool, Optional[str], str]:
     for key in active_joints:
-        fb = _evaluate_joint(key, frame, targets, velocities, True, phase, score_plane=score_plane)
+        fb = _evaluate_joint(
+            key, frame, targets, velocities, accelerations, True, phase, score_plane=score_plane,
+        )
         if not fb["angleOk"]:
-            return False
-    return True
+            return False, key, "delta_height"
+        if not score_plane and not fb["accelOk"]:
+            return False, key, "accel"
+        if not score_plane and not fb["velocityOk"]:
+            return False, key, "speed"
+
+    if not score_plane:
+        ok, leader, reason = _imu_leadership(
+            frame, velocities, targets, active_joints, score_plane,
+        )
+        if not ok:
+            return False, leader, reason or "wrong_board"
+        return True, leader, ""
+
+    return True, (active_joints[0] if active_joints else None), ""
 
 
 @dataclass
@@ -189,9 +330,12 @@ class SessionFeedback:
     status: str
     active_joints: List[str]
     joint_feedback: Dict[str, dict]
+    delta_by_joint: Dict[str, float] = field(default_factory=dict)
+    leader_joint: Optional[str] = None
+    imu_diagnostics: Optional[dict] = None
 
     def to_dict(self) -> dict:
-        return {
+        out = {
             "score": self.score,
             "messages": self.messages,
             "phaseLabel": self.phase_label,
@@ -200,25 +344,37 @@ class SessionFeedback:
             "status": self.status,
             "activeJoints": self.active_joints,
             "jointFeedback": self.joint_feedback,
+            "deltaByJoint": self.delta_by_joint,
+            "leaderJoint": self.leader_joint,
         }
+        if self.imu_diagnostics is not None:
+            out["imuDiagnostics"] = self.imu_diagnostics
+        return out
 
 
 def build_session_feedback(
     frame: dict,
     targets: dict,
     velocities: dict,
+    accelerations: Dict[str, float],
     phase: ExercisePhase,
     rep: int,
     total_reps: int,
     status: str,
     score_plane: bool = True,
+    leader_joint: Optional[str] = None,
+    fail_reason: str = "",
 ) -> SessionFeedback:
     joint_feedback: Dict[str, dict] = {}
     active_scores: List[float] = []
+    delta_by_joint: Dict[str, float] = {}
 
     for key in POSE_KEYS:
         active = key in phase.active_joints
-        fb = _evaluate_joint(key, frame, targets, velocities, active, phase, score_plane=score_plane)
+        fb = _evaluate_joint(
+            key, frame, targets, velocities, accelerations, active, phase, score_plane=score_plane,
+        )
+        delta_by_joint[key] = float(fb.get("delta", 0.0))
         if active:
             active_scores.append(fb.pop("_score"))
         else:
@@ -227,8 +383,31 @@ def build_session_feedback(
 
     raw_score = 100.0 if not active_scores else sum(active_scores) / len(active_scores)
 
+    leadership_ok = True
+    accel_ok = True
+    if not score_plane and phase.active_joints:
+        leadership_ok, leader_guess, lead_reason = _imu_leadership(
+            frame, velocities, targets, phase.active_joints, score_plane,
+        )
+        if leader_joint is None:
+            leader_joint = leader_guess
+        if fail_reason == "wrong_board" or not leadership_ok:
+            leadership_ok = False
+            fail_reason = fail_reason or lead_reason or "wrong_board"
+        accel_ok = all(
+            joint_feedback[k].get("accelOk", True) for k in phase.active_joints
+        )
+
     messages: List[str] = []
-    if status == "holding":
+    if not score_plane and fail_reason == "wrong_board" and status == "moving":
+        messages.append("กระดานผิดข้าง — ขยับข้อที่แมปไว้ใน Setup Wizard")
+    elif not score_plane and fail_reason == "speed" and status == "moving":
+        messages.append("ความเร็วไม่เหมาะ — ช้า/เร็วเกินไป")
+    elif not score_plane and fail_reason == "accel" and status == "moving":
+        messages.append("กระตุกแรงเกินไป — เคลื่อนไหวให้ต่อเนื่อง")
+    elif not score_plane and fail_reason == "delta_height" and status == "moving":
+        messages.append("มุม Δ ยังไม่ถึงเป้า — ยก/งอตามบอร์ดที่แมปไว้")
+    elif status == "holding":
         messages.append(
             "ค้างท่า — รักษามุมยกให้คงที่"
             if not score_plane
@@ -239,7 +418,7 @@ def build_session_feedback(
         if has_upper_active and score_plane:
             messages.append("หมุนข้อต่อรอบทิศ — ควบคุมทั้งยกขึ้นและทิศทาง (plane)")
         elif has_upper_active:
-            messages.append("ยก/ลดตามเป้า — คะแนนจากมุม elevation ของ IMU")
+            messages.append("ยก/ลดตามเป้า — คะแนนจาก Δ ของบอร์ดที่แมปไว้")
         else:
             messages.append("ความเร็วและมุมเหมาะสม — ทำต่อได้เลย")
     elif status == "rest":
@@ -248,10 +427,19 @@ def build_session_feedback(
         messages.append("เสร็จโปรแกรมแล้ว!")
     else:
         messages.append(
-            "กดเริ่มเพื่อฝึก — คะแนนจาก IMU (elevation / bend)"
+            "กดเริ่มเพื่อฝึก — คะแนนจาก Δ ของ IMU ตาม Setup Wizard"
             if not score_plane
             else "กดเริ่มเพื่อฝึก — คำนวณจากกล้องบนเครื่องนี้ (Python)"
         )
+
+    imu_diagnostics = None
+    if not score_plane:
+        imu_diagnostics = {
+            "leadershipOk": leadership_ok,
+            "accelOk": accel_ok,
+            "reason": fail_reason or None,
+            "leaderJoint": leader_joint,
+        }
 
     return SessionFeedback(
         score=round(raw_score),
@@ -262,6 +450,9 @@ def build_session_feedback(
         status=status,
         active_joints=list(phase.active_joints),
         joint_feedback=joint_feedback,
+        delta_by_joint=delta_by_joint,
+        leader_joint=leader_joint,
+        imu_diagnostics=imu_diagnostics,
     )
 
 
@@ -273,14 +464,17 @@ class ExerciseSessionManager:
         self._exercise: RehabExercise = exercise or REHAB_EXERCISES[0]
         self._phase_index = 0
         self._rep = 1
-        self._phase_elapsed = 0.0
+        self._hold_elapsed = 0.0
         self._rest_remaining = 0.0
         self._status = "idle"
         self._running = False
         self._targets: Dict[str, dict] = {k: dict(v) for k, v in self._exercise.start_pose.items()}
         self._last_tick_ts: Optional[float] = None
         self._prev_frame: Optional[dict] = None
+        self._prev_velocities: Optional[Dict[str, dict]] = None
         self._smoothed_score: Optional[float] = None
+        self._last_fail_reason: str = ""
+        self._last_leader: Optional[str] = None
 
     @property
     def exercise(self) -> RehabExercise:
@@ -299,10 +493,13 @@ class ExerciseSessionManager:
         self._status = "moving"
         self._phase_index = 0
         self._rep = 1
-        self._phase_elapsed = 0.0
+        self._hold_elapsed = 0.0
         self._rest_remaining = 0.0
         self._targets = resolve_pose(self._exercise.start_pose, self._current_phase().targets)
         self._smoothed_score = None
+        self._last_fail_reason = ""
+        self._last_leader = None
+        self._prev_velocities = None
 
     def stop(self) -> None:
         self._running = False
@@ -313,11 +510,14 @@ class ExerciseSessionManager:
         self.stop()
         self._phase_index = 0
         self._rep = 1
-        self._phase_elapsed = 0.0
+        self._hold_elapsed = 0.0
         self._rest_remaining = 0.0
         self._smoothed_score = None
         self._last_tick_ts = None
         self._prev_frame = None
+        self._prev_velocities = None
+        self._last_fail_reason = ""
+        self._last_leader = None
 
     def handle_action(self, action: str) -> bool:
         if action == "start":
@@ -334,7 +534,8 @@ class ExerciseSessionManager:
         return self._exercise.phases[self._phase_index]
 
     def _advance_phase(self) -> None:
-        self._phase_elapsed = 0.0
+        self._hold_elapsed = 0.0
+        self._last_fail_reason = ""
         last = len(self._exercise.phases) - 1
         if self._phase_index < last:
             self._phase_index += 1
@@ -361,13 +562,16 @@ class ExerciseSessionManager:
 
         frame = frame or NEUTRAL_POSE
         velocities = _velocities(self._prev_frame, frame, dt)
+        accelerations = _accelerations(self._prev_velocities, velocities, dt, score_plane)
         self._prev_frame = {k: dict(v) for k, v in frame.items()}
+        self._prev_velocities = {k: dict(v) for k, v in velocities.items()}
 
         phase = self._current_phase()
 
         if not self._running:
             fb = build_session_feedback(
-                frame, self._targets, velocities, phase, self._rep, self._exercise.reps, "idle",
+                frame, self._targets, velocities, accelerations,
+                phase, self._rep, self._exercise.reps, "idle",
                 score_plane=score_plane,
             )
             return self._smooth(fb)
@@ -380,29 +584,40 @@ class ExerciseSessionManager:
                 self._status = "moving"
                 self._targets = resolve_pose(self._exercise.start_pose, phase.targets)
             fb = build_session_feedback(
-                frame, self._targets, velocities, phase, self._rep, self._exercise.reps, self._status,
+                frame, self._targets, velocities, accelerations,
+                phase, self._rep, self._exercise.reps, self._status,
                 score_plane=score_plane,
             )
             return self._smooth(fb)
 
         self._targets = resolve_pose(self._exercise.start_pose, phase.targets)
-        self._phase_elapsed += dt
-        at_target = _is_at_target(
-            frame, self._targets, velocities, phase.active_joints, phase, score_plane=score_plane,
+        at_target, leader, reason = _is_at_target(
+            frame, self._targets, velocities, accelerations,
+            phase.active_joints, phase, score_plane=score_plane,
         )
+        self._last_leader = leader
+        self._last_fail_reason = "" if at_target else reason
 
         if phase.hold_seconds > 0:
-            self._status = "holding" if at_target else "moving"
-            if at_target and self._phase_elapsed >= phase.hold_seconds:
-                self._advance_phase()
+            if at_target:
+                self._hold_elapsed += dt
+                self._status = "holding"
+                if self._hold_elapsed >= phase.hold_seconds:
+                    self._advance_phase()
+            else:
+                self._hold_elapsed = 0.0
+                self._status = "moving"
         elif at_target:
             self._advance_phase()
         else:
             self._status = "moving"
 
         fb = build_session_feedback(
-            frame, self._targets, velocities, phase, self._rep, self._exercise.reps, self._status,
+            frame, self._targets, velocities, accelerations,
+            phase, self._rep, self._exercise.reps, self._status,
             score_plane=score_plane,
+            leader_joint=self._last_leader,
+            fail_reason=self._last_fail_reason,
         )
         return self._smooth(fb)
 

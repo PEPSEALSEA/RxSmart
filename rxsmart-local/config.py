@@ -80,6 +80,19 @@ SENSOR_MAP_FILE: str = "sensor_map.json"
 # of the per-joint ANGLE_SMOOTHING_ALPHA above.
 EXERCISE_SCORE_SMOOTHING_ALPHA: float = 0.25
 
+# Live IMU judge — relative board leadership + speed/accel gates
+IMU_LEADER_MARGIN_DEG: float = 8.0
+IMU_MIN_MOVE_DEG: float = 12.0
+IMU_MAX_ACCEL_DPS2: float = 350.0
+IMU_HOLD_MAX_SPEED_DPS: float = 18.0
+IMU_MOVE_MIN_SPEED_SCALE: float = 0.25
+IMU_MOVE_MAX_SPEED_SCALE: float = 1.55
+IMU_HIGH_TARGET_DEG: float = 30.0
+
+# Pose profile capture — require stillness before writing pose_defaults
+POSE_CAPTURE_MIN_SAMPLES: int = 8
+POSE_CAPTURE_MAX_VARIANCE_DEG: float = 4.0
+
 # ---------------------------------------------------------------------------
 # Sensor Fusion (Complementary Filter)
 # ---------------------------------------------------------------------------

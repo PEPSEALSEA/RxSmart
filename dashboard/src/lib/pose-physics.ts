@@ -35,8 +35,11 @@ export interface UpperJointFeedback {
   vPlane: number;
   elevationError: number;
   planeError: number;
+  delta?: number;
+  accel?: number;
   angleOk: boolean;
   velocityOk: boolean;
+  accelOk?: boolean;
   isActive: boolean;
 }
 
@@ -45,12 +48,29 @@ export interface LowerJointFeedback {
   targetBend: number;
   vBend: number;
   bendError: number;
+  delta?: number;
+  accel?: number;
   angleOk: boolean;
   velocityOk: boolean;
+  accelOk?: boolean;
   isActive: boolean;
 }
 
 export type JointFeedback = UpperJointFeedback | LowerJointFeedback;
+
+export type ImuFailReason =
+  | "wrong_board"
+  | "speed"
+  | "accel"
+  | "delta_height"
+  | string;
+
+export interface ImuDiagnostics {
+  leadershipOk: boolean;
+  accelOk: boolean;
+  reason: ImuFailReason | null;
+  leaderJoint?: PoseKey | string | null;
+}
 
 export interface SessionFeedback {
   score: number;
@@ -61,6 +81,9 @@ export interface SessionFeedback {
   status: SessionStatus;
   activeJoints: PoseKey[];
   jointFeedback: Record<PoseKey, JointFeedback>;
+  deltaByJoint?: Partial<Record<PoseKey, number>>;
+  leaderJoint?: PoseKey | string | null;
+  imuDiagnostics?: ImuDiagnostics | null;
 }
 
 const SPRING_STIFFNESS = 52;
