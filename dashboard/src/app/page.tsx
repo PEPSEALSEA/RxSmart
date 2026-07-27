@@ -62,12 +62,13 @@ function makeIdleFeedback(exercise: RehabExercise, frame: SensorFrame, debugLive
     0,
     exercise.reps,
     "idle",
+    { ignorePlane: debugLive },
   );
   return {
     ...fb,
     messages: [
       debugLive
-        ? "DEBUG · ไม่มีบอร์ด — กดเริ่มเพื่อลอง UI/เสียง/โฟลว์เกม"
+        ? "DEBUG · ไม่มีบอร์ด — กดเริ่มเพื่อลอง UI/เสียง/โฟลว์เกม (elev/bend)"
         : "เลือกโปรแกรมฝึกแล้วกดเริ่ม — โหมดจำลอง physics 8 sensor",
     ],
   };
@@ -249,10 +250,12 @@ export default function UserHome() {
     if (mode === "simulation") {
       setBridgeConnected(false);
       setBridgeState(null);
+      engineRef.current.setIgnorePlane(false);
       frameRef.current = createNeutralFrame();
       setFrame(createNeutralFrame());
       setFeedback(makeIdleFeedback(exercise, createNeutralFrame(), false));
     } else if (mode === "live") {
+      engineRef.current.setIgnorePlane(true);
       frameRef.current = createNeutralFrame();
       setFrame(createNeutralFrame());
       setFeedback(makeIdleFeedback(exercise, createNeutralFrame(), true));
@@ -295,6 +298,7 @@ export default function UserHome() {
     setBridgeConnected(connected);
     if (!connected && dataMode === "live") {
       setBridgeState(null);
+      engineRef.current.setIgnorePlane(true);
       frameRef.current = createNeutralFrame();
       setFrame(createNeutralFrame());
       setFeedback(makeIdleFeedback(exercise, createNeutralFrame(), true));
@@ -302,6 +306,7 @@ export default function UserHome() {
       engineRef.current.setExercise(exercise);
     } else if (!connected) {
       setBridgeState(null);
+      engineRef.current.setIgnorePlane(false);
       frameRef.current = createNeutralFrame();
       setFrame(createNeutralFrame());
       setFeedback(makeIdleFeedback(exercise, createNeutralFrame(), false));

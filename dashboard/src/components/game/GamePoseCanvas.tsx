@@ -2,11 +2,19 @@
 
 import { Canvas } from "@react-three/fiber";
 import { ContactShadows, Environment, Grid, OrbitControls } from "@react-three/drei";
-import { Component, type ReactNode, Suspense } from "react";
+import {
+  Component,
+  Suspense,
+  useEffect,
+  useState,
+  type ReactNode,
+} from "react";
 import { GlbAvatar } from "@/components/game/GlbAvatar";
 import { Mannequin } from "@/components/Mannequin";
 import { PoseKey } from "@/lib/pose";
 import { SensorFrame } from "@/lib/pose-physics";
+
+const GLB_LOAD_TIMEOUT_MS = 2500;
 
 interface GamePoseCanvasProps {
   frame: SensorFrame;
@@ -16,14 +24,20 @@ interface GamePoseCanvasProps {
   imuMode?: boolean;
 }
 
+type GlbMode = "pending" | "ready" | "failed";
+
 class AvatarErrorBoundary extends Component<
-  { fallback: ReactNode; children: ReactNode },
+  { fallback: ReactNode; children: ReactNode; onError?: () => void },
   { failed: boolean }
 > {
   state = { failed: false };
 
   static getDerivedStateFromError() {
     return { failed: true };
+  }
+
+  componentDidCatch() {
+    this.props.onError?.();
   }
 
   render() {
@@ -36,23 +50,23 @@ function StageLights() {
   return (
     <>
       <color attach="background" args={["#0b1220"]} />
-      <fog attach="fog" args={["#0b1220", 6, 14]} />
-      <Environment preset="night" environmentIntensity={0.45} />
-      <ambientLight intensity={0.35} />
+      <fog attach="fog" args={["#0b1220", 10, 22]} />
+      <Environment preset="night" environmentIntensity={0.55} />
+      <ambientLight intensity={0.65} />
       <directionalLight
         position={[3, 6, 2]}
-        intensity={1.35}
+        intensity={1.55}
         castShadow
         shadow-mapSize={[2048, 2048]}
-        color="#e2e8f0"
+        color="#f8fafc"
       />
-      <directionalLight position={[-2.5, 3, -2]} intensity={0.45} color="#38bdf8" />
+      <directionalLight position={[-2.5, 3, -2]} intensity={0.7} color="#67e8f9" />
       <spotLight
-        position={[0, 5, 3]}
-        angle={0.55}
-        penumbra={0.6}
-        intensity={1.1}
-        color="#7dd3fc"
+        position={[0, 5.5, 3.2]}
+        angle={0.6}
+        penumbra={0.55}
+        intensity={1.35}
+        color="#a5f3fc"
       />
     </>
   );
@@ -65,21 +79,28 @@ function StageFloor() {
         position={[0, 0, 0]}
         args={[8, 8]}
         cellSize={0.35}
-        cellThickness={0.4}
-        cellColor="#1e293b"
+        cellThickness={0.45}
+        cellColor="#334155"
         sectionSize={1.4}
-        sectionThickness={0.85}
-        sectionColor="#334155"
-        fadeDistance={10}
-        fadeStrength={1.4}
+        sectionThickness={0.95}
+        sectionColor="#475569"
+        fadeDistance={12}
+        fadeStrength={1.1}
         infiniteGrid
       />
-      <ContactShadows position={[0, 0.01, 0]} opacity={0.55} scale={6} blur={2.8} far={2.5} color="#020617" />
+      <ContactShadows
+        position={[0, 0.01, 0]}
+        opacity={0.6}
+        scale={6}
+        blur={2.6}
+        far={2.5}
+        color="#020617"
+      />
       <OrbitControls
         target={[0, 1.05, 0]}
         minPolarAngle={0.2}
-        maxPolarAngle={Math.PI / 2 + 0.05}
-        minDistance={1.6}
+        maxPolarAngle={Math.PI / 2 + 0.08}
+        minDistance={1.5}
         maxDistance={5}
         enablePan={false}
       />
@@ -87,12 +108,17 @@ function StageFloor() {
   );
 }
 
-function MannequinFallback({
+function MannequinPair({
   frame,
   ghostFrame,
   activeJoints,
   showGhost,
-}: GamePoseCanvasProps) {
+}: {
+  frame: SensorFrame;
+  ghostFrame?: SensorFrame | null;
+  activeJoints?: PoseKey[];
+  showGhost?: boolean;
+}) {
   return (
     <group>
       <group position={showGhost ? [-0.55, 0, 0] : [0, 0, 0]}>
@@ -107,6 +133,50 @@ function MannequinFallback({
   );
 }
 
+function GlbPair({
+  frame,
+  ghostFrame,
+  activeJoints,
+  showGhost,
+  imuMode,
+  onReady,
+  onError,
+}: {
+  frame: SensorFrame;
+  ghostFrame?: SensorFrame | null;
+  activeJoints?: PoseKey[];
+  showGhost?: boolean;
+  imuMode?: boolean;
+  onReady: () => void;
+  onError: () => void;
+}) {
+  return (
+    <group>
+      <GlbAvatar
+        frame={frame}
+        activeJoints={activeJoints}
+        position={showGhost ? [-0.55, 0, 0] : [0, 0, 0]}
+        scale={1}
+        imuMode={imuMode}
+        onReady={onReady}
+        onError={onError}
+      />
+      {showGhost && ghostFrame && (
+        <GlbAvatar
+          frame={ghostFrame}
+          activeJoints={activeJoints}
+          opacity={0.48}
+          tint="#67e8f9"
+          ghost
+          position={[0.7, 0, 0]}
+          scale={1}
+          imuMode={imuMode}
+        />
+      )}
+    </group>
+  );
+}
+
 function StageScene({
   frame,
   ghostFrame,
@@ -114,41 +184,44 @@ function StageScene({
   showGhost,
   imuMode = false,
 }: GamePoseCanvasProps) {
-  const fallback = (
-    <MannequinFallback
-      frame={frame}
-      ghostFrame={ghostFrame}
-      activeJoints={activeJoints}
-      showGhost={showGhost}
-    />
-  );
+  const [glbMode, setGlbMode] = useState<GlbMode>("pending");
+
+  useEffect(() => {
+    const timer = window.setTimeout(() => {
+      setGlbMode((mode) => (mode === "pending" ? "failed" : mode));
+    }, GLB_LOAD_TIMEOUT_MS);
+    return () => window.clearTimeout(timer);
+  }, []);
+
+  const markReady = () => setGlbMode((mode) => (mode === "failed" ? mode : "ready"));
+  const markFailed = () => setGlbMode("failed");
 
   return (
     <>
       <StageLights />
-      <AvatarErrorBoundary fallback={fallback}>
-        <Suspense fallback={fallback}>
-          <GlbAvatar
-            frame={frame}
-            activeJoints={activeJoints}
-            position={showGhost ? [-0.55, 0, 0] : [0, 0, 0]}
-            scale={1}
-            imuMode={imuMode}
-          />
-          {showGhost && ghostFrame && (
-            <GlbAvatar
-              frame={ghostFrame}
+      {glbMode !== "ready" && (
+        <MannequinPair
+          frame={frame}
+          ghostFrame={ghostFrame}
+          activeJoints={activeJoints}
+          showGhost={showGhost}
+        />
+      )}
+      {glbMode !== "failed" && (
+        <AvatarErrorBoundary fallback={null} onError={markFailed}>
+          <Suspense fallback={null}>
+            <GlbPair
+              frame={frame}
+              ghostFrame={ghostFrame}
               activeJoints={activeJoints}
-              opacity={0.42}
-              tint="#67e8f9"
-              ghost
-              position={[0.7, 0, 0]}
-              scale={1}
+              showGhost={showGhost}
               imuMode={imuMode}
+              onReady={markReady}
+              onError={markFailed}
             />
-          )}
-        </Suspense>
-      </AvatarErrorBoundary>
+          </Suspense>
+        </AvatarErrorBoundary>
+      )}
       <StageFloor />
     </>
   );
@@ -163,7 +236,11 @@ export default function GamePoseCanvas({
 }: GamePoseCanvasProps) {
   return (
     <div className="h-full min-h-[420px] w-full overflow-hidden bg-[#0b1220]">
-      <Canvas shadows camera={{ position: [2.1, 1.45, 2.8], fov: 38 }} gl={{ antialias: true }}>
+      <Canvas
+        shadows
+        camera={{ position: [1.8, 1.35, 2.6], fov: 40 }}
+        gl={{ antialias: true }}
+      >
         <StageScene
           frame={frame}
           ghostFrame={ghostFrame}

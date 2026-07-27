@@ -27,8 +27,8 @@ function useBodyMaterial(color: string, active: boolean) {
         metalness: 0.02,
         clearcoat: 0.35,
         clearcoatRoughness: 0.22,
-        emissive: active ? ACTIVE : "#000000",
-        emissiveIntensity: active ? 0.22 : 0,
+        emissive: active ? ACTIVE : "#0ea5e9",
+        emissiveIntensity: active ? 0.38 : 0.08,
       }),
     [color, active],
   );

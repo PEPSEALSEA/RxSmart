@@ -274,10 +274,12 @@ export function buildSessionFeedback(
   rep: number,
   totalReps: number,
   status: SessionStatus,
+  options?: { ignorePlane?: boolean },
 ): SessionFeedback {
   const jointFeedback = {} as Record<PoseKey, JointFeedback>;
   let activeCount = 0;
   let passCount = 0;
+  const ignorePlane = Boolean(options?.ignorePlane);
 
   for (const key of POSE_KEYS) {
     const active = phase.activeJoints.includes(key);
@@ -295,11 +297,17 @@ export function buildSessionFeedback(
   const score = activeCount === 0 ? 100 : Math.round((passCount / activeCount) * 100);
 
   if (status === "holding") {
-    messages.push("ค้างท่า — รักษามุม elevation + plane ให้คงที่");
+    messages.push(
+      ignorePlane
+        ? "ค้างท่า — รักษามุมยกให้คงที่"
+        : "ค้างท่า — รักษามุม elevation + plane ให้คงที่",
+    );
   } else if (status === "moving") {
     const hasCirc = phase.activeJoints.some((k) => isUpperKey(k));
-    if (hasCirc) {
+    if (hasCirc && !ignorePlane) {
       messages.push("หมุนข้อต่อรอบทิศ — ควบคุมทั้งยกขึ้นและทิศทาง (plane)");
+    } else if (hasCirc) {
+      messages.push("ยก/ลดตามเป้า — คะแนนจากมุม elevation ของ IMU");
     }
     if (messages.length === 0) {
       messages.push("ความเร็วและมุมเหมาะสม — ทำต่อได้เลย");
@@ -309,7 +317,11 @@ export function buildSessionFeedback(
   } else if (status === "complete") {
     messages.push("เสร็จโปรแกรมแล้ว!");
   } else {
-    messages.push("กดเริ่มเพื่อฝึก — ข้อต่อบนมี 2 แก่ (ยก + หมุนรอบตัว)");
+    messages.push(
+      ignorePlane
+        ? "กดเริ่มเพื่อฝึก — คะแนนจาก Δ ของ IMU (elevation / bend)"
+        : "กดเริ่มเพื่อฝึก — ข้อต่อบนมี 2 แกน (ยก + หมุนรอบตัว)",
+    );
   }
 
   return {
@@ -333,10 +345,15 @@ export class RehabSessionEngine {
   private restRemaining = 0;
   private status: SessionStatus = "idle";
   private running = false;
+  private ignorePlane = false;
 
   constructor(exercise: RehabExercise) {
     this.exercise = exercise;
     this.targets = { ...exercise.startPose };
+  }
+
+  setIgnorePlane(ignore: boolean): void {
+    this.ignorePlane = ignore;
   }
 
   getTargets(): ResolvedPose {
@@ -380,11 +397,27 @@ export class RehabSessionEngine {
     this.targets = structuredClone(exercise.startPose);
   }
 
+  private feedback(
+    frame: SensorFrame,
+    phase: ExercisePhase,
+    status: SessionStatus,
+  ): SessionFeedback {
+    return buildSessionFeedback(
+      frame,
+      this.targets,
+      phase,
+      this.rep,
+      this.exercise.reps,
+      status,
+      { ignorePlane: this.ignorePlane },
+    );
+  }
+
   tick(dt: number, frame: SensorFrame): SessionFeedback {
     const phase = this.getPhase();
 
     if (!this.running) {
-      return buildSessionFeedback(frame, this.targets, phase, this.rep, this.exercise.reps, "idle");
+      return this.feedback(frame, phase, "idle");
     }
 
     if (this.restRemaining > 0) {
@@ -395,7 +428,7 @@ export class RehabSessionEngine {
         this.status = "moving";
         this.targets = resolvePose(this.exercise.startPose, this.getPhase().targets);
       }
-      return buildSessionFeedback(frame, this.targets, phase, this.rep, this.exercise.reps, this.status);
+      return this.feedback(frame, phase, this.status);
     }
 
     this.targets = resolvePose(this.exercise.startPose, phase.targets);
@@ -411,7 +444,7 @@ export class RehabSessionEngine {
       this.status = "moving";
     }
 
-    return buildSessionFeedback(frame, this.targets, phase, this.rep, this.exercise.reps, this.status);
+    return this.feedback(frame, this.getPhase(), this.status);
   }
 
   private advancePhase(): void {
