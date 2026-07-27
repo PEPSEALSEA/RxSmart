@@ -15,6 +15,12 @@ import {
   postBridgeSessionAction,
   selectBridgeExercise,
 } from "@/lib/local-bridge";
+import {
+  applyExerciseOverride,
+  ExercisePoseOverride,
+  getOverride,
+  overrideToBridgePayload,
+} from "@/lib/exercise-pose-overrides";
 import { getExerciseById, REHAB_EXERCISES, RehabExercise, supportsImuExercise } from "@/lib/rehab-exercises";
 import {
   RehabSessionEngine,
@@ -167,6 +173,7 @@ export default function UserHome() {
     makeIdleFeedback(REHAB_EXERCISES[0], createNeutralFrame()),
   );
   const [exercise, setExercise] = useState<RehabExercise>(REHAB_EXERCISES[0]);
+  const [catalogExercise, setCatalogExercise] = useState<RehabExercise>(REHAB_EXERCISES[0]);
   const [dataMode, setDataMode] = useState<DataMode>("simulation");
   const [sensorsOpen, setSensorsOpen] = useState(true);
   const [bridgeConnected, setBridgeConnected] = useState(false);
@@ -267,19 +274,39 @@ export default function UserHome() {
     };
   }, [useExternalFrame]);
 
+  const pushBridgeExercise = (selected: RehabExercise, override?: ExercisePoseOverride | null) => {
+    const ov = override ?? getOverride(selected.id);
+    const payload = ov ? overrideToBridgePayload(ov) : null;
+    void selectBridgeExercise(loadBridgeUrl(), selected.id, payload).catch(() => undefined);
+  };
+
   const handleSelectExercise = (next: RehabExercise) => {
     const selected = normalizeExerciseForMode(next, dataMode);
-    setExercise(selected);
+    const catalog = getExerciseById(selected.id) ?? selected;
+    setCatalogExercise(catalog);
+    const ov = getOverride(catalog.id);
+    const ready = applyExerciseOverride(catalog, ov);
+    setExercise(ready);
 
     if (useBridgeControls) {
-      void selectBridgeExercise(loadBridgeUrl(), selected.id).catch(() => undefined);
+      pushBridgeExercise(ready, ov);
       return;
     }
 
-    engineRef.current.setExercise(selected);
+    engineRef.current.setExercise(ready);
     frameRef.current = createNeutralFrame();
     setFrame(createNeutralFrame());
-    setFeedback(makeIdleFeedback(selected, createNeutralFrame(), liveDebugMode));
+    setFeedback(makeIdleFeedback(ready, createNeutralFrame(), liveDebugMode));
+  };
+
+  const handleExerciseReady = (ready: RehabExercise, override: ExercisePoseOverride) => {
+    setCatalogExercise(getExerciseById(ready.id) ?? catalogExercise);
+    setExercise(ready);
+    if (useBridgeControls) {
+      pushBridgeExercise(ready, override);
+      return;
+    }
+    engineRef.current.setExercise(ready);
   };
 
   const handleStart = () => {
@@ -315,24 +342,28 @@ export default function UserHome() {
   const handleModeChange = (mode: DataMode) => {
     failoverSessionRef.current = false;
     const nextExercise = normalizeExerciseForMode(exercise, mode);
+    const catalog = getExerciseById(nextExercise.id) ?? nextExercise;
+    const ov = getOverride(catalog.id);
+    const ready = applyExerciseOverride(catalog, ov);
     setDataMode(mode);
-    setExercise(nextExercise);
+    setCatalogExercise(catalog);
+    setExercise(ready);
     if (mode === "simulation") {
       setBridgeConnected(false);
       setBridgeState(null);
       engineRef.current.setIgnorePlane(false);
       frameRef.current = createNeutralFrame();
       setFrame(createNeutralFrame());
-      setFeedback(makeIdleFeedback(nextExercise, createNeutralFrame(), false));
-      engineRef.current.setExercise(nextExercise);
+      setFeedback(makeIdleFeedback(ready, createNeutralFrame(), false));
+      engineRef.current.setExercise(ready);
     } else if (mode === "live") {
       engineRef.current.setIgnorePlane(true);
       frameRef.current = createNeutralFrame();
       setFrame(createNeutralFrame());
-      setFeedback(makeIdleFeedback(nextExercise, createNeutralFrame(), true));
+      setFeedback(makeIdleFeedback(ready, createNeutralFrame(), true));
       engineRef.current.reset();
-      engineRef.current.setExercise(nextExercise);
-      void selectBridgeExercise(loadBridgeUrl(), nextExercise.id).catch(() => undefined);
+      engineRef.current.setExercise(ready);
+      pushBridgeExercise(ready, ov);
     }
   };
 
@@ -348,11 +379,15 @@ export default function UserHome() {
     if (state.exercise_id && state.exercise_id !== exercise.id) {
       const synced = getExerciseById(state.exercise_id);
       if (synced) {
-        const nextExercise = normalizeExerciseForMode(synced, dataMode);
-        if (nextExercise.id !== synced.id && dataMode === "live") {
-          void selectBridgeExercise(loadBridgeUrl(), nextExercise.id).catch(() => undefined);
+        const nextCatalog = normalizeExerciseForMode(synced, dataMode);
+        const catalog = getExerciseById(nextCatalog.id) ?? nextCatalog;
+        const ov = getOverride(catalog.id);
+        const ready = applyExerciseOverride(catalog, ov);
+        if (nextCatalog.id !== synced.id && dataMode === "live") {
+          pushBridgeExercise(ready, ov);
         }
-        setExercise(nextExercise);
+        setCatalogExercise(catalog);
+        setExercise(ready);
       }
     }
     if (dataMode === "live") {
@@ -501,7 +536,9 @@ export default function UserHome() {
                 frame={frame}
                 feedback={feedback}
                 exercise={exercise}
+                catalogExercise={catalogExercise}
                 onSelectExercise={handleSelectExercise}
+                onExerciseReady={handleExerciseReady}
                 onStart={handleStart}
                 onStop={handleStop}
                 onReset={handleReset}

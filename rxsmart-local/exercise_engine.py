@@ -26,7 +26,7 @@ from __future__ import annotations
 import math
 import time
 from dataclasses import dataclass, field
-from typing import Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 import config
 from biomechanics import LOWER_JOINT_LIMITS, UPPER_JOINT_LIMITS
@@ -39,6 +39,66 @@ from pose_model import (
     shortest_plane_delta,
 )
 from rehab_exercises import ExercisePhase, REHAB_EXERCISES, RehabExercise, get_exercise_by_id
+
+
+def _clone_exercise(ex: RehabExercise) -> RehabExercise:
+    return RehabExercise(
+        id=ex.id,
+        name=ex.name,
+        description=ex.description,
+        category=ex.category,
+        support=ex.support,
+        start_pose={k: dict(v) for k, v in ex.start_pose.items()},
+        phases=[
+            ExercisePhase(
+                id=p.id,
+                label=p.label,
+                targets={k: dict(v) for k, v in p.targets.items()},
+                hold_seconds=p.hold_seconds,
+                move_speed=p.move_speed,
+                active_joints=list(p.active_joints),
+            )
+            for p in ex.phases
+        ],
+        reps=ex.reps,
+        rest_between_reps=ex.rest_between_reps,
+    )
+
+
+def _merge_joint_dict(base: Dict[str, float], patch: Dict[str, Any]) -> Dict[str, float]:
+    out = dict(base)
+    for key, val in patch.items():
+        if isinstance(val, (int, float)):
+            out[str(key)] = float(val)
+    return out
+
+
+def apply_exercise_overrides(ex: RehabExercise, overrides: Optional[Dict[str, Any]]) -> RehabExercise:
+    """Apply captured start_pose + per-phase targets onto a cloned exercise."""
+    cloned = _clone_exercise(ex)
+    if not overrides or not isinstance(overrides, dict):
+        return cloned
+
+    start = overrides.get("start_pose") or overrides.get("startPose")
+    if isinstance(start, dict):
+        for key, val in start.items():
+            if key not in cloned.start_pose or not isinstance(val, dict):
+                continue
+            cloned.start_pose[key] = _merge_joint_dict(cloned.start_pose[key], val)
+
+    phases = overrides.get("phases") or {}
+    if isinstance(phases, dict):
+        for phase in cloned.phases:
+            captured = phases.get(phase.id)
+            if not isinstance(captured, dict):
+                continue
+            for key, val in captured.items():
+                if not isinstance(val, dict):
+                    continue
+                base = phase.targets.get(key) or dict(cloned.start_pose.get(key, {}))
+                phase.targets[key] = _merge_joint_dict(base, val)
+
+    return cloned
 
 
 def _joint_score(error: float, tolerance: float) -> float:
@@ -480,13 +540,17 @@ class ExerciseSessionManager:
     def exercise(self) -> RehabExercise:
         return self._exercise
 
-    def select_exercise(self, exercise_id: str) -> bool:
+    def select_exercise(self, exercise_id: str, overrides: Optional[Dict[str, Any]] = None) -> bool:
         ex = get_exercise_by_id(exercise_id)
         if ex is None:
             return False
-        self._exercise = ex
+        self._exercise = apply_exercise_overrides(ex, overrides)
         self.reset()
         return True
+
+    def apply_overrides(self, overrides: Optional[Dict[str, Any]]) -> bool:
+        """Re-apply pose overrides onto the current catalog exercise id."""
+        return self.select_exercise(self._exercise.id, overrides)
 
     def start(self) -> None:
         self._running = True

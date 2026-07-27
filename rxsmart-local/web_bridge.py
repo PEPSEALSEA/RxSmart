@@ -410,7 +410,10 @@ class WebBridgeServer:
 
             body = request.get_json(force=True, silent=True) or {}
             exercise_id = str(body.get("id", ""))
-            if not bridge._manager.select_exercise(exercise_id):
+            overrides = body.get("overrides")
+            if overrides is not None and not isinstance(overrides, dict):
+                return jsonify({"ok": False, "error": "overrides must be an object"}), 400
+            if not bridge._manager.select_exercise(exercise_id, overrides):
                 return jsonify({"ok": False, "error": f"unknown exercise: {exercise_id}"}), 400
 
             return jsonify({"ok": True, "current": bridge._manager.current_exercise_id})

@@ -197,8 +197,8 @@ class SystemModeManager:
     def current_exercise_id(self) -> str:
         return self._exercise.exercise.id
 
-    def select_exercise(self, exercise_id: str) -> bool:
-        return self._exercise.select_exercise(exercise_id)
+    def select_exercise(self, exercise_id: str, overrides=None) -> bool:
+        return self._exercise.select_exercise(exercise_id, overrides)
 
     def exercise_session_action(self, action: str) -> bool:
         return self._exercise.handle_action(action)

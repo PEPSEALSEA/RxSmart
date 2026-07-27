@@ -280,11 +280,22 @@ export async function fetchExerciseCatalog(baseUrl: string): Promise<{ exercises
   return { exercises: data.exercises ?? [], current: data.current };
 }
 
-export async function selectBridgeExercise(baseUrl: string, exerciseId: string) {
+export async function selectBridgeExercise(
+  baseUrl: string,
+  exerciseId: string,
+  overrides?: {
+    start_pose?: unknown;
+    phases?: Record<string, unknown>;
+  } | null,
+) {
+  const body: Record<string, unknown> = { id: exerciseId };
+  if (overrides) {
+    body.overrides = overrides;
+  }
   const res = await fetch(`${normalizeBase(baseUrl)}/api/exercise`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ id: exerciseId }),
+    body: JSON.stringify(body),
   });
   const data = await res.json();
   if (!res.ok) throw new Error(data.error || "เลือกท่าฝึกไม่สำเร็จ");

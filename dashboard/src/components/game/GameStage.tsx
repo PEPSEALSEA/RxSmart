@@ -9,10 +9,11 @@ import {
   lerpFrames,
   resolvedPoseToFrame,
 } from "@/lib/glb-pose-map";
+import { ExercisePoseOverride } from "@/lib/exercise-pose-overrides";
+import { fakePlayerTowardCoach } from "@/lib/fake-player-pose";
 import { resolvePose } from "@/lib/pose";
 import { SessionFeedback, SensorFrame } from "@/lib/pose-physics";
 import { RehabExercise } from "@/lib/rehab-exercises";
-import { applyImuDisplayPlanes } from "@/lib/sensor-mapping";
 const GamePoseCanvas = dynamic(() => import("@/components/game/GamePoseCanvas"), {
   ssr: false,
   loading: () => (
@@ -26,7 +27,9 @@ interface GameStageProps {
   frame: SensorFrame;
   feedback: SessionFeedback;
   exercise: RehabExercise;
+  catalogExercise: RehabExercise;
   onSelectExercise: (exercise: RehabExercise) => void;
+  onExerciseReady: (exercise: RehabExercise, override: ExercisePoseOverride) => void;
   onStart: () => void;
   onStop: () => void;
   onReset: () => void;
@@ -161,7 +164,9 @@ export default function GameStage({
   frame,
   feedback,
   exercise,
+  catalogExercise,
   onSelectExercise,
+  onExerciseReady,
   onStart,
   onStop,
   onReset,
@@ -172,7 +177,9 @@ export default function GameStage({
   const ghostFrame = useGhostFrame(exercise, feedback);
   const holdProgress = useHoldProgress(feedback, exercise);
   const { muted, toggleMute } = useGameAudio(feedback, true);
-  const playerFrame = imuMode ? applyImuDisplayPlanes(frame, ghostFrame) : frame;
+  const playerFrame = fakePlayerTowardCoach(ghostFrame, exercise.startPose, feedback, {
+    imuMode,
+  });
   const safeFeedback = feedback;
   const inSession =
     feedback.status === "moving" ||
@@ -185,7 +192,7 @@ export default function GameStage({
       <div className="border-b border-[var(--rx-line)] bg-[var(--rx-sand-deep)] px-5 py-4 sm:px-6">
         <p className="font-game text-2xl font-bold text-[var(--rx-ink)] sm:text-3xl">ฝึกท่า Live IMU</p>
         <p className="mt-1 max-w-2xl text-base text-[var(--rx-ink-soft)]">
-          เลือกท่า → ดูขั้นตอน → เริ่มฝึก ใช้ได้ทั้งโหมดทดลองและโหมดบอร์ดจริง
+          เลือกท่า → ตั้ง default/ท่าถูก → เริ่มฝึก · โมเดลผู้ใช้ fake ตามครูเมื่ออยู่ใน range
         </p>
       </div>
 
@@ -222,8 +229,11 @@ export default function GameStage({
         <aside className="border-t border-[var(--rx-line)] bg-[var(--rx-sand)] p-5 lg:col-span-5 xl:col-span-4 lg:border-l lg:border-t-0">
           <GameControls
             exercise={exercise}
+            catalogExercise={catalogExercise}
             feedback={safeFeedback}
+            liveFrame={frame}
             onSelectExercise={onSelectExercise}
+            onExerciseReady={onExerciseReady}
             onStart={onStart}
             onStop={onStop}
             onReset={onReset}
