@@ -13,6 +13,7 @@ import { GlbAvatar } from "@/components/game/GlbAvatar";
 import { Mannequin } from "@/components/Mannequin";
 import { PoseKey } from "@/lib/pose";
 import { SensorFrame } from "@/lib/pose-physics";
+import { agentDbgLog } from "@/lib/debug-session-log";
 
 const GLB_LOAD_TIMEOUT_MS = 2500;
 
@@ -201,6 +202,23 @@ function StageScene({
 
   const markReady = () => setGlbMode((mode) => (mode === "failed" ? mode : "ready"));
   const markFailed = () => setGlbMode("failed");
+
+  // #region agent log
+  useEffect(() => {
+    agentDbgLog({
+      hypothesisId: "E",
+      location: "GamePoseCanvas.tsx:glbMode",
+      message: "avatar glbMode changed",
+      data: {
+        glbMode,
+        tension,
+        imuMode,
+        hasGhost: Boolean(ghostFrame),
+        activeCount: activeJoints?.length ?? 0,
+      },
+    });
+  }, [glbMode, tension, imuMode, activeJoints]);
+  // #endregion
 
   return (
     <>

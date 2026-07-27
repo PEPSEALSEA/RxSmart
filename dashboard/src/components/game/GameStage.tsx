@@ -13,6 +13,7 @@ import { resolvePose } from "@/lib/pose";
 import { SessionFeedback, SensorFrame } from "@/lib/pose-physics";
 import { RehabExercise } from "@/lib/rehab-exercises";
 import { stripImuUnreachablePlane } from "@/lib/sensor-mapping";
+import { agentDbgLog } from "@/lib/debug-session-log";
 
 const GamePoseCanvas = dynamic(() => import("@/components/game/GamePoseCanvas"), {
   ssr: false,
@@ -183,6 +184,52 @@ export default function GameStage({
     feedback.status === "holding" ||
     feedback.status === "rest" ||
     feedback.status === "complete";
+
+  // #region agent log
+  useEffect(() => {
+    agentDbgLog({
+      hypothesisId: "A",
+      location: "GameStage.tsx:inSession",
+      message: "HUD gate / session state",
+      data: {
+        status: feedback.status,
+        inSession,
+        phaseLabel: feedback.phaseLabel,
+        rep: feedback.rep,
+        score: feedback.score,
+        activeJoints: feedback.activeJoints?.length ?? 0,
+        sourceLabel: sourceLabel ?? null,
+      },
+    });
+  }, [feedback.status, feedback.phaseLabel, feedback.rep, feedback.score, feedback.activeJoints, inSession, sourceLabel]);
+  // #endregion
+
+  // #region agent log
+  useEffect(() => {
+    const onErr = (ev: ErrorEvent) => {
+      agentDbgLog({
+        hypothesisId: "B",
+        location: "GameStage.tsx:window.error",
+        message: "uncaught window error",
+        data: { msg: String(ev.message || ""), file: String(ev.filename || ""), line: ev.lineno || 0 },
+      });
+    };
+    const onRej = (ev: PromiseRejectionEvent) => {
+      agentDbgLog({
+        hypothesisId: "B",
+        location: "GameStage.tsx:unhandledrejection",
+        message: "unhandled rejection",
+        data: { reason: String(ev.reason ?? "") },
+      });
+    };
+    window.addEventListener("error", onErr);
+    window.addEventListener("unhandledrejection", onRej);
+    return () => {
+      window.removeEventListener("error", onErr);
+      window.removeEventListener("unhandledrejection", onRej);
+    };
+  }, []);
+  // #endregion
 
   return (
     <section className="rx-game overflow-hidden rounded-[28px] border-2 border-[var(--rx-line)] bg-[var(--rx-sand)] shadow-[0_18px_50px_rgba(26,35,50,0.12)]">

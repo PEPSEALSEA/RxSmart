@@ -4,6 +4,7 @@ import { useEffect, useRef, useState } from "react";
 import { buildDirectionHints } from "@/lib/game-hints";
 import { POSE_LABELS, PoseKey } from "@/lib/pose";
 import { SessionFeedback, SessionStatus } from "@/lib/pose-physics";
+import { agentDbgLog } from "@/lib/debug-session-log";
 
 const STATUS_LABELS: Record<SessionStatus, string> = {
   idle: "รอเริ่ม",
@@ -64,6 +65,30 @@ export default function GameHud({
 
   const [pulseMiss, setPulseMiss] = useState(false);
   const prevOk = useRef(onTarget);
+
+  // #region agent log
+  const statusRef = useRef(feedback.status);
+  statusRef.current = feedback.status;
+  useEffect(() => {
+    agentDbgLog({
+      hypothesisId: "C",
+      location: "GameHud.tsx:mount",
+      message: "GameHud mounted",
+      data: {
+        status: statusRef.current,
+        exerciseName,
+      },
+    });
+    return () => {
+      agentDbgLog({
+        hypothesisId: "C",
+        location: "GameHud.tsx:unmount",
+        message: "GameHud unmounted",
+        data: { lastStatus: statusRef.current },
+      });
+    };
+  }, [exerciseName]);
+  // #endregion
 
   useEffect(() => {
     if (prevOk.current && !onTarget && feedback.status === "moving") {

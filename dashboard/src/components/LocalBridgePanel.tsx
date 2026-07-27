@@ -56,6 +56,7 @@ export default function LocalBridgePanel({
 }: LocalBridgePanelProps) {
   const [bridgeUrl, setBridgeUrl] = useState(loadBridgeUrl);
   const [connected, setConnected] = useState(false);
+  const connectedRef = useRef(false);
   const [checking, setChecking] = useState(false);
   const [polling, setPolling] = useState(false);
   const [seeking, setSeeking] = useState(autoConnect);
@@ -86,10 +87,13 @@ export default function LocalBridgePanel({
       try {
         const ok = await pingBridge(bridgeUrl);
         if (!ok) {
-          setConnected(false);
-          setPolling(false);
-          onConnectChange(false);
-          onStateUpdate(null);
+          if (connectedRef.current) {
+            connectedRef.current = false;
+            setConnected(false);
+            setPolling(false);
+            onConnectChange(false);
+            onStateUpdate(null);
+          }
           setError(WAITING_MSG);
           return;
         }
@@ -102,10 +106,12 @@ export default function LocalBridgePanel({
           }
         }
 
+        const becameConnected = !connectedRef.current;
+        connectedRef.current = true;
         setConnected(true);
         setPolling(true);
         setError("");
-        onConnectChange(true);
+        if (becameConnected) onConnectChange(true);
       } finally {
         connectInFlight.current = false;
         setChecking(false);
@@ -167,6 +173,8 @@ export default function LocalBridgePanel({
         failStreak += 1;
         // Tolerate a single blip; then drop and let reconnect loop recover.
         if (failStreak < 2) return;
+        if (!connectedRef.current) return;
+        connectedRef.current = false;
         setConnected(false);
         setPolling(false);
         setSeeking(true);

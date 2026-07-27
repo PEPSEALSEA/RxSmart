@@ -24,6 +24,7 @@ import {
   createNeutralFrame,
   stepPhysics,
 } from "@/lib/pose-physics";
+import { agentDbgLog } from "@/lib/debug-session-log";
 
 type DataMode = "simulation" | "live" | "camera";
 
@@ -73,6 +74,13 @@ function makeIdleFeedback(exercise: RehabExercise, frame: SensorFrame, debugLive
     ],
   };
 }
+
+function isActiveSession(status: SessionFeedback["status"]): boolean {
+  return status === "moving" || status === "holding" || status === "rest";
+}
+
+/** Keep LIVE control path briefly when joints/IoT blip so HUD is not torn down. */
+const LIVE_IMU_GRACE_MS = 2000;
 
 /**
  * Live IMU + Camera: score/angleOk judged on Python (exercise_engine).
@@ -165,17 +173,108 @@ export default function UserHome() {
   const engineRef = useRef<RehabSessionEngine>(new RehabSessionEngine(REHAB_EXERCISES[0]));
   const lastTickRef = useRef(0);
   const rafRef = useRef<number | null>(null);
+  const bridgeConnectedRef = useRef(false);
+  const hadLiveImuSessionRef = useRef(false);
+  const feedbackRef = useRef(feedback);
+  const useExternalFrameRef = useRef(false);
+  const failoverSessionRef = useRef(false);
+  const [stableLiveImuReady, setStableLiveImuReady] = useState(false);
+
+  feedbackRef.current = feedback;
 
   const liveImuReady =
     dataMode === "live" &&
     bridgeConnected &&
     Boolean(bridgeState?.joints) &&
     (bridgeState?.iot_status === "CONNECTED" ||
+      bridgeState?.iot_status === "TIMEOUT" ||
       (bridgeState?.joints?.sensors?.length ?? 0) > 0 ||
       bridgeState?.joints?.source === "iot");
-  const liveDebugMode = dataMode === "live" && !liveImuReady;
-  const useBridgeControls = dataMode === "camera" || liveImuReady;
-  const useExternalFrame = (dataMode === "camera" && bridgeConnected) || liveImuReady;
+
+  useEffect(() => {
+    if (liveImuReady) {
+      setStableLiveImuReady(true);
+      return;
+    }
+    if (dataMode !== "live" || !bridgeConnected) {
+      setStableLiveImuReady(false);
+      return;
+    }
+    const timer = window.setTimeout(() => setStableLiveImuReady(false), LIVE_IMU_GRACE_MS);
+    return () => window.clearTimeout(timer);
+  }, [liveImuReady, dataMode, bridgeConnected]);
+
+  const liveDebugMode = dataMode === "live" && !stableLiveImuReady;
+  const useBridgeControls = dataMode === "camera" || stableLiveImuReady;
+  const useExternalFrame = (dataMode === "camera" && bridgeConnected) || stableLiveImuReady;
+
+  // #region agent log
+  useEffect(() => {
+    agentDbgLog({
+      hypothesisId: "D",
+      location: "page.tsx:modeFlags",
+      message: "live/debug bridge flags changed",
+      data: {
+        dataMode,
+        bridgeConnected,
+        liveImuReady,
+        stableLiveImuReady,
+        liveDebugMode,
+        useBridgeControls,
+        useExternalFrame,
+        iot: bridgeState?.iot_status ?? null,
+        hasJoints: Boolean(bridgeState?.joints),
+        fbStatus: feedback.status,
+        failover: failoverSessionRef.current,
+      },
+      runId: "post-fix",
+    });
+  }, [dataMode, bridgeConnected, liveImuReady, stableLiveImuReady, liveDebugMode, useBridgeControls, useExternalFrame, bridgeState?.iot_status, bridgeState?.joints, feedback.status]);
+  // #endregion
+
+  useEffect(() => {
+    if (liveImuReady) hadLiveImuSessionRef.current = true;
+  }, [liveImuReady]);
+
+  const resumeBrowserSession = (reason: string): boolean => {
+    const last = feedbackRef.current;
+    if (!isActiveSession(last.status)) return false;
+    engineRef.current.setIgnorePlane(dataMode === "live");
+    const resumed = engineRef.current.resumeFromFeedback(last);
+    if (!resumed) return false;
+    failoverSessionRef.current = true;
+    const next = engineRef.current.tick(0, frameRef.current);
+    setFeedback({
+      ...next,
+      messages: [
+        "สัญญาณขาด — ต่อเซสชันในโหมด DEBUG",
+        ...next.messages.filter((m) => !m.startsWith("สัญญาณขาด")),
+      ].slice(0, 3),
+    });
+    // #region agent log
+    agentDbgLog({
+      hypothesisId: "D",
+      location: "page.tsx:resumeBrowserSession",
+      message: "resumed browser session after live drop",
+      data: {
+        reason,
+        status: last.status,
+        phaseLabel: last.phaseLabel,
+        rep: last.rep,
+      },
+      runId: "post-fix",
+    });
+    // #endregion
+    return true;
+  };
+
+  useEffect(() => {
+    const wasExternal = useExternalFrameRef.current;
+    useExternalFrameRef.current = useExternalFrame;
+    if (wasExternal && !useExternalFrame && dataMode === "live") {
+      resumeBrowserSession("useExternalFrame→false");
+    }
+  }, [useExternalFrame, dataMode]);
 
   useEffect(() => {
     const tick = (now: number) => {
@@ -227,6 +326,7 @@ export default function UserHome() {
   };
 
   const handleStop = () => {
+    failoverSessionRef.current = false;
     if (useBridgeControls) {
       void postBridgeSessionAction(loadBridgeUrl(), "stop").catch(() => undefined);
       return;
@@ -235,6 +335,7 @@ export default function UserHome() {
   };
 
   const handleReset = () => {
+    failoverSessionRef.current = false;
     if (useBridgeControls) {
       void postBridgeSessionAction(loadBridgeUrl(), "reset").catch(() => undefined);
       return;
@@ -246,6 +347,7 @@ export default function UserHome() {
   };
 
   const handleModeChange = (mode: DataMode) => {
+    failoverSessionRef.current = false;
     setDataMode(mode);
     if (mode === "simulation") {
       setBridgeConnected(false);
@@ -282,11 +384,25 @@ export default function UserHome() {
       const imuLive =
         hasJoints &&
         (state.iot_status === "CONNECTED" ||
+          state.iot_status === "TIMEOUT" ||
           (state.joints?.sensors?.length ?? 0) > 0 ||
           state.joints?.source === "iot");
       if (imuLive) {
         const liveFb = makeBridgeFeedback(state, "IMU");
-        if (liveFb) setFeedback(liveFb);
+        if (!liveFb) return;
+        // After a module blip we may still be running in browser failover —
+        // do not let a freshly restarted bridge idle wipe the HUD.
+        if (
+          failoverSessionRef.current &&
+          !isActiveSession(liveFb.status) &&
+          isActiveSession(feedbackRef.current.status)
+        ) {
+          return;
+        }
+        if (isActiveSession(liveFb.status) || liveFb.status === "complete") {
+          failoverSessionRef.current = false;
+        }
+        setFeedback(liveFb);
       }
     } else if (dataMode === "camera") {
       const camFb = makeBridgeFeedback(state, "Camera");
@@ -295,17 +411,51 @@ export default function UserHome() {
   };
 
   const handleBridgeConnectChange = (connected: boolean) => {
+    const wasConnected = bridgeConnectedRef.current;
+    bridgeConnectedRef.current = connected;
+    // #region agent log
+    agentDbgLog({
+      hypothesisId: "D",
+      location: "page.tsx:bridgeConnect",
+      message: "bridge connect change",
+      data: {
+        connected,
+        wasConnected,
+        dataMode,
+        prevFb: feedbackRef.current.status,
+        hadLiveImu: hadLiveImuSessionRef.current,
+        willResume:
+          !connected &&
+          wasConnected &&
+          dataMode === "live" &&
+          isActiveSession(feedbackRef.current.status),
+      },
+      runId: "post-fix",
+    });
+    // #endregion
     setBridgeConnected(connected);
-    if (!connected && dataMode === "live") {
-      setBridgeState(null);
+    if (connected) return;
+
+    setBridgeState(null);
+
+    // Only tear down when an actual connection drops. Quiet reconnect failures
+    // while already disconnected must not reset a DEBUG browser session.
+    if (!wasConnected) return;
+
+    if (dataMode === "live") {
       engineRef.current.setIgnorePlane(true);
-      frameRef.current = createNeutralFrame();
-      setFrame(createNeutralFrame());
-      setFeedback(makeIdleFeedback(exercise, createNeutralFrame(), true));
-      engineRef.current.reset();
-      engineRef.current.setExercise(exercise);
-    } else if (!connected) {
-      setBridgeState(null);
+      if (hadLiveImuSessionRef.current) {
+        hadLiveImuSessionRef.current = false;
+        if (!resumeBrowserSession("bridgeDisconnect")) {
+          frameRef.current = createNeutralFrame();
+          setFrame(createNeutralFrame());
+          setFeedback(makeIdleFeedback(exercise, createNeutralFrame(), true));
+          engineRef.current.reset();
+          engineRef.current.setExercise(exercise);
+        }
+      }
+    } else {
+      failoverSessionRef.current = false;
       engineRef.current.setIgnorePlane(false);
       frameRef.current = createNeutralFrame();
       setFrame(createNeutralFrame());
@@ -321,14 +471,14 @@ export default function UserHome() {
         ? `Camera bridge · ${bridgeState?.mode ?? "—"}`
         : "Camera — รัน python main.py แล้วกดเชื่อมต่อ"
       : dataMode === "live"
-        ? liveImuReady
+        ? stableLiveImuReady
           ? `LIVE IMU · ${bridgeState?.iot_status ?? "—"} · ${bridgeState?.iot_poll_rate_hz?.toFixed(1) ?? "0"} Hz`
           : bridgeConnected
             ? "DEBUG · bridge ต่อแล้ว แต่ยังไม่มีบอร์ด — เล่น UI ด้วย physics ในเบราว์เซอร์"
             : "DEBUG · ไม่มีบอร์ด — เล่นเกม UI ได้เลย · เชื่อม Python เมื่อพร้อม"
         : "Simulation mode — ไม่ต้องใช้อุปกรณ์";
 
-  const liveSourceLabel = liveImuReady ? "LIVE · IMU" : "DEBUG · no board";
+  const liveSourceLabel = stableLiveImuReady ? "LIVE · IMU" : "DEBUG · no board";
 
   return (
     <main className="min-h-screen bg-cohere-canvas text-cohere-ink">

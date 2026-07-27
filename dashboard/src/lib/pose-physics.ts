@@ -374,7 +374,32 @@ export class RehabSessionEngine {
     this.phaseIndex = 0;
     this.rep = 1;
     this.phaseElapsed = 0;
+    this.restRemaining = 0;
     this.targets = resolvePose(this.exercise.startPose, this.getPhase().targets);
+  }
+
+  resumeFromFeedback(feedback: SessionFeedback): boolean {
+    if (
+      feedback.status !== "moving" &&
+      feedback.status !== "holding" &&
+      feedback.status !== "rest"
+    ) {
+      return false;
+    }
+
+    const phaseIndex = this.exercise.phases.findIndex((p) => p.label === feedback.phaseLabel);
+    this.phaseIndex = phaseIndex >= 0 ? phaseIndex : 0;
+    this.rep = Math.max(1, Math.min(feedback.rep || 1, this.exercise.reps));
+    this.phaseElapsed = 0;
+    this.restRemaining =
+      feedback.status === "rest" ? Math.max(0.5, this.exercise.restBetweenReps) : 0;
+    this.status = feedback.status;
+    this.running = true;
+    this.targets =
+      this.status === "rest"
+        ? structuredClone(this.exercise.startPose)
+        : resolvePose(this.exercise.startPose, this.getPhase().targets);
+    return true;
   }
 
   stop(): void {

@@ -4,6 +4,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { playSfx, unlockGameAudio } from "@/lib/game-audio";
 import { ExerciseCategory, RehabExercise, REHAB_EXERCISES } from "@/lib/rehab-exercises";
 import { SessionFeedback } from "@/lib/pose-physics";
+import { agentDbgLog } from "@/lib/debug-session-log";
 
 interface GameControlsProps {
   exercise: RehabExercise;
@@ -74,7 +75,28 @@ export default function GameControls({
 
   useEffect(() => {
     if (isRunning || isComplete) setScreen("play");
-  }, [isRunning, isComplete]);
+    else if (feedback.status === "idle" && countdown == null && screen === "play") {
+      setScreen("brief");
+    }
+  }, [isRunning, isComplete, feedback.status, countdown, screen]);
+
+  // #region agent log
+  useEffect(() => {
+    agentDbgLog({
+      hypothesisId: "A",
+      location: "GameControls.tsx:screen",
+      message: "controls screen vs feedback",
+      data: {
+        screen,
+        status: feedback.status,
+        isRunning,
+        isComplete,
+        phaseLabel: feedback.phaseLabel,
+        mismatch: screen === "play" && feedback.status === "idle",
+      },
+    });
+  }, [screen, feedback.status, feedback.phaseLabel, isRunning, isComplete]);
+  // #endregion
 
   useEffect(() => {
     if (countdown == null) return;
