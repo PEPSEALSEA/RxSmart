@@ -17,15 +17,13 @@ const _leftFoot = new Vector3();
 const _rightFoot = new Vector3();
 
 const WORLD_FORWARD = new Vector3(0, 0, 1);
-const LEG_HINT_LEFT = new Vector3(-0.15, 0, -1);
-const LEG_HINT_RIGHT = new Vector3(0.15, 0, -1);
+const LIMB_HINT_LEFT = new Vector3(-0.15, 0, -1);
+const LIMB_HINT_RIGHT = new Vector3(0.15, 0, -1);
 
 const _yAxis = new Vector3();
 const _xAxis = new Vector3();
 const _zAxis = new Vector3();
 const _basis = new Matrix4();
-
-const WORLD_UP = new Vector3(0, 1, 0);
 
 export function orientUpperLimb(
   group: Group,
@@ -34,28 +32,22 @@ export function orientUpperLimb(
   plane: number,
   isArm: boolean,
 ): void {
+  void isArm;
   const [dx, dy, dz] = upperLimbDirection(isRight, elevation, plane);
 
   _yAxis.set(-dx, -dy, -dz).normalize();
 
-  if (isArm) {
-    _xAxis.crossVectors(WORLD_UP, _yAxis);
-    if (_xAxis.lengthSq() < 1e-5) {
-      _xAxis.crossVectors(_yAxis, WORLD_FORWARD);
-    }
-    _xAxis.normalize();
-    _zAxis.crossVectors(_xAxis, _yAxis).normalize();
-    _xAxis.crossVectors(_yAxis, _zAxis).normalize();
-  } else {
-    const hint = isRight ? LEG_HINT_RIGHT : LEG_HINT_LEFT;
-    _xAxis.crossVectors(hint, _yAxis);
+  const hint = isRight ? LIMB_HINT_RIGHT : LIMB_HINT_LEFT;
+  _xAxis.crossVectors(hint, _yAxis);
+  if (_xAxis.lengthSq() < 1e-5) {
+    _xAxis.crossVectors(WORLD_FORWARD, _yAxis);
     if (_xAxis.lengthSq() < 1e-5) {
       _xAxis.set(isRight ? -1 : 1, 0, 0);
     }
-    _xAxis.normalize();
-    _zAxis.crossVectors(_xAxis, _yAxis).normalize();
-    _xAxis.crossVectors(_yAxis, _zAxis).normalize();
   }
+  _xAxis.normalize();
+  _zAxis.crossVectors(_xAxis, _yAxis).normalize();
+  _xAxis.crossVectors(_yAxis, _zAxis).normalize();
 
   _basis.makeBasis(_xAxis, _yAxis, _zAxis);
   group.quaternion.setFromRotationMatrix(_basis);
@@ -79,7 +71,7 @@ export function footOffsetFromHip(
   const [dx, dy, dz] = upperLimbDirection(isRight, elevation, plane);
 
   _yAxis.set(-dx, -dy, -dz).normalize();
-  const hint = isRight ? LEG_HINT_RIGHT : LEG_HINT_LEFT;
+  const hint = isRight ? LIMB_HINT_RIGHT : LIMB_HINT_LEFT;
   _xAxis.crossVectors(hint, _yAxis);
   if (_xAxis.lengthSq() < 1e-5) {
     _xAxis.set(isRight ? -1 : 1, 0, 0);
