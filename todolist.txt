@@ -1,33 +1,29 @@
-# RxSmart Todo List — System Review v2 (2026-06-20)
+# RxSmart Todo List — System Review (Updated 2026-08-30)
 # สัญลักษณ์: [x] เสร็จ | [~] บางส่วน | [ ] ยังไม่ทำ
 
 ================================================================================
-คำตอบสำคัญ: ทำ todolist ครบแล้ว จะ finish แล้วใช้ได้ + calculate ครบไหม?
+สถานะภาพรวมระบบปัจจุบัน
 ================================================================================
 
-  คำตอบสั้น: **ยังไม่ใช่ทั้งหมด** — โค้ดที่มีอยู่เป็น 3 ก้อนที่ยังไม่ต่อกัน
+1. Firmware: Raspberry Pi Pico 2 W (`Pico2W.ino`) รองรับ 9 Sensor (Dual TCA9548A) ส่งตรงเข้า Firebase RTDB
+2. Cloud: Firebase Realtime Database (`rxsmart-rehab-2026`) + Firebase Hosting (`rxsmart-rehab-2026.web.app`)
+3. Frontend: Next.js 16 Web Dashboard แสดงผลโมเดล 3D และดึงข้อมูลสดจาก Firebase RTDB ได้แล้ว
+4. Local: Python OpenCV + MediaPipe Pose พร้อมระบบ Complementary Filter Fusion
 
-  ┌─────────────────────┬──────────────────────────────────────────────────┐
-  │ ก้อน                │ สถานะ calculate จริง                             │
-  ├─────────────────────┼──────────────────────────────────────────────────┤
-  │ dashboard/ (Web)    │ score ทำงานเต็ม แค่โหมด Physics จำลอง            │
-  │                     │ โหมด Live ESP32 → แสดงมุม/rep แต่ **ไม่ score**  │
-  ├─────────────────────┼──────────────────────────────────────────────────┤
-  │ ESP32 firmware      │ คำนวณ elbow/knee/rep/posture บนบอร์ด ✓          │
-  │                     │ แต่ dashboard ยังไม่เอาไปเทียบ target ท่าฝึก     │
-  ├─────────────────────┼──────────────────────────────────────────────────┤
-  │ rxsmart-local/      │ คำนวณมุม Camera/IMU/Fusion ✓                     │
-  │                     │ **ไม่มี** โปรแกรมฝึก / scoring / บันทึก session  │
-  └─────────────────────┴──────────────────────────────────────────────────┘
+================================================================================
+สิ่งที่ต้องทำต่อ (Next Action Items)
+================================================================================
 
-  ทำ P2 (โรค, streak, gamification) ครบ **ไม่ทำให้** calculate ครบเอง
-  ต้องทำ **P0 Integration** ก่อน ถึงจะ "กดฝึก → วัด → ให้คะแนน → บันทึก" ได้จริง
+[ ] Priority 1 (P0): เชื่อม Live Telemetry เข้ากับระบบ Scoring ของ Web Dashboard
+    - ปัจจุบันใน `dashboard/src/app/page.tsx` ระบบให้คะแนน/นับ Rep ทำงานเฉพาะในโหมดจำลอง Physics
+    - เมื่อผู้ใช้เลือก Live IMU หรือ Camera ให้ส่ง `SensorFrame` เข้า `RehabSessionEngine.tick()` เพื่อให้คะแนนและนับ rep จากเซนเซอร์จริง
 
-  เป้าหมาย Finish แบ่ง 3 Track — เลือกทำอย่างน้อย 1 track ให้ครบ:
+[ ] Priority 2 (P1): Bridge กล้อง Local เข้า Dashboard ผ่าน WebRTC/WebSocket หรือ Browser MediaPipe
+    - ให้ผู้ใช้เปิดโหมด Camera บนเว็บแล้วติดตามข้อต่อได้โดยไม่ต้องลงโปรแกรมเพิ่ม หรือเชื่อม `rxsmart-local` ผ่าน websocket
 
-  Track A — IMU + Web     สวม sensor → เปิด dashboard → ฝึก → score จาก sensor จริง
-  Track B — Camera Local  เปิด python main.py → กล้อง → ฝึก → score จาก MediaPipe
-  Track C — Hybrid        Fusion camera+IMU → ฝึก → score (local หรือ web)
+[ ] Priority 3 (P2): บันทึกประวัติและสรุป Session หลังฝึกเสร็จ
+    - เมื่อฝึกครบ rep ให้บันทึกสถิติ (Max ROM, ความสมูท, คะแนนเฉลี่ย) ลง Firebase RTDB `/rxsmart/sessions`
+    - เพิ่มหน้าดูรายงานประวัติการฝึกสำหรับนักกายภาพบำบัด
 
 ================================================================================
 DONE — พื้นฐานที่มีแล้ว (ใช้เป็นฐานต่อ)

@@ -61,23 +61,25 @@ RxSmart/
 ================================================================================
 
 [เป้าหมายระบบ]
-  Microcontroller : ESP32 DevKitC-V1
-  Sensor          : MPU6050 (GY-521) × 8 ตัว (6-DOF ต่อตัว)
-  Multiplexer     : TCA9548A I2C Multiplexer × 1 (implement แล้วใน firmware ✓)
+  Microcontroller : Raspberry Pi Pico 2 W (RP2350)
+  Sensor          : MPU6050 (GY-521) × 9 ตัว (6-DOF ต่อตัว)
+  Multiplexer     : TCA9548A I2C Multiplexer × 2 (0x70 สำหรับ 8 limbs, 0x71 สำหรับ center)
 
-[ตำแหน่งติดตั้ง Sensor 8 จุด]
+[ตำแหน่งติดตั้ง Sensor 9 จุด]
   แขนซ้าย  : ต้นแขน (upper arm) + แขนท่อนล่าง (forearm)
   แขนขวา  : ต้นแขน + แขนท่อนล่าง
   ขาซ้าย  : ต้นขา (thigh) + หน้าแข้ง (shin)
   ขาขวา  : ต้นขา + หน้าแข้ง
+  ลำตัว    : กลางลำตัว / กระดูกสันหลัง (center/spine)
 
 [สถานะในโค้ดปัจจุบัน]
-  ไฟล์     : ESP32DevKitV1-ArduinoIDE-Code.ino
-  แผนผัง   : hardware_connection.txt (ทดสอบ 2 MPU6050 บน I2C 0x68 / 0x69)
-  Flag     : USE_MPU6050_TEST = true → อ่าน MPU6050 จริง 8 ตัว ผ่าน TCA9548A
-  Data model 8 sensor keys (1:1 กับ TCA channel):
+  ไฟล์     : Pico2W.ino
+  แผนผัง   : hardware_connection_pico2w.txt
+  Cloud    : Firebase Realtime Database (`https://rxsmart-rehab-2026-default-rtdb.asia-southeast1.firebasedatabase.app`) + Legacy Cloudflare Workers
+  Data model 9 sensor keys (1:1 กับ TCA channel):
     CH0=left_upper_arm, CH1=right_upper_arm, CH2=left_forearm, CH3=right_forearm,
-    CH4=left_thigh,     CH5=right_thigh,     CH6=left_shin,    CH7=right_shin
+    CH4=left_thigh,     CH5=right_thigh,     CH6=left_shin,    CH7=right_shin,
+    CH8=center (TCA2 CH0)
   I2C pins : SDA=GPIO21 (primary), SCL=GPIO22 | fallback SDA=GPIO23
   TCA9548A : addr=0x70 (A0=A1=A2=GND) | MPU6050 all addr=0x68 (AD0→GND)
 

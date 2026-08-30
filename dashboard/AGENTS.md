@@ -1,3 +1,9 @@
+# Master Agent Guide & Architecture
+
+Please refer to [`/AGENTS.md`](../AGENTS.md) at the repository root for the full system architecture, hardware targets (Raspberry Pi Pico 2 W only), Firebase integration, and current development roadmap.
+
+---
+
 <!-- BEGIN:nextjs-agent-rules -->
 # This is NOT the Next.js you know
 
