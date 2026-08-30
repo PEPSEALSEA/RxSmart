@@ -8,6 +8,7 @@ import AdminSensorDebugGrid from "@/components/admin/AdminSensorDebugGrid";
 import SensorReadout from "@/components/SensorReadout";
 import FadeIn from "@/components/ui/FadeIn";
 import { Device, DevicePlatform, formatLastSeen, getApiUrl, getDevicePlatformLabel, getErrorMessage, inferDevicePlatform, isDeviceOnline } from "@/lib/devices";
+import { subscribeDevices, subscribeLiveTelemetry, sendDeviceCommand } from "@/lib/firebase";
 import { CENTER_KEY, FIRMWARE_SENSOR_TO_POSE, isPoseKey, isUpperKey, POSE_KEYS, POSE_LABELS, PoseKey, SENSOR_COUNT } from "@/lib/pose";
 import { REHAB_EXERCISES } from "@/lib/rehab-exercises";
 import {
@@ -311,12 +312,31 @@ export default function AdminPage() {
   }, [fetchDebugTelemetry, fetchDebugSamples, fetchPoseTemplates, fetchPendingCommand, fetchLatestSession]);
 
   useEffect(() => {
+    // Realtime Firebase Devices sync
+    const unsubDevices = subscribeDevices((fbDevices) => {
+      if (!fbDevices || Object.keys(fbDevices).length === 0) return;
+      const mapped: Device[] = Object.entries(fbDevices).map(([id, d]) => ({
+        device_id: d.info?.device_id || id,
+        wifi_ssid: d.info?.wifi_ssid || "Firebase WiFi",
+        last_online: d.info?.last_online ? new Date(Number(d.info.last_online)).toISOString() : new Date().toISOString(),
+        platform: (d.info?.platform as DevicePlatform) || "pico2w",
+      }));
+      setDevices((prev) => {
+        const map = new Map<string, Device>();
+        prev.forEach((d) => map.set(d.device_id, d));
+        mapped.forEach((d) => map.set(d.device_id, d));
+        return Array.from(map.values());
+      });
+      setActiveDeviceId((current) => current || mapped[0]?.device_id || "");
+    });
+
     const bootstrap = setTimeout(() => {
       void fetchDevices();
       void fetchFirmware();
     }, 0);
     const interval = setInterval(() => void fetchDevices(), 30000);
     return () => {
+      unsubDevices();
       clearTimeout(bootstrap);
       clearInterval(interval);
     };
@@ -324,14 +344,45 @@ export default function AdminPage() {
 
   useEffect(() => {
     if (!activeDeviceId) return;
+
+    // Realtime Firebase Live Telemetry sync
+    const unsubLive = subscribeLiveTelemetry(activeDeviceId, (live) => {
+      if (live) {
+        setLatestTelemetry({
+          timestamp: new Date(live.ts || Date.now()).toISOString(),
+          device_id: live.device_id || activeDeviceId,
+          schema_version: 2,
+          session_id: live.session_id || "",
+          session_state: live.session_state || "idle",
+          exercise_id: live.exercise_id || "",
+          payload_json: {
+            angles: live.angles,
+            speed_dps: live.speed_dps,
+            posture: live.posture,
+            rep_count: live.rep_count,
+            rep_target: live.rep_target,
+            injury_alert: live.injury_alert,
+            alert_level: live.alert_level,
+            alert_code: live.alert_code,
+          },
+          status: live.status || "Active",
+          wifi_ssid: "",
+        });
+      }
+    });
+
     const bootstrap = setTimeout(() => void refreshAllDebug(activeDeviceId), 0);
-    if (!livePoll) return () => clearTimeout(bootstrap);
+    if (!livePoll) return () => {
+      unsubLive();
+      clearTimeout(bootstrap);
+    };
 
     const interval = setInterval(() => {
       void fetchDebugTelemetry(activeDeviceId);
       void fetchPendingCommand(activeDeviceId);
     }, 3000);
     return () => {
+      unsubLive();
       clearTimeout(bootstrap);
       clearInterval(interval);
     };
@@ -377,14 +428,19 @@ export default function AdminPage() {
     setActionMessage("");
     setActionError("");
     try {
-      const res = await fetch(`${apiUrl}/api/devices/${encodeURIComponent(deviceId)}/command`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ command, ...body }),
-      });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error || "ส่ง command ไม่สำเร็จ");
-      setActionMessage(data.message || "Command queued");
+      // 1. Send command to Firebase Realtime Database
+      await sendDeviceCommand(deviceId, { command, ...body });
+
+      // 2. Also send to REST API if active
+      try {
+        await fetch(`${apiUrl}/api/devices/${encodeURIComponent(deviceId)}/command`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ command, ...body }),
+        });
+      } catch (_) {}
+
+      setActionMessage(`คำสั่ง ${command} ถูกส่งไปยัง Firebase RTDB เรียบร้อย`);
       await fetchPendingCommand(deviceId);
     } catch (err) {
       setActionError(getErrorMessage(err));
