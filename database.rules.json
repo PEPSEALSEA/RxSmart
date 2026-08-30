@@ -1,0 +1,21 @@
+{
+  "rules": {
+    "rxsmart": {
+      ".read": true,
+      ".write": true,
+      "devices": {
+        "$deviceId": {
+          "info": {
+            ".indexOn": ["last_online"]
+          },
+          "live": {
+            ".indexOn": ["ts"]
+          }
+        }
+      },
+      "sessions": {
+        ".indexOn": ["device_id", "started_at"]
+      }
+    }
+  }
+}

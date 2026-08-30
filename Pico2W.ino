@@ -20,7 +20,8 @@
 // Configuration / การตั้งค่าระบบ  (Raspberry Pi Pico 2 W / RP2350 build)
 // ---------------------------------------------------------
 const String CURRENT_VERSION = "1.0.2";
-const String CLOUDFLARE_API_URL = "https://rxsmart-worker.sealseapep.workers.dev"; // URL ของ Cloudflare Workers
+const String CLOUDFLARE_API_URL = "https://rxsmart-worker.sealseapep.workers.dev"; // URL ของ Cloudflare Workers (Legacy fallback)
+const String FIREBASE_RTDB_URL = "https://secret-timeloop-2026-default-rtdb.asia-southeast1.firebasedatabase.app"; // Firebase Realtime Database URL
 
 // ตั้งค่า AP & Captive Portal
 const byte DNS_PORT = 53;
@@ -976,6 +977,85 @@ void checkFirmwareUpdate() {
 // ---------------------------------------------------------
 void sendTelemetryData() {
   Serial.println("Sending telemetry data...");
+
+  sampleSensors(millis(), calibrationDone);
+
+  // 1. Send to Firebase Realtime Database (Primary - REST PUT)
+  if (FIREBASE_RTDB_URL.length() > 0) {
+    HTTPClient fbHttp;
+    String fbUrl = FIREBASE_RTDB_URL + "/rxsmart/devices/" + urlEncode(getDeviceId()) + "/live.json";
+    if (beginCloudflareHttp(fbHttp, fbUrl)) {
+      fbHttp.addHeader("Content-Type", "application/json");
+
+      JsonDocument fbDoc;
+      fbDoc["ts"] = millis();
+      fbDoc["device_id"] = getDeviceId();
+      fbDoc["status"] = sessionState == SESSION_EXERCISE ? "Active" : "Idle";
+      fbDoc["calibrated"] = calibrationDone;
+      fbDoc["session_id"] = sessionId;
+      fbDoc["session_state"] = sessionStateToString(sessionState);
+      fbDoc["exercise_id"] = exerciseId;
+      fbDoc["rep_target"] = repTarget;
+      fbDoc["rep_count"] = motion.repCount;
+
+      JsonObject angles = fbDoc["angles"].to<JsonObject>();
+      angles["elbow_left"] = motion.elbowLeft;
+      angles["elbow_right"] = motion.elbowRight;
+      angles["knee_left"] = motion.kneeLeft;
+      angles["knee_right"] = motion.kneeRight;
+      angles["primary"] = motion.primaryAngle;
+
+      fbDoc["speed_dps"] = motion.speedDegPerSec;
+      JsonObject posture = fbDoc["posture"].to<JsonObject>();
+      posture["state"] = motion.postureCorrect ? "correct" : "incorrect";
+      posture["fault_mask"] = motion.postureFaultMask;
+      posture["stability_score"] = motion.postureStabilityScore;
+
+      fbDoc["injury_alert"] = motion.injuryAlertActive;
+      fbDoc["alert_level"] = motion.injuryAlertLevel;
+      fbDoc["alert_code"] = motion.injuryAlertCode;
+
+      String fbPayload;
+      serializeJson(fbDoc, fbPayload);
+      int fbCode = fbHttp.sendRequest("PUT", fbPayload);
+      if (fbCode > 0) {
+        Serial.printf("Firebase RTDB Live Telemetry PUT OK (%d)\n", fbCode);
+      } else {
+        Serial.printf("Firebase RTDB Live Telemetry PUT Failed: %s\n", fbHttp.errorToString(fbCode).c_str());
+      }
+      fbHttp.end();
+    }
+
+    // If session just completed, write session summary to Firebase
+    if (sessionSummaryPending && sessionId.length() > 0) {
+      HTTPClient sessHttp;
+      String sessUrl = FIREBASE_RTDB_URL + "/rxsmart/sessions/" + urlEncode(sessionId) + ".json";
+      if (beginCloudflareHttp(sessHttp, sessUrl)) {
+        sessHttp.addHeader("Content-Type", "application/json");
+        JsonDocument sessDoc;
+        sessDoc["session_id"] = sessionId;
+        sessDoc["device_id"] = getDeviceId();
+        sessDoc["exercise_id"] = exerciseId;
+        sessDoc["state"] = "complete";
+        sessDoc["rep_final"] = motion.repCount;
+        sessDoc["rep_target"] = repTarget;
+        sessDoc["started_at"] = sessionStartedMs;
+        sessDoc["completed_at"] = sessionCompletedMs;
+        sessDoc["posture_fault_mask"] = motion.postureFaultMask;
+        sessDoc["backed_up_to_sheets"] = false;
+
+        String sessPayload;
+        serializeJson(sessDoc, sessPayload);
+        int sessCode = sessHttp.sendRequest("PUT", sessPayload);
+        if (sessCode > 0) {
+          Serial.printf("Firebase RTDB Session Summary PUT OK (%d)\n", sessCode);
+        }
+        sessHttp.end();
+      }
+    }
+  }
+
+  // 2. Legacy / Cloudflare Workers Telemetry POST
   HTTPClient http;
   String url = CLOUDFLARE_API_URL + "/api/telemetry";
 
@@ -984,8 +1064,6 @@ void sendTelemetryData() {
     return;
   }
   http.addHeader("Content-Type", "application/json");
-
-  sampleSensors(millis(), calibrationDone);
 
   JsonDocument doc;
   doc["schema_version"] = 2;
@@ -1062,6 +1140,31 @@ void registerDevice() {
   if (WiFi.status() != WL_CONNECTED) return;
 
   Serial.println("Registering device...");
+
+  // 1. Register with Firebase RTDB
+  if (FIREBASE_RTDB_URL.length() > 0) {
+    HTTPClient fbHttp;
+    String fbUrl = FIREBASE_RTDB_URL + "/rxsmart/devices/" + urlEncode(getDeviceId()) + "/info.json";
+    if (beginCloudflareHttp(fbHttp, fbUrl)) {
+      fbHttp.addHeader("Content-Type", "application/json");
+      JsonDocument fbDoc;
+      fbDoc["device_id"] = getDeviceId();
+      fbDoc["platform"] = "pico2w";
+      fbDoc["firmware_version"] = CURRENT_VERSION;
+      fbDoc["wifi_ssid"] = WiFi.SSID();
+      fbDoc["last_online"] = millis();
+
+      String fbPayload;
+      serializeJson(fbDoc, fbPayload);
+      int fbCode = fbHttp.sendRequest("PUT", fbPayload);
+      if (fbCode > 0) {
+        Serial.printf("Firebase RTDB Device registered OK (%d)\n", fbCode);
+      }
+      fbHttp.end();
+    }
+  }
+
+  // 2. Register with Cloudflare (Legacy)
   HTTPClient http;
   String url = CLOUDFLARE_API_URL + "/api/devices/register";
 
@@ -1070,6 +1173,40 @@ void registerDevice() {
     return;
   }
   http.addHeader("Content-Type", "application/json");
+
+  JsonDocument doc;
+  doc["device_id"] = getDeviceId();
+  doc["device_platform"] = "pico2w";
+  doc["wifi_ssid"] = WiFi.SSID();
+
+  String jsonOutput;
+  serializeJson(doc, jsonOutput);
+
+  int httpCode = http.POST(jsonOutput);
+  debugState.lastRegisterHttpCode = httpCode;
+  if (httpCode > 0) {
+    String response = http.getString();
+    debugState.lastRegisterError = "";
+    Serial.printf("Device registration responded with code: %d\n", httpCode);
+    Serial.println(response);
+
+    JsonDocument responseDoc;
+    if (!deserializeJson(responseDoc, response)) {
+      bool created = responseDoc["created"] | false;
+      bool existsBefore = responseDoc["exists_before"] | false;
+      if (created) {
+        Serial.println("Cloudflare: added new device row to Devices sheet.");
+      } else if (existsBefore) {
+        Serial.println("Cloudflare: device row already existed and was refreshed.");
+      }
+    }
+  } else {
+    debugState.lastRegisterError = http.errorToString(httpCode);
+    Serial.printf("Device registration failed: %s\n", debugState.lastRegisterError.c_str());
+  }
+
+  http.end();
+}
 
   JsonDocument doc;
   doc["device_id"] = getDeviceId();
@@ -1171,6 +1308,68 @@ void ensureDeviceRegistered() {
 void checkDeviceCommand() {
   if (WiFi.status() != WL_CONNECTED) return;
 
+  // 1. Check Firebase Realtime Database command
+  if (FIREBASE_RTDB_URL.length() > 0) {
+    HTTPClient fbHttp;
+    String fbCmdUrl = FIREBASE_RTDB_URL + "/rxsmart/devices/" + urlEncode(getDeviceId()) + "/command.json";
+    if (beginCloudflareHttp(fbHttp, fbCmdUrl)) {
+      int fbCode = fbHttp.GET();
+      if (fbCode == 200) {
+        String payload = fbHttp.getString();
+        fbHttp.end();
+
+        if (payload != "null" && payload.length() > 2) {
+          JsonDocument fbDoc;
+          if (!deserializeJson(fbDoc, payload)) {
+            bool consumed = fbDoc["consumed"] | false;
+            if (!consumed) {
+              String command = fbDoc["command"] | "";
+              Serial.printf("Firebase Command received: %s\n", command.c_str());
+
+              // Mark as consumed immediately
+              HTTPClient ackHttp;
+              if (beginCloudflareHttp(ackHttp, fbCmdUrl)) {
+                ackHttp.addHeader("Content-Type", "application/json");
+                ackHttp.sendRequest("PATCH", "{\"consumed\":true,\"executed_at\":" + String(millis()) + "}");
+                ackHttp.end();
+              }
+
+              if (command == "CLEAR_WIFI") {
+                Serial.println("Command: clear WiFi and restart.");
+                clearWifiCredentials();
+                delay(500);
+                rp2040.restart();
+              } else if (command == "SET_WIFI") {
+                String newSSID = fbDoc["wifi_ssid"] | "";
+                String newPass = fbDoc["wifi_password"] | "";
+                if (newSSID.length() > 0) {
+                  saveWifiCredentials(newSSID, newPass);
+                  delay(500);
+                  rp2040.restart();
+                }
+              } else if (command == "START_SESSION") {
+                String nextExerciseId = fbDoc["exercise_id"] | "general";
+                unsigned long nextRepTarget = fbDoc["rep_target"] | 10;
+                startSession(nextExerciseId, nextRepTarget);
+              } else if (command == "END_SESSION") {
+                completeSession("remote_command");
+              } else if (command == "RECALIBRATE") {
+                SessionState prevState = sessionState;
+                sessionState = SESSION_CALIBRATE;
+                runCalibration();
+                sessionState = (prevState == SESSION_EXERCISE) ? SESSION_EXERCISE : SESSION_IDLE;
+              }
+              return;
+            }
+          }
+        }
+      } else {
+        fbHttp.end();
+      }
+    }
+  }
+
+  // 2. Legacy / Cloudflare Workers Commands Check
   HTTPClient http;
   String url = CLOUDFLARE_API_URL + "/api/commands?device_id=" + urlEncode(getDeviceId());
   if (!beginCloudflareHttp(http, url)) {

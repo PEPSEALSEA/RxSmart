@@ -59,6 +59,7 @@ IOT_WATCHDOG_TIMEOUT_S: float = 8.0
 
 # HTTP poll settings (used when IOT_TRANSPORT = "http")
 API_BASE_URL: str = "https://rxsmart-worker.sealseapep.workers.dev"
+FIREBASE_RTDB_URL: str = "https://secret-timeloop-2026-default-rtdb.asia-southeast1.firebasedatabase.app"
 HTTP_POLL_INTERVAL_S: float = 1.0
 DEVICE_ID: str = ""
 
