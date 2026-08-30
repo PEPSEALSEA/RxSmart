@@ -83,7 +83,24 @@ RxSmart/
 
 ## 5. Roadmap & What Should Be Done Next (Actionable Priorities)
 
-### 🔴 Priority 1: End-to-End Live Scoring Integration (P0)
+### 🔴 Priority 1: Data Transfer Latency & Cable Connection Optimization (P0)
+*Bug Report: Even when connected via USB cable to PC, telemetry data appears on the web dashboard with high latency/delay.*
+- [ ] **Eliminate Firmware Blocking**:
+  - In `Pico2W.ino`, check for blocking HTTPS network calls inside `sendTelemetryData()` that stall the main sensor loop.
+  - Separate sensor acquisition loop from network/serial dispatch (e.g. non-blocking timers or dual-core tasking on RP2350 Core 1).
+- [ ] **Direct Web Serial / Low-Latency Local Bridge**:
+  - Implement browser-native **Web Serial API** in Next.js dashboard for plug-and-play zero-latency connection via USB.
+  - Alternatively, optimize `rxsmart-local/web_bridge.py` to stream local serial data to Web Dashboard over local WebSocket at 30–60 FPS.
+
+### 🔴 Priority 2: Joint Angle Calculation Accuracy & Biomechanics (P0)
+*Bug Report: Joint angle calculations (elbow, knee, shoulder) are currently inaccurate and subject to drift/axis misalignment.*
+- [ ] **Refine IMU Sensor Fusion Filter**:
+  - Review complementary filter / Mahony AHRS algorithm in `Pico2W.ino`. Ensure accurate `dt` time difference integration for gyroscopes.
+  - Implement a robust multi-axis zero-calibration routine to zero out mounting pitch/roll offsets.
+- [ ] **Relative Anatomical Joint Angles**:
+  - Ensure joint angles (e.g. elbow flexion) are computed as the relative rotation difference between the proximal sensor (upper arm) and distal sensor (forearm), rather than absolute pitch from gravity alone.
+
+### 🔴 Priority 3: End-to-End Live Scoring Integration (P0)
 *Currently, the Web Dashboard scoring engine works in Physics Simulation mode, but live IMU/Camera streams are only rendered without scoring.*
 - [ ] **Bridge Live Telemetry to RehabSessionEngine**:
   - In `dashboard/src/app/page.tsx`, feed live sensor angles (`SensorFrame`) directly into `RehabSessionEngine.tick()` instead of bypassing it with `makeLiveFeedback()`.
@@ -91,11 +108,11 @@ RxSmart/
 - [ ] **Plane / Elevation Angle Mapping**:
   - Enhance `mapTelemetryToFrame()` in `dashboard/src/lib/pose.ts` so shoulder/hip abduction and rotational movements (e.g., swimming, T-pose) map both elevation and horizontal planes correctly.
 
-### 🟡 Priority 2: WebRTC / WebSocket Camera Bridge to Dashboard (P1)
+### 🟡 Priority 4: WebRTC / WebSocket Camera Bridge to Dashboard (P1)
 - [ ] Connect `rxsmart-local` (Python MediaPipe) directly to the web dashboard via local WebSocket (`web_bridge.py`) so users can use the camera mode on the web UI with live pose overlay.
 - [ ] Implement in-browser MediaPipe Pose (WebAssembly/JS) as an alternative zero-install camera mode inside `dashboard/src/components/CameraView.tsx`.
 
-### 🟢 Priority 3: Clinical Session Export & History (P2)
+### 🟢 Priority 5: Clinical Session Export & History (P2)
 - [ ] Store completed exercise session summaries (total reps, ROM max/min, error rate, smoothness score) in Firebase RTDB under `rxsmart/sessions/{sessionId}`.
 - [ ] Add a Session History & Report view for physiotherapists in the Dashboard (charting ROM improvements and tracking patient compliance).
 - [ ] Trigger automated periodic backup from Firebase RTDB to Google Sheets via `scripts/firebase-to-sheets-backup.gs`.

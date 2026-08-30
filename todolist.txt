@@ -14,14 +14,28 @@
 สิ่งที่ต้องทำต่อ (Next Action Items)
 ================================================================================
 
-[ ] Priority 1 (P0): เชื่อม Live Telemetry เข้ากับระบบ Scoring ของ Web Dashboard
+[ ] Priority 1 (P0): แก้ปัญหาความหน่วงของข้อมูล (Data Latency / High Delay) แม้เสียบสาย USB
+    - ปัญหา: ขณะเสียบสายเชื่อมต่อกับคอมพิวเตอร์ ข้อมูลที่ส่งมาแสดงผลบนเว็บมีอาการ Delay/ช้ามาก
+    - แนวทางแก้ไข:
+      1. ตรวจสอบ loop blocking ใน `Pico2W.ino` (เช่น การส่ง HTTPS PUT แบบ synchronous อาจทำให้ loop สะดุด)
+      2. ตรวจสอบ Serial baud rate (ควรปรับเป็น 115200 หรือสูงกว่า) และเพิ่ม non-blocking streaming
+      3. พัฒนาการเชื่อมต่อตรงผ่าน **Web Serial API** บนหน้าเว็บ หรือเชื่อมผ่าน Local WebSocket ใน `rxsmart-local/web_bridge.py` เพื่อให้ข้อมูลอัปเดตแบบ 60Hz real-time โดยไม่ต้องรอผ่าน cloud
+
+[ ] Priority 2 (P0): ปรับปรุงความแม่นยำในการคำนวณมุม (Angle Calculation Accuracy & Calibration)
+    - ปัญหา: มุมข้อต่อ (Elbow, Knee, Shoulder) ที่คำนวณได้ยังไม่ตรงกับท่าทางจริง มี drift หรือแกนคลาดเคลื่อน
+    - แนวทางแก้ไข:
+      1. ปรับปรุง Complementary Filter / Mahony Filter ใน `Pico2W.ino` พร้อมคำนวณ `dt` แบบ dynamic
+      2. ตรวจสอบการแปลงพิกัด (Coordinate Frame) และการตัดค่า Offset จาก Zero Calibration
+      3. คำนวณมุมข้อต่อแบบสัมพัทธ์ (Relative Joint Angle) ระหว่าง Proximal (ต้นแขน/ต้นขา) กับ Distal (ปลายแขน/หน้าแข้ง) ให้ถูกต้องตามหลักกายวิภาคศาสตร์ (Biomechanical ROM)
+
+[ ] Priority 3 (P0): เชื่อม Live Telemetry เข้ากับระบบ Scoring ของ Web Dashboard
     - ปัจจุบันใน `dashboard/src/app/page.tsx` ระบบให้คะแนน/นับ Rep ทำงานเฉพาะในโหมดจำลอง Physics
     - เมื่อผู้ใช้เลือก Live IMU หรือ Camera ให้ส่ง `SensorFrame` เข้า `RehabSessionEngine.tick()` เพื่อให้คะแนนและนับ rep จากเซนเซอร์จริง
 
-[ ] Priority 2 (P1): Bridge กล้อง Local เข้า Dashboard ผ่าน WebRTC/WebSocket หรือ Browser MediaPipe
+[ ] Priority 4 (P1): Bridge กล้อง Local เข้า Dashboard ผ่าน WebRTC/WebSocket หรือ Browser MediaPipe
     - ให้ผู้ใช้เปิดโหมด Camera บนเว็บแล้วติดตามข้อต่อได้โดยไม่ต้องลงโปรแกรมเพิ่ม หรือเชื่อม `rxsmart-local` ผ่าน websocket
 
-[ ] Priority 3 (P2): บันทึกประวัติและสรุป Session หลังฝึกเสร็จ
+[ ] Priority 5 (P2): บันทึกประวัติและสรุป Session หลังฝึกเสร็จ
     - เมื่อฝึกครบ rep ให้บันทึกสถิติ (Max ROM, ความสมูท, คะแนนเฉลี่ย) ลง Firebase RTDB `/rxsmart/sessions`
     - เพิ่มหน้าดูรายงานประวัติการฝึกสำหรับนักกายภาพบำบัด
 
